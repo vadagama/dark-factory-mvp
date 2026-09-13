@@ -15,7 +15,16 @@ Pipeline of the command (contract cli.md):
    secret): in the text summary line and, in ``--json`` mode, as an
    ``operation_key=...`` line on stderr — stdout stays exactly one
    StageResult document.
-4. **Stage execution**: deterministic stage steps (T010,
+4. **Idempotent replay** (T012, FR-017, ADR-006 p.3): with ``--evidence-dir``
+   the committed StageResult of the operation is looked up before any
+   execution. A ``succeeded``/``waiting`` result is returned as-is — replay:
+   no second execution, the evidence stays untouched, the run manifest is
+   not collected. A ``failed``/``blocked`` result or no committed result
+   leads to a fresh execution — a new attempt of the same logical operation,
+   whose external effects are deduplicated at the effect level
+   (``orchestration.state.ensure_effect``). Without ``--evidence-dir`` there
+   is nothing durable to check and the command always executes.
+5. **Stage execution**: deterministic stage steps (T010,
    ``orchestration/stages/``): context assembly from the fixed snapshot,
    machine checks (budget/limit exhaustion, required-gate applicability,
    change-request availability), aggregation and the waiting/blocked
@@ -25,12 +34,12 @@ Pipeline of the command (contract cli.md):
    never claims ``succeeded`` (FR-009, SC-004). Run-state persistence
    arrives with the durable state-store wiring: the default budget snapshot
    applies and ``attempt_number`` stays 1 until then.
-5. **Persist before wait** (ADR-006 p.8): with ``--evidence-dir`` the
+6. **Persist before wait** (ADR-006 p.8): with ``--evidence-dir`` the
    serialized StageResult is written to ``<evidence-dir>/stage_result.json``
    before the process exits with code 10. When that write fails the command
    exits with code 1: code 10 would claim a persisted result that does not
    exist.
-6. **Run record** (T011, ADR-015 p.4/p.5): with ``--evidence-dir`` the run
+7. **Run record** (T011, ADR-015 p.4/p.5): with ``--evidence-dir`` the run
    record — the compact immutable evidence index — is persisted to
    ``<evidence-dir>/run_record.json`` next to the snapshot and the
    StageResult. Its manifest references exact commits (environment, then the
@@ -81,13 +90,14 @@ from dark_factory.cli.run_records import (
     collect_run_manifest,
     persist_run_record,
 )
+from dark_factory.orchestration.idempotency import (
+    REPLAYABLE_RESULT_STATUSES,
+    EvidenceOperationStore,
+)
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 
 SNAPSHOT_EVIDENCE_NAME: Final[str] = "change_snapshot.yaml"
 """Evidence file with the byte-exact copy of the input snapshot (FR-001)."""
-
-STAGE_RESULT_EVIDENCE_NAME: Final[str] = "stage_result.json"
-"""Evidence file with the serialized StageResult, written before any wait (ADR-006 p.8)."""
 
 DEFAULT_STAGE_ROUTE: Final[Route] = Route.STANDARD
 """Route applied when ``--route`` is omitted (contract cli.md).
@@ -168,12 +178,6 @@ def persist_input_snapshot(evidence_dir: Path, raw: bytes) -> None:
     (evidence_dir / SNAPSHOT_EVIDENCE_NAME).write_bytes(raw)
 
 
-def persist_stage_result(evidence_dir: Path, result: StageResult) -> None:
-    """Persist the serialized StageResult before any external wait (ADR-006 p.8)."""
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / STAGE_RESULT_EVIDENCE_NAME).write_text(to_json(result), encoding="utf-8")
-
-
 def execute_stage(
     *,
     change: Change,
@@ -240,9 +244,17 @@ def run_stage_command(args: StageRunArgs) -> int:
         return _report_invalid_input(str(exc), json_output=args.json_output)
 
     route = args.route if args.route is not None else DEFAULT_STAGE_ROUTE
+    key = operation_key(run_id, args.stage, input_revision)
 
     if args.evidence_dir is not None:
         evidence_dir = Path(args.evidence_dir)
+        store = EvidenceOperationStore(evidence_dir)
+        existing = store.find_existing(key)
+        if existing is not None and existing.status in REPLAYABLE_RESULT_STATUSES:
+            # ADR-006 p.3: the committed result of this operation is authoritative —
+            # replay it without a second execution; the evidence is not touched and
+            # the run manifest is not collected on this path.
+            return _emit_result(existing, key, json_output=args.json_output)
         try:
             persist_input_snapshot(evidence_dir, snapshot.raw)
         except OSError as exc:
@@ -256,7 +268,6 @@ def run_stage_command(args: StageRunArgs) -> int:
         except RunRecordError as exc:
             return _report_invalid_input(str(exc), json_output=args.json_output)
 
-    key = operation_key(run_id, args.stage, input_revision)
     started_at = datetime.now(UTC)
     result = execute_stage(
         change=snapshot.change,
@@ -268,7 +279,7 @@ def run_stage_command(args: StageRunArgs) -> int:
 
     if args.evidence_dir is not None:
         try:
-            persist_stage_result(evidence_dir, result)
+            store.record(key, result)
         except OSError as exc:
             # ADR-006 p.8: exit 10 would claim a persisted result — it does not
             # exist, so the command fails as an execution error instead.
@@ -301,7 +312,16 @@ def run_stage_command(args: StageRunArgs) -> int:
                 json_output=args.json_output,
             )
 
-    if args.json_output:
+    return _emit_result(result, key, json_output=args.json_output)
+
+
+def _emit_result(result: StageResult, key: str, *, json_output: bool) -> int:
+    """Emit one StageResult to the user and return its exit code (contract cli.md).
+
+    In ``--json`` mode the ``operation_key=...`` line goes to stderr so stdout
+    stays exactly one StageResult document; text mode prints the summary line.
+    """
+    if json_output:
         print(f"operation_key={key}", file=sys.stderr)
         print(render_json(result))
     else:
