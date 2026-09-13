@@ -39,7 +39,7 @@
 - **Описание:** Структура пакетов по модулям HLD (changes, orchestration, agents, context, execution, quality, ports, adapters), pyproject/venv, ruff/mypy/pytest, простейший pipeline (lint+test) на CI-провайдере репозитория (MVP — GitHub Actions, ADR-019).
 - **Критерий готовности (DoD):** typecheck + lint + test зелёные локально и в CI.
 - **Зависит от задач:** T-001 (стек)
-- **Статус:** 🔴 Запланировано
+- **Статус:** ✅ Выполнено (2026-09-13): пакет `dark_factory` (src-layout, 8 модулей HLD), uv + ruff/mypy strict/pytest, тест границ импортов (ADR-015 п.3), GitHub Actions lint+typecheck+test; локальный прогон зелёный, CI подтвердится при push/PR
 
 ### T-003. Доменная модель изменения
 
