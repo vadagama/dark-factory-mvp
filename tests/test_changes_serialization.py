@@ -17,6 +17,7 @@ from dark_factory.changes import (
     RequestApprovalAction,
     ReworkAction,
     Role,
+    RunManifest,
     RunRecord,
     Stage,
     StageResult,
@@ -36,6 +37,7 @@ from tests.changes_factories import (
     make_evidence,
     make_finding,
     make_gate_result,
+    make_manifest,
     make_record,
     make_stage_result,
 )
@@ -140,3 +142,25 @@ def test_gate_result_status_survives_round_trip() -> None:
     result = make_stage_result(gate_results=[make_gate_result()])
     restored = from_json(StageResult, to_json(result))
     assert restored.gate_results[0].status is GateStatus.PASSED
+
+
+@pytest.mark.parametrize("field", ["factory_commit", "product_commit"])
+@pytest.mark.parametrize("value", ["latest", "LATEST", "  Latest  "])
+def test_run_manifest_rejects_the_mutable_latest_ref(field: str, value: str) -> None:
+    payload = make_manifest().model_dump(mode="json")
+    payload[field] = value
+    with pytest.raises(ValidationError, match="latest"):
+        RunManifest.model_validate(payload)
+
+
+def test_run_manifest_accepts_exact_refs_and_absent_optional_fields() -> None:
+    manifest = RunManifest(
+        factory_version="0.1.0",
+        factory_commit="4f86c2a",
+        product_commit="731ac91",
+    )
+    assert manifest.pack_name is None
+    assert manifest.pack_version is None
+    assert manifest.blueprint_version is None
+    assert manifest.gitops_commit is None
+    assert manifest.okf_revision is None

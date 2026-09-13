@@ -9,11 +9,11 @@ validation and exit codes. Exit codes (contract cli.md): 0 success,
 argparse rejects invalid input with exit code 2, matching the contract.
 
 Handlers are dispatched from here. ``doctor`` (T008) is implemented in
-``dark_factory.cli.doctor`` and ``stage run`` (T009) in
-``dark_factory.cli.stage``; the remaining handlers arrive in later tasks
-(``stage resume`` and ``run status`` with run-record persistence, T011;
-reconcile T027; outbox dispatch T028) and report ``not_implemented`` with
-exit code 2 until then.
+``dark_factory.cli.doctor`` and ``stage run`` (T009, with run-record
+persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``; the
+remaining handlers arrive in later tasks (``stage resume`` and ``run status``
+with the durable state-store wiring; reconcile T027; outbox dispatch T028)
+and report ``not_implemented`` with exit code 2 until then.
 """
 
 import argparse
@@ -273,11 +273,15 @@ def _run_stage_run(args: StageRunArgs) -> int:
 
 
 def _resume_stage(args: StageResumeArgs) -> int:
-    return _not_implemented("stage resume", "T011", json_output=args.json_output)
+    return _not_implemented(
+        "stage resume", "the durable state-store wiring", json_output=args.json_output
+    )
 
 
 def _show_run_status(args: RunStatusArgs) -> int:
-    return _not_implemented("run status", "T011", json_output=args.json_output)
+    return _not_implemented(
+        "run status", "the durable state-store wiring", json_output=args.json_output
+    )
 
 
 def _reconcile(args: ReconcileArgs) -> int:

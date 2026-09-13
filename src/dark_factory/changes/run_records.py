@@ -8,7 +8,7 @@ survive both JSON and YAML.
 """
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
@@ -25,7 +25,8 @@ class RunManifest(BaseModel):
     """Cross-repository versioning protocol of a run (ADR-015 p.5).
 
     A run record references exact revisions of all inputs; otherwise the run
-    cannot be reproduced.
+    cannot be reproduced. Mutable refs are rejected: a value that resolves to
+    ``latest`` pins nothing, so it must never enter the record.
     """
 
     factory_version: str = Field(min_length=1)
@@ -36,6 +37,21 @@ class RunManifest(BaseModel):
     product_commit: str = Field(min_length=1)
     gitops_commit: str | None = None
     okf_revision: str | None = None
+
+    @field_validator(
+        "factory_version",
+        "factory_commit",
+        "pack_version",
+        "blueprint_version",
+        "product_commit",
+        "gitops_commit",
+        "okf_revision",
+    )
+    @classmethod
+    def _ref_is_immutable(cls, value: str | None) -> str | None:
+        if value is not None and value.strip().lower() == "latest":
+            raise ValueError("run records reference exact revisions, not 'latest' (ADR-015 p.5)")
+        return value
 
 
 class RunRecord(BaseModel):
