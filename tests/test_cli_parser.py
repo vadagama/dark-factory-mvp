@@ -186,7 +186,6 @@ STUB_INVOCATIONS = [
     (["reconcile"], "reconcile", "T027"),
     (["outbox", "dispatch"], "outbox dispatch", "T028"),
     (["outbox", "dispatch", "--once"], "outbox dispatch", "T028"),
-    (["doctor"], "doctor", "T008"),
 ]
 
 
@@ -207,7 +206,6 @@ def test_stub_reports_not_implemented_on_stderr(
         (["stage", "resume", "--run-id", "r", "--next-action", "ci", "--json"], "stage resume"),
         (["run", "status", "--run-id", "run_01H", "--json"], "run status"),
         (["reconcile", "--json"], "reconcile"),
-        (["doctor", "--json"], "doctor"),
     ],
 )
 def test_stub_json_emits_json_error_on_stdout(
@@ -228,12 +226,12 @@ def test_factory_script_is_declared_in_pyproject() -> None:
 
 def test_python_dash_m_invocation_exits_with_code_2() -> None:
     result = subprocess.run(
-        [sys.executable, "-m", "dark_factory.cli", "doctor", "--json"],
+        [sys.executable, "-m", "dark_factory.cli", "reconcile", "--json"],
         capture_output=True,
         text=True,
         check=False,
         timeout=30,
     )
     assert result.returncode == 2
-    assert result.stdout == '{"error": "not_implemented", "command": "doctor"}\n'
+    assert result.stdout == '{"error": "not_implemented", "command": "reconcile"}\n'
     assert result.stderr == ""

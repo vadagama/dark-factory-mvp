@@ -8,9 +8,10 @@ validation and exit codes. Exit codes (contract cli.md): 0 success,
 10 waiting, 20 blocked, 1 execution error, 2 invalid input/configuration;
 argparse rejects invalid input with exit code 2, matching the contract.
 
-Handlers are dispatched from here; their implementations arrive in later tasks
-(T008 doctor, T009 stage/run commands, T027 reconcile, T028 outbox dispatch)
-and currently report ``not_implemented`` with exit code 2.
+Handlers are dispatched from here. ``doctor`` (T008) is implemented in
+``dark_factory.cli.doctor``; the remaining handlers arrive in later tasks
+(T009 stage/run commands, T027 reconcile, T028 outbox dispatch) and report
+``not_implemented`` with exit code 2 until then.
 """
 
 import argparse
@@ -22,6 +23,7 @@ from enum import StrEnum
 from typing import assert_never
 
 from dark_factory.changes.enums import Route, Stage
+from dark_factory.cli import doctor
 
 # Exit codes of the CLI (contract cli.md).
 EXIT_OK = 0
@@ -281,7 +283,9 @@ def _dispatch_outbox(args: OutboxDispatchArgs) -> int:
 
 
 def _doctor(args: DoctorArgs) -> int:
-    return _not_implemented("doctor", "T008", json_output=args.json_output)
+    report = doctor.collect_report()
+    print(doctor.render_json(report) if args.json_output else doctor.render_text(report))
+    return EXIT_INVALID_INPUT if report.has_errors else EXIT_OK
 
 
 def dispatch(command: CommandArgs) -> int:
