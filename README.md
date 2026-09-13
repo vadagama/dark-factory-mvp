@@ -1,6 +1,6 @@
 # dark-factory-mvp
 
-**Software Dark Factory** — MVP «тёмной фабрики» разработки ПО: конвейер агентной разработки, в котором специализированные роли (аналитик, архитектор, инженер, DevOps) превращают задачу в работающий, протестированный и задокументированный код с минимальным участием человека.
+**Software Dark Factory** — MVP «тёмной фабрики» разработки ПО: конвейер агентной разработки, в котором специализированные роли (product, design, architect, infrastructure, security, develop, quality, CI/CD, operation) превращают задачу в работающий, протестированный и задокументированный код с минимальным участием человека.
 
 ## Статус
 
@@ -12,7 +12,7 @@ Pre-MVP. Каркас кода и базовый CI настроены (T-002); 
 |---|---|
 | `AGENTS.md` | Правила и контекст для всех ИИ-агентов; читается автоматически в начале каждой сессии |
 | `.agents/skills/dark-factory/` | Локальный скилл-оркестратор конвейера (в git — общий для команды) |
-| `~/.agents/skills/` | Глобальные скиллы-роли: `analyst`, `software-architect`, `software-engineer`, `devops`, `yandex-cloud-engineer` |
+| `~/.agents/skills/` | Глобальные скиллы-роли: `product`, `design`, `architect`, `infrastructure`, `security`, `develop`, `quality`, `ci-cd`, `operation`, `yandex-cloud-engineer` |
 | `.zed/settings.json` | Настройки редактора Zed (форматирование, сканирование файлов) |
 | `docs/` | Проектная документация: индекс, ADR; `vision-*.md`, `plan.md`, `hld.md` создаются ролями |
 | `.editorconfig`, `.gitignore` | Гигиена репозитория |
@@ -21,12 +21,12 @@ Pre-MVP. Каркас кода и базовый CI настроены (T-002); 
 
 ```
 задача → dark-factory (классификация, план)
-        → analyst (видение, скоуп)
-        → software-architect (ADR, архитектура)
-        → devops (ветка задачи от main)
-        → software-engineer (код, тесты)
+        → product (видение, скоуп)
+        → architect (ADR, архитектура)
+        → ci-cd (ветка задачи от main)
+        → develop (код, тесты)
         → проверка (диагностика, тесты, lint/typecheck; CI на MR)
-        → devops (MR против main)
+        → ci-cd (MR против main)
         → merge — человек (ADR-011) → приёмка по DoD (AGENTS.md)
 ```
 
@@ -35,7 +35,7 @@ Pre-MVP. Каркас кода и базовый CI настроены (T-002); 
 ## Быстрый старт
 
 1. Сформулируй задачу в Zed-агенте — оркестратор подберёт роли и запустит конвейер.
-2. Продуктовые вопросы и идеи без ТЗ проходят через `analyst` (видение и план появляются в `docs/`).
+2. Продуктовые вопросы и идеи без ТЗ проходят через `product` (видение и план появляются в `docs/`).
 3. Значимые технические решения фиксируются в `docs/adr/`.
 4. Задачи с кодом идут в ветке задачи и завершаются MR; merge в `main` — за человеком (`docs/development-workflow.md`).
 5. Каркас кода: `src/dark_factory/` (модули HLD), тесты в `tests/`, CI — `.github/workflows/ci.yml`.
