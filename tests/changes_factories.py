@@ -23,6 +23,13 @@ from dark_factory.changes.enums import (
     StageStatus,
 )
 from dark_factory.changes.findings import Decision, Finding, GateResult
+from dark_factory.changes.implementation_contract import (
+    AcceptanceCriterion,
+    ChangeScope,
+    ContractApproval,
+    ContractBudget,
+    ImplementationContract,
+)
 from dark_factory.changes.next_action import ExecuteStageAction, NextAction
 from dark_factory.changes.refs import ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.run import Change, ChangeRun, StageResult
@@ -57,6 +64,20 @@ def make_change() -> Change:
     )
 
 
+def make_contract() -> ImplementationContract:
+    """Approved contract a factory run needs to enter construction (T-016)."""
+    return ImplementationContract(
+        id="ict-001",
+        scope=ChangeScope(in_scope=("src/app.py",)),
+        acceptance_criteria=(
+            AcceptanceCriterion(id="ac-1", description="the export button renders"),
+        ),
+        risk_class=RiskClass.R1,
+        budget=ContractBudget(max_autonomous_iterations=5),
+        approval=ContractApproval(approved_by=Role.PRODUCT, decided_at=NOW),
+    )
+
+
 def make_run(route: Route = Route.STANDARD) -> ChangeRun:
     return ChangeRun(
         id="run-001",
@@ -65,6 +86,7 @@ def make_run(route: Route = Route.STANDARD) -> ChangeRun:
         provider=Provider.GITHUB,
         created_at=NOW,
         updated_at=NOW,
+        implementation_contract=make_contract(),
     )
 
 

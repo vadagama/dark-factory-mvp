@@ -45,6 +45,7 @@ CONTRACT_STAGE_RESULT_FIELDS = {
     "evidence",
     "gate_results",
     "findings",
+    "escalations",
     "usage",
     "produced_at",
 }
