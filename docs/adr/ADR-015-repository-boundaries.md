@@ -6,6 +6,7 @@
 - Решение согласовано пользователем (ответы на вопросы раздела 5 plan.md, 2026-09-13)
 - **Пересмотр 2 (2026-09-13)**: по результатам ревью (оценка 7/10) статус изменён на «принято с условиями»; продуктовые репозитории переформулированы в динамическую модель, содержимое `dark-factory-runs` ограничено компактным индексом доказательств, добавлены протокол межрепозиторного версионирования, направление зависимостей, правила защиты модульного монолита и границы доверия внутри `dark-factory`. Финальное принятие — после выполнения условий раздела «Условия финального принятия».
 - **Пересмотр 3 (2026-09-13, архитектурное ревью ADR-пакета)**: исправлено направление зависимостей adapters/core (п.3); `okf` помечен целевым репозиторием вне MVP (п.1).
+- **Пересмотр 4 (2026-09-13, [ADR-019](ADR-019-multi-provider-sc-ci-github-first.md))**: группировка `products` и CI-хранилища описаны нейтрально к провайдеру (GitLab group / GitHub org; CI artifacts провайдера через `ArtifactStorePort`) — провайдер выбирается на уровне репозитория.
 
 ## Контекст
 
@@ -27,7 +28,7 @@
    - `okf` — knowledge graph с самостоятельным жизненным циклом, не привязан к релизам runtime. **Целевой репозиторий вне MVP**: в MVP не создаётся и не требуется (vision §5, Out of Scope); фактический MVP-набор — `dark-factory`, `dark-factory-gitops`, `dark-factory-runs` и пилотный продуктовый репозиторий.
 
 2. **Продуктовые репозитории — динамические, не один общий**:
-   - `products` — GitLab group/namespace. В P0 — один пилотный продуктовый репозиторий и версионированный blueprint (blueprint-плагин, ADR-008; T-070). `product-template` из `git-structure.md` — **не отдельный репозиторий**.
+   - `products` — группа репозиториев: GitLab group / GitHub org по провайдеру репозитория (ADR-019). В P0 — один пилотный продуктовый репозиторий и версионированный blueprint (blueprint-плагин, ADR-008; T-070). `product-template` из `git-structure.md` — **не отдельный репозиторий**.
    - Каждый следующий независимо выпускаемый продукт создаётся **отдельным репозиторием** из версионированного blueprint. Целевая модель:
 
      ```text
@@ -35,7 +36,7 @@
      dark-factory-gitops
      dark-factory-runs
      okf
-     products/          # GitLab group/namespace
+     products/          # группа репозиториев (group/org, ADR-019)
        product-a        # пилот (P0)
        product-b        # следующие продукты — отдельные репозитории
        product-c
@@ -55,8 +56,8 @@
    |---|---|---|
    | `RunManifest`, итоговый `StageResult`, approvals, decisions | Git (`dark-factory-runs`) | Git (`dark-factory-runs`) |
    | Ссылки, digest и provenance | Git (`dark-factory-runs`) | Git (`dark-factory-runs`) |
-   | Логи и трассировки | Job logs + GitLab CI artifacts; OTLP-экспорт во внешний backend — опционально (ADR-009 п.2) | Loki / Tempo или иной OTLP-backend |
-   | Evidence, отчёты, скриншоты, SBOM | GitLab CI artifacts через `ArtifactStorePort`; в `-runs` — только URI + checksum | Объектное хранилище (S3/MinIO) через тот же порт |
+   | Логи и трассировки | Job logs + CI artifacts провайдера (Actions / GitLab CI); OTLP-экспорт во внешний backend — опционально (ADR-009 п.2) | Loki / Tempo или иной OTLP-backend |
+   | Evidence, отчёты, скриншоты, SBOM | CI artifacts провайдера через `ArtifactStorePort`; в `-runs` — только URI + checksum | Объектное хранилище (S3/MinIO) через тот же порт |
    | Метрики usage/cost/duration | PostgreSQL (ADR-004) + usage/cost-атрибуты OTel (ADR-009 п.3) | PostgreSQL + Prometheus/ClickHouse |
 
    Смена backend не меняет ни структуру `-runs`, ни код фабрики: доступ к тяжёлым данным идёт через `ArtifactStorePort` и `TelemetryPort`. Ограниченный retention CI artifacts — известный риск MVP (ADR-009, «Негативные»): срок хранения обязан перекрывать максимальное человеческое ожидание и повторный запуск, иначе продолжение блокируется.

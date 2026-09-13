@@ -5,9 +5,11 @@
 **Статус:** 🟡 В работе
 **Контекст:** репозиторий pre-MVP, greenfield (`src/` пуст). Все задачи стартуют со статусом 🔴. Слой/модуль — по модульному монолиту HLD MVP (Changes, Orchestration, Agents, Context, Execution, Quality + ports/adapters, api, cli, console, packs).
 
-**Принятые решения (данность, не пересматриваются здесь):** SDD-модель — единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit (ADR-001, workflow `/speckit-*`) — инструмент bootstrap-фазы до контрольной точки T-020 (ADR-017, частично перекрывает ADR-001). Конституция `.specify/memory/constitution.md` v2.0.0 (SDD обязателен для фич, канонический формат — OpenSpec, evidence-based validation, минимальные изменения, ADR-governance). Модель участия человека по фазам и границы автономной реализации — ADR-018 (реализация — T-016). Состав инфраструктуры MVP при конфликте определяет ADR-009 (минимальный bootstrap + OTel).
+**Принятые решения (данность, не пересматриваются здесь):** SDD-модель — единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit (ADR-001, workflow `/speckit-*`) — инструмент bootstrap-фазы до контрольной точки T-020 (ADR-017, частично перекрывает ADR-001). Конституция `.specify/memory/constitution.md` v2.0.0 (SDD обязателен для фич, канонический формат — OpenSpec, evidence-based validation, минимальные изменения, ADR-governance). Модель участия человека по фазам и границы автономной реализации — ADR-018 (реализация — T-016). Состав инфраструктуры MVP при конфликте определяет ADR-009 (минимальный bootstrap + OTel). SC/CI-провайдеры — через адаптеры за портами `SourceControlPort`/`CIPort`: MVP стартует на GitHub-адаптере, GitLab-адаптер — второй провайдер (ADR-019).
 
 **Правки 2026-09-13 (валидация ADR-001…018):** синхронизированы T-001 (PostgreSQL как state store, ADR-004), T-006 (durable effect ledger, ADR-006 п.3), T-022 (OpenSpec вместо `/speckit-constitution`, ADR-017), T-033 (Plane, ADR-013), T-040 (restore-тест, capacity smoke, проверка GitLab-лицензии — ADR-004/010/012), T-050 (AuthN-условия ADR-009 п.7), T-061/T-072 (P0-минимум evidence-индекса); ordering-диаграмма переименована (T-020 — OpenSpec-миграция).
+
+**Правки 2026-09-13 (ADR-019, GitHub-first SC/CI):** Этап 3 переименован в «SC/CI-контур (GitHub → GitLab)»: T-030 — GitHub-адаптер (GitHub App с короткоживущими installation tokens, webhooks, Actions, Checks API, artifacts, merge policy), GitLab-адаптер перенесён в T-034 (P1) на единой контрактной тест-сюите; MR/PR сведены к `ChangeRequestRef`; провайдер выбирается на уровне репозитория; один run исполняется ровно в одном провайдере. Синхронизированы T-002, T-005, T-011, T-031, T-032, T-040, T-041, T-064, T-090; Q-11 привязан к T-034.
 
 ---
 
@@ -33,8 +35,8 @@
 - **Приоритет:** P0
 - **Сложность:** XS
 - **Слой:** все
-- **Пакет / Компонент:** `src/`, `tests/`, `.gitlab-ci.yml`
-- **Описание:** Структура пакетов по модулям HLD (changes, orchestration, agents, context, execution, quality, ports, adapters), pyproject/venv, ruff/mypy/pytest, простейший pipeline (lint+test) в GitLab.
+- **Пакет / Компонент:** `src/`, `tests/`, CI-конфиг провайдера репозитория (`.github/workflows` | `.gitlab-ci.yml`)
+- **Описание:** Структура пакетов по модулям HLD (changes, orchestration, agents, context, execution, quality, ports, adapters), pyproject/venv, ruff/mypy/pytest, простейший pipeline (lint+test) на CI-провайдере репозитория (MVP — GitHub Actions, ADR-019).
 - **Критерий готовности (DoD):** typecheck + lint + test зелёные локально и в CI.
 - **Зависит от задач:** T-001 (стек)
 - **Статус:** 🔴 Запланировано
@@ -71,9 +73,9 @@
 - **Слой:** ports/adapters
 - **Пакет / Компонент:** `ports`, `adapters`
 - **Описание:** Протоколы (`Protocol`) и in-memory-фейки для тестов.
-  *Порты внешних систем:* `SourceControlPort`, разделённый на `RepositoryPort` / `MergeRequestPort` / `PipelinePort` (принцип dmtools-референса), `TrackerPort`, `HarnessPort`, `ArtifactStorePort`, `TelemetryPort`.
+  *Порты внешних систем:* `SourceControlPort`, разделённый на `RepositoryPort` / `MergeRequestPort` / `PipelinePort` (принцип dmtools-референса; доменный тип change request — единый `ChangeRequestRef` для GitHub PR / GitLab MR, ADR-019), `TrackerPort`, `HarnessPort`, `ArtifactStorePort`, `TelemetryPort`.
   *Внутренние порты ядра, введённые ADR:* `WorkflowEnginePort` — `start` / `resume` / `cancel` / `get_status` с `idempotency_key` и `expected_revision` (ADR-006 п.9); `ReconciliationService` — отдельный сервис, а не метод движка (ADR-006 п.9); `EventPublisherPort` — производители не зависят от схемы таблиц outbox (ADR-016 п.7).
-  Остальные порты вводятся там, где впервые нужны, а не авансом: `KnowledgePort` и `ExecutionPort` — T-012, `CIPort` — T-030, `SDDPort` (`OpenSpecAdapter` / `SpecKitAdapter`) — T-020. В P0 все реализации — фейки; реальные адаптеры: T-010 (harness), T-030 (GitLab), T-033 (tracker), T-060 (OTLP).
+  Остальные порты вводятся там, где впервые нужны, а не авансом: `KnowledgePort` и `ExecutionPort` — T-012, `CIPort` — T-030, `SDDPort` (`OpenSpecAdapter` / `SpecKitAdapter`) — T-020. В P0 все реализации — фейки; реальные адаптеры: T-010 (harness), T-030 (GitHub), T-033 (tracker), T-060 (OTLP); T-034 (GitLab) — P1.
 - **Критерий готовности (DoD):** typecheck + lint + test: contract-тесты каждого порта на фейках; ни один модуль ядра не импортирует внешний SDK — проверка границ импортов в CI (ADR-015 п.3).
 - **Зависит от задач:** T-002
 - **Статус:** 🔴 Запланировано
@@ -111,7 +113,7 @@
 - **Сложность:** L
 - **Слой:** Agents
 - **Пакет / Компонент:** `agents/profiles`, `skills`
-- **Описание:** Версионированные манифесты профилей (входы/выходы, tools, ограничения, stop-conditions); skills первого slice: intake, requirements-refinement, spec-авторинг, implementation, implementation-rework, code-review, acceptance-verification, gitlab-mr. TaskEnvelope/AgentResult по контрактам T-003.
+- **Описание:** Версионированные манифесты профилей (входы/выходы, tools, ограничения, stop-conditions); skills первого slice: intake, requirements-refinement, spec-авторинг, implementation, implementation-rework, code-review, acceptance-verification, change-request. TaskEnvelope/AgentResult по контрактам T-003.
 - **Критерий готовности (DoD):** typecheck + lint + test; сквозной smoke «короткая задача → спека → код → review» на тестовом репозитории.
 - **Зависит от задач:** T-010, T-012
 - **Статус:** 🔴 Запланировано
@@ -214,17 +216,17 @@
 - **Зависит от задач:** T-020, T-070
 - **Статус:** 🔴 Запланировано
 
-### Этап 3 — GitLab-контур
+### Этап 3 — SC/CI-контур (GitHub → GitLab)
 
-### T-030. GitLab-адаптер
+### T-030. GitHub-адаптер (первый провайдер MVP)
 
 - **Родительская функция:** 3.5
 - **Приоритет:** P0
 - **Сложность:** M
 - **Слой:** Execution
-- **Пакет / Компонент:** `adapters/gitlab`
-- **Описание:** SourceControlPort: ветка/worktree, push, создание MR, diff, discussions/комментарии, pipeline status, rebase, merge (через доверенный finalizer). Разделить RepositoryPort/MergeRequestPort/PipelinePort. Вводит `CIPort` (запуск/повтор/отмена pipeline, `play` для manual job, чтение jobs с `include_retried=true` — ADR-006 пп.7–8) поверх контрактов T-005.
-- **Критерий готовности (DoD):** typecheck + lint + test; интеграционный тест против тестового проекта GitLab (ветки/MR/комментарии).
+- **Пакет / Компонент:** `adapters/github`
+- **Описание:** `GitHubAdapter` реализует `SourceControlPort` и `CIPort` (ADR-019): ветка/worktree, push, создание change request (`ChangeRequestRef` — единая модель PR/MR), diff, комментарии/review, статусы проверок (Checks API), rebase/update branch, merge (через доверенный finalizer); разделение RepositoryPort/MergeRequestPort/PipelinePort. `CIPort`: запуск/повтор/отмена workflow, чтение jobs с учётом retried-попыток (эквивалент ADR-006 пп.7–8), artifacts через `ArtifactStorePort`. Аутентификация — GitHub App: короткоживущие installation tokens с минимальными permissions (рекомендации GitHub); webhooks — ускоритель. Провайдер-нейтральные CI-шаблоны — T-031.
+- **Критерий готовности (DoD):** typecheck + lint + test; единая контрактная сюита портов зелёная против адаптера; интеграционный тест против тестового репозитория GitHub (ветки/PR/комментарии/checks).
 - **Зависит от задач:** T-005
 - **Статус:** 🔴 Запланировано
 
@@ -235,7 +237,7 @@
 - **Сложность:** L
 - **Слой:** Execution
 - **Пакет / Компонент:** CI templates (`dark-factory` repo)
-- **Описание:** Pipeline-шаблоны: один job = одна стадия Flow; временный job pod; сохранение StageResult/NextAction/usage в artifacts + run record; детерминированные jobs (build/test/lint/security); webhook-ускорение + scheduled reconcile (см. T-063); повторный проход гейтов для итогового SHA.
+- **Описание:** CI-шаблоны, провайдер-нейтральные по контракту: GitHub Actions workflows (MVP, T-030) и GitLab CI-шаблоны (T-034); один job = одна стадия Flow; временный job pod; сохранение StageResult/NextAction/usage в artifacts + run record; детерминированные jobs (build/test/lint/security); webhook-ускорение + scheduled reconcile (см. T-063); повторный проход гейтов для итогового SHA.
 - **Критерий готовности (DoD):** pipeline запускает стадию агента в pod, сохраняет артефакты; unit-тесты job-скриптов; typecheck + lint.
 - **Зависит от задач:** T-004, T-030, T-041
 - **Статус:** 🔴 Запланировано
@@ -246,8 +248,8 @@
 - **Приоритет:** P0
 - **Сложность:** S
 - **Слой:** Execution/Policy
-- **Пакет / Компонент:** `orchestration/policy`, настройки GitLab
-- **Описание:** protected branch, обязательные approvals (человек), squash merge, запрет merge при непройденных гейтах; publisher/finalizer отделены от sandbox-исполнения агентов.
+- **Пакет / Компонент:** `orchestration/policy`, настройки провайдера (branch protection/rulesets GitHub | protected branches GitLab)
+- **Описание:** protected branch, обязательные approvals (человек), обязательные checks по итоговому SHA (Checks API / pipeline status), squash merge, запрет merge при непройденных гейтах; publisher/finalizer отделены от sandbox-исполнения агентов.
 - **Критерий готовности (DoD):** функциональная проверка: merge невозможен без approval и зелёных гейтов; у agent job нет merge-полномочий.
 - **Зависит от задач:** T-030, T-013
 - **Статус:** 🔴 Запланировано
@@ -264,6 +266,18 @@
 - **Зависит от задач:** T-005, T-001
 - **Статус:** 🔴 Запланировано
 
+### T-034. GitLab-адаптер (второй провайдер)
+
+- **Родительская функция:** 3.5
+- **Приоритет:** P1
+- **Сложность:** M
+- **Слой:** Execution
+- **Пакет / Компонент:** `adapters/gitlab`
+- **Описание:** `GitLabAdapter` реализует `SourceControlPort` и `CIPort` (ADR-019): ветка/worktree, push, создание MR (`ChangeRequestRef`), diff, discussions/комментарии, pipeline status, rebase, merge (через доверенный finalizer); `CIPort` — запуск/повтор/отмена pipeline, `play` для manual job, чтение jobs с `include_retried=true` (ADR-006 пп.7–8). Подключается после GitHub-адаптера на той же доменной модели и контрактной сюите; перед стартом — подтверждение версии/лицензии GitLab-инстанса (ADR-012).
+- **Критерий готовности (DoD):** typecheck + lint + test; единая контрактная сюита портов зелёная против адаптера; интеграционный тест против тестового проекта GitLab (ветки/MR/комментарии).
+- **Зависит от задач:** T-030 (контрактная сюита), T-005
+- **Статус:** 🔴 Запланировано
+
 ### Этап 4 — Delivery
 
 ### T-040. Bootstrap локального Kubernetes
@@ -273,19 +287,19 @@
 - **Сложность:** M
 - **Слой:** Infrastructure
 - **Пакет / Компонент:** `deploy/bootstrap`
-- **Описание:** Воспроизводимый bootstrap по deployment.md: Docker Desktop K8s, namespaces (argocd, factory, ci, factory-runs, apps-dev), quotas, service accounts, baseline NetworkPolicy с deny-by-default; негативные egress-тесты (factory-runs изолирована от factory/ci/argocd); защита kube context; PostgreSQL фабрики (ADR-004: state/leases/outbox/очередь, PVC, backup, автоматизированный restore-тест, MVP-значения RPO/RTO) — вместе с БД Plane, логически раздельно; проверка версии/лицензии GitLab-инстанса (ADR-012); capacity smoke полного контура (idle + один e2e job: peak RAM, CPU, диск — ADR-010 п.2).
-- **Критерий готовности (DoD):** скрипт воспроизводим на чистом Docker Desktop; тесты изоляции зелёные; restore-тест PostgreSQL проходит (RPO/RTO зафиксированы); capacity smoke выполнен с запасом до повышения concurrency; версия/лицензия GitLab зафиксированы (evidence).
+- **Описание:** Воспроизводимый bootstrap по deployment.md: Docker Desktop K8s, namespaces (argocd, factory, ci, factory-runs, apps-dev), quotas, service accounts, baseline NetworkPolicy с deny-by-default; негативные egress-тесты (factory-runs изолирована от factory/ci/argocd); защита kube context; PostgreSQL фабрики (ADR-004: state/leases/outbox/очередь, PVC, backup, автоматизированный restore-тест, MVP-значения RPO/RTO) — вместе с БД Plane, логически раздельно; проверка доступности и учётных данных SC/CI-провайдеров (GitHub App для MVP; версия/лицензия GitLab-инстанса — ADR-012, требуется к T-034); capacity smoke полного контура (idle + один e2e job: peak RAM, CPU, диск — ADR-010 п.2).
+- **Критерий готовности (DoD):** скрипт воспроизводим на чистом Docker Desktop; тесты изоляции зелёные; restore-тест PostgreSQL проходит (RPO/RTO зафиксированы); capacity smoke выполнен с запасом до повышения concurrency; учётные данные провайдеров зафиксированы (evidence); версия/лицензия GitLab — к T-034.
 - **Зависит от задач:** T-001 (deployment-цель)
 - **Статус:** 🔴 Запланировано
 
-### T-041. GitLab Runner (K8s executor) + безопасность job pods
+### T-041. CI-раннеры (K8s executor) + безопасность job pods
 
 - **Родительская функция:** 3.6
 - **Приоритет:** P0
 - **Сложность:** M
 - **Слой:** Infrastructure
 - **Пакет / Компонент:** `deploy/ci`
-- **Описание:** Runner manager в namespace `ci`, создание pods только в `factory-runs`: non-root, read-only rootfs, без privileged/Docker socket/hostPath, automountServiceAccountToken=false, CPU/RAM/ephemeral limits, active deadline, TTL cleanup, отдельные service accounts, закреплённые image digests.
+- **Описание:** Раннеры по провайдеру в namespace `ci` (ADR-019): self-hosted GitHub Actions runners (MVP); GitLab Runner — с T-034. Создание pods только в `factory-runs`: non-root, read-only rootfs, без privileged/Docker socket/hostPath, automountServiceAccountToken=false, CPU/RAM/ephemeral limits, active deadline, TTL cleanup, отдельные service accounts, закреплённые image digests.
 - **Критерий готовности (DoD):** pod создаётся и удаляется по TTL; тесты: agent job не имеет merge/deploy credentials и доступа к control-plane namespaces.
 - **Зависит от задач:** T-040
 - **Статус:** 🔴 Запланировано
@@ -421,7 +435,7 @@
 - **Сложность:** M
 - **Слой:** Orchestration/Execution
 - **Пакет / Компонент:** `orchestration/events`, `deploy/ci`
-- **Описание:** Механизм доставки событий (ADR-016 п.4) — единственный владелец доставки outbox: короткоживущий CronJob резервирует доставки через `FOR UPDATE SKIP LOCKED` / короткий lease, запускает внутренние обработчики или GitLab CI pipeline, фиксирует результат в `event_delivery`, ведёт exponential backoff и переводит в `dead` при исчерпании попыток. Внешний вызов не держится внутри долгой транзакции. Порядок гарантируется только в рамках `aggregateId` / `changeId` / `runId` по монотонному `sequence`/`aggregateVersion` — глобальный порядок не заявляется. Очистка outbox — только после терминального статуса у всех обязательных потребителей и истечения retention (ADR-016 п.9), а не по возрасту записи.
+- **Описание:** Механизм доставки событий (ADR-016 п.4) — единственный владелец доставки outbox: короткоживущий CronJob резервирует доставки через `FOR UPDATE SKIP LOCKED` / короткий lease, запускает внутренние обработчики или CI pipeline провайдера (ADR-019), фиксирует результат в `event_delivery`, ведёт exponential backoff и переводит в `dead` при исчерпании попыток. Внешний вызов не держится внутри долгой транзакции. Порядок гарантируется только в рамках `aggregateId` / `changeId` / `runId` по монотонному `sequence`/`aggregateVersion` — глобальный порядок не заявляется. Очистка outbox — только после терминального статуса у всех обязательных потребителей и истечения retention (ADR-016 п.9), а не по возрасту записи.
 - **Критерий готовности (DoD):** typecheck + lint + test; at-least-once подтверждён тестом (повтор одного `eventId` не создаёт второго внешнего эффекта); медленный потребитель не теряет событие при работающей очистке; dead-letter и ручной replay покрыты тестами; параллельные проходы dispatcher не нарушают порядок в пределах одного `runId`.
 - **Зависит от задач:** T-006, T-040
 - **Статус:** 🔴 Запланировано
@@ -557,8 +571,8 @@
 - **Сложность:** M
 - **Слой:** Execution
 - **Пакет / Компонент:** CI components
-- **Описание:** Короткие агентные операции по CI-событиям (review MR, классификация падения теста, обновление описания MR) без полного Change Flow; те же политики безопасности и лимиты.
-- **Критерий готовности (DoD):** typecheck + lint + test; fast job реагирует на событие и публикует результат в MR с evidence.
+- **Описание:** Короткие агентные операции по CI-событиям (review change request, классификация падения теста, обновление описания change request) без полного Change Flow; те же политики безопасности и лимиты.
+- **Критерий готовности (DoD):** typecheck + lint + test; fast job реагирует на событие и публикует результат в change request с evidence.
 - **Зависит от задач:** T-031, T-013
 - **Статус:** 🔴 Запланировано
 
@@ -619,11 +633,11 @@ flowchart TD
     A0["Этап 0: T-001 ADR-пакет → T-002 каркас → T-003 домен → T-006 схема БД → T-004 Flow → T-005 порты"]
     A1["Этап 1: T-010 harness → T-012 ContextBundle → T-011 роли → T-016 Implementation Contract → T-013 Quality → T-014 rework"]
     A2["Этап 2: T-020 OpenSpec-миграция (SDDPort) → T-021 spec-gate"]
-    A3["Этап 3: T-030 GitLab adapter → T-041 Runner → T-031 CI-шаблоны → T-032 merge policy"]
+    A3["Этап 3: T-030 GitHub adapter → T-041 CI-раннеры → T-031 CI-шаблоны → T-032 merge policy"]
     A4["Этап 4: T-040 K8s bootstrap → T-043 Argo/GitOps → T-044 OCI → T-045 smoke"]
     A5["Этап 5: T-050 API → T-042 chart → T-051 Console"]
     A6["Этап 7: T-070 pack пилота → T-072 e2e-пилот"]
-    A7["Этап 6 и 8 (P1–P3): T-060/061/062/063/064, T-015, T-022, T-033, T-080…T-091"]
+    A7["Этап 6 и 8 (P1–P3): T-060/061/062/063/064, T-015, T-022, T-033, T-034, T-080…T-091"]
     A0 --> A1
     A0 --> A3
     A0 --> A4
@@ -642,7 +656,7 @@ flowchart TD
 3. **Неделя 4–7:** T-010, T-012, T-011, T-020, T-021; параллельно T-044, T-045, T-031.
 4. **Неделя 7–9:** T-016, T-013, T-014, T-032, T-050; параллельно T-042, T-051, T-070.
 5. **Неделя 9–11:** интеграция P0-цепочки, T-072 (e2e-пилот), фиксы.
-6. **Неделя 12+:** P1-блок (T-060/061/062/063/064, T-015, T-033, T-080/081/082, T-071, T-022; T-061 — только полный P1-объём, его P0-минимум выполняется до T-072), затем P2/P3 по мере стабильности.
+6. **Неделя 12+:** P1-блок (T-060/061/062/063/064, T-015, T-033, T-034, T-080/081/082, T-071, T-022; T-061 — только полный P1-объём, его P0-минимум выполняется до T-072), затем P2/P3 по мере стабильности.
 
 ## 3. Оценка суммарной трудоёмкости
 
@@ -651,14 +665,14 @@ flowchart TD
 | Приоритет | Задачи | Кол-во | Сумма (дни) |
 |---|---|---|---|
 | P0 | T-001…T-006, T-010…T-014, T-016, T-020, T-021, T-030…T-032, T-040…T-045, T-050, T-051, T-070, T-072 | 27 | 121–145 |
-| P1 | T-015, T-022, T-033, T-060…T-064, T-071, T-080…T-082 | 12 | 59–75 |
+| P1 | T-015, T-022, T-033, T-034, T-060…T-064, T-071, T-080…T-082 | 13 | 63–79 |
 | P2 | T-073, T-084, T-085, T-086, T-090 | 5 | 19–23 |
 | P3 | T-087…T-089, T-091 | 4 | 28–40 |
-| **Итого** | | **48** | **227–283 чел.-дней ≈ 11–13.5 чел.-мес.** |
+| **Итого** | | **49** | **231–287 чел.-дней ≈ 11–13.7 чел.-мес.** |
 
 Суммы пересчитаны по фактическому составу задач (21 рабочий день в месяце). Прежняя редакция таблицы занижала объём: заявленные «41 задача» и «~215–290 дней» не соответствовали содержимому раздела 1 ещё до добавления T-006/T-016/T-064.
 
-**MVP (P0):** 121–145 дней ≈ **6–7 мес.** одним исполнителем последовательно; при параллелизме 2 потоков (Core/Agents ∥ Delivery/Console) — **~3–3.5 мес.** [assumption — оценка экспертная, в документах Notion трудоёмкость не указана]. Оценки не включают время простоя на внешние зависимости (GitLab/трекер/LLM-квоты).
+**MVP (P0):** 121–145 дней ≈ **6–7 мес.** одним исполнителем последовательно; при параллелизме 2 потоков (Core/Agents ∥ Delivery/Console) — **~3–3.5 мес.** [assumption — оценка экспертная, в документах Notion трудоёмкость не указана]. Оценки не включают время простоя на внешние зависимости (SC/CI-провайдеры/трекер/LLM-квоты).
 
 ## 4. Критические пути
 
@@ -687,14 +701,14 @@ flowchart TD
 | Q-8 | [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md) | Минимальный bootstrap + OTel; AI-трассы — Pydantic Evals + OTel |
 | Q-9 | [ADR-010](adr/ADR-010-local-k8s-helm-argocd.md) | Docker Desktop K8s + Helm + Argo CD, MacBook 24G |
 | Q-10 | [ADR-011](adr/ADR-011-risk-based-merge-release-policy.md) | Risk-based merge/release: автономная реализация R0/R1 до готового к merge состояния; после ручного merge — авторазвёртывание в dev; Prod — вручную после валидации |
-| Q-11 | [ADR-012](adr/ADR-012-gitlab-premium.md) | GitLab Premium |
+| Q-11 | [ADR-012](adr/ADR-012-gitlab-premium.md) | GitLab Premium — для GitLab-провайдера (T-034); MVP стартует на GitHub (ADR-019) |
 | Q-12 | [ADR-013](adr/ADR-013-plane-tracker-trackerport.md) | Plane (self-hosted, webhook+HMAC) через TrackerPort-адаптер |
 | Q-13 | [ADR-014](adr/ADR-014-react-uikit-storybook.md) | Small UIKit на React (Radix + shadcn), Storybook вместо Figma |
 | Q-14 | [ADR-015](adr/ADR-015-repository-boundaries.md) | 4 системных репозитория (dark-factory, -gitops, -runs, okf) + группа `products`: в P0 пилот и blueprint, далее — отдельный репозиторий на продукт; межрепозиторные связи — immutable SHA/semver/digest (принято с условиями) |
 | Q-15 | [ADR-016](adr/ADR-016-postgresql-outbox.md) | PostgreSQL outbox вместо Kafka |
 | Q-16 | [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) | Единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit — только bootstrap (частично перекрывает ADR-001) |
 
-**Вне списка Q-1…Q-16.** [ADR-018](adr/ADR-018-human-participation-autonomous-execution.md) принят по ревью ADR-011 (2026-09-13) и не отвечает ни на один вопрос этого раздела: он разделяет две смешанные ранее политики — release authorization (остаётся в ADR-011) и модель участия человека по фазам создания решения. Решение: Human-in-the-loop на discovery/design (требования, UX/UI, значимые архитектурные решения) и на merge; Human-off-the-loop на реализации; Human-on-the-loop на планировании и проверках. Реализация — **T-016** (Implementation Contract, классификация Known/Bounded/New path, условия эскалации); машинная проверка условия «риск ≥ R2» — T-080.
+**Вне списка Q-1…Q-16.** [ADR-018](adr/ADR-018-human-participation-autonomous-execution.md) принят по ревью ADR-011 (2026-09-13) и не отвечает ни на один вопрос этого раздела: он разделяет две смешанные ранее политики — release authorization (остаётся в ADR-011) и модель участия человека по фазам создания решения. Решение: Human-in-the-loop на discovery/design (требования, UX/UI, значимые архитектурные решения) и на merge; Human-off-the-loop на реализации; Human-on-the-loop на планировании и проверках. Реализация — **T-016** (Implementation Contract, классификация Known/Bounded/New path, условия эскалации); машинная проверка условия «риск ≥ R2» — T-080. [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) (2026-09-13, вне списка) фиксирует мультипровайдерный SC/CI-контур: GitHub-адаптер — первый провайдер MVP (T-030), GitLab-адаптер — второй (T-034); `ChangeRequestRef` для PR/MR, выбор провайдера на уровне репозитория, инвариант «один run — один провайдер», единая контрактная тест-сюита.
 
 Ниже — исходные формулировки вопросов (контекст решений).
 
@@ -766,6 +780,7 @@ flowchart TD
 - **Суть:** merge train / merged-results pipelines требуют Premium/Ultimate; версия «GitLab 16» и лицензия инстанса не подтверждены.
 - **Документы:** `ci-trunk-based.md`, `orchestrator.md` (Premium-функции) против ограничений в `hld-mvp.md` §8/§16, `deployment.md` §5.
 - **Влияние:** доступные CI-паттерны trunk-based (T-031), альтернативы при CE (sequence pipelines, manual approvals).
+- **Уточнение 2026-09-13 (ADR-019):** MVP исполняется на GitHub-адаптере; вопрос блокирует только GitLab-провайдера (T-034) — подтверждение версии/лицензии перед его стартом (ADR-012).
 
 ### Q-12. Трекер: Plane vs Linear
 

@@ -48,3 +48,4 @@
 | [ADR-016](ADR-016-postgresql-outbox.md) | PostgreSQL outbox event model | принято |
 | [ADR-017](ADR-017-unified-openspec-sdd-factory-profile.md) | Unified OpenSpec SDD model with factory profile (частично перекрывает ADR-001) | принято |
 | [ADR-018](ADR-018-human-participation-autonomous-execution.md) | Human participation and autonomous execution boundaries | принято |
+| [ADR-019](ADR-019-multi-provider-sc-ci-github-first.md) | Multi-provider SC/CI: GitHub-адаптер первым, GitLab — вторым | принято |
