@@ -180,8 +180,12 @@ def test_help_exits_with_code_0(argv: list[str], capsys: pytest.CaptureFixture[s
 
 
 STUB_INVOCATIONS = [
-    (["stage", "resume", "--run-id", "run_01H", "--next-action", "wa"], "stage resume", "T011"),
-    (["run", "status", "--run-id", "run_01H"], "run status", "T011"),
+    (
+        ["stage", "resume", "--run-id", "run_01H", "--next-action", "wa"],
+        "stage resume",
+        "the durable state-store wiring",
+    ),
+    (["run", "status", "--run-id", "run_01H"], "run status", "the durable state-store wiring"),
     (["reconcile"], "reconcile", "T027"),
     (["outbox", "dispatch"], "outbox dispatch", "T028"),
     (["outbox", "dispatch", "--once"], "outbox dispatch", "T028"),

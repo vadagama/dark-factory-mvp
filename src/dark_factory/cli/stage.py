@@ -22,29 +22,39 @@ Pipeline of the command (contract cli.md):
    decision. The deterministic path calls no harness/LLM (ADR-003) and
    evaluates no gate on a product SHA: machine gate execution runs in CI
    (FR-009), so required gates are reported ``pending`` and the attempt
-   never claims ``succeeded`` (FR-009, SC-004). Run-state persistence is
-   T011: the default budget snapshot applies and ``attempt_number`` stays 1
-   until then.
+   never claims ``succeeded`` (FR-009, SC-004). Run-state persistence
+   arrives with the durable state-store wiring: the default budget snapshot
+   applies and ``attempt_number`` stays 1 until then.
 5. **Persist before wait** (ADR-006 p.8): with ``--evidence-dir`` the
    serialized StageResult is written to ``<evidence-dir>/stage_result.json``
    before the process exits with code 10. When that write fails the command
    exits with code 1: code 10 would claim a persisted result that does not
    exist.
+6. **Run record** (T011, ADR-015 p.4/p.5): with ``--evidence-dir`` the run
+   record — the compact immutable evidence index — is persisted to
+   ``<evidence-dir>/run_record.json`` next to the snapshot and the
+   StageResult. Its manifest references exact commits (environment, then the
+   git HEAD), never ``latest``; when no commit can be determined the stage
+   does not start (exit 2). ``factory stage resume`` and ``run status``
+   handlers that consume the record arrive with the durable state-store
+   wiring — they are not part of T011.
 
 Exit codes (contract cli.md): 0 succeeded, 10 waiting, 20 blocked, 1 failed
 (execution error), 2 invalid input/configuration (the stage did not start —
 unreadable snapshot, schema mismatch, blank ``--run-id``/``--input-revision``,
-unusable evidence directory). Secrets never reach the output (ADR-009): only
-paths, identifiers and domain stage data are printed. ``--route`` (default:
-standard) fixes gate applicability (ADR-005); ``--non-interactive`` is
-accepted for CI runs.
+unusable evidence directory, unresolvable commit refs). Secrets never reach
+the output (ADR-009): only paths, identifiers and domain stage data are
+printed. ``--route`` (default: standard) fixes gate applicability (ADR-005);
+``--non-interactive`` is accepted for CI runs.
 """
 
 import hashlib
 import json
+import os
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
@@ -64,6 +74,12 @@ from dark_factory.cli.main import (
     EXIT_OK,
     EXIT_WAITING,
     StageRunArgs,
+)
+from dark_factory.cli.run_records import (
+    RunRecordError,
+    build_run_record,
+    collect_run_manifest,
+    persist_run_record,
 )
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 
@@ -173,9 +189,9 @@ def execute_stage(
     the carried budget, and no gate is evaluated on a product SHA (FR-009),
     so the attempt ends ``waiting`` or ``blocked`` — never ``succeeded``
     (FR-009, SC-004). The route fixes gate applicability (ADR-005). The
-    run-state store is a later task (T011): the budget is the default
-    snapshot — exhaustion outcomes stay reachable for callers that carry a
-    persisted budget — and ``attempt_number`` stays 1.
+    run-state store arrives with the durable state-store wiring: the budget
+    is the default snapshot — exhaustion outcomes stay reachable for callers
+    that carry a persisted budget — and ``attempt_number`` stays 1.
     """
     context = build_context(
         change=change,
@@ -223,6 +239,8 @@ def run_stage_command(args: StageRunArgs) -> int:
     except InvalidStageInput as exc:
         return _report_invalid_input(str(exc), json_output=args.json_output)
 
+    route = args.route if args.route is not None else DEFAULT_STAGE_ROUTE
+
     if args.evidence_dir is not None:
         evidence_dir = Path(args.evidence_dir)
         try:
@@ -232,12 +250,18 @@ def run_stage_command(args: StageRunArgs) -> int:
                 f"cannot fix the input snapshot in {args.evidence_dir!r}: {_os_error_reason(exc)}",
                 json_output=args.json_output,
             )
+        try:
+            # ADR-015 p.5: the stage must not start without a reproducible record.
+            manifest = collect_run_manifest(os.environ)
+        except RunRecordError as exc:
+            return _report_invalid_input(str(exc), json_output=args.json_output)
 
     key = operation_key(run_id, args.stage, input_revision)
+    started_at = datetime.now(UTC)
     result = execute_stage(
         change=snapshot.change,
         stage=args.stage,
-        route=args.route if args.route is not None else DEFAULT_STAGE_ROUTE,
+        route=route,
         run_id=run_id,
         input_revision=input_revision,
     )
@@ -251,6 +275,29 @@ def run_stage_command(args: StageRunArgs) -> int:
             return _report_execution_error(
                 f"cannot persist the stage result to {args.evidence_dir!r}:"
                 f" {_os_error_reason(exc)}",
+                json_output=args.json_output,
+            )
+        try:
+            record = build_run_record(
+                change=snapshot.change,
+                run_id=run_id,
+                stage=args.stage,
+                route=route,
+                input_revision=input_revision,
+                result=result,
+                manifest=manifest,
+                started_at=started_at,
+            )
+            persist_run_record(evidence_dir, record)
+        except RunRecordError as exc:
+            return _report_execution_error(
+                f"cannot build the run record: {exc}", json_output=args.json_output
+            )
+        except OSError as exc:
+            # ADR-006 p.8: exit 10 would claim a persisted run record — it does
+            # not exist, so the command fails as an execution error too.
+            return _report_execution_error(
+                f"cannot persist the run record to {args.evidence_dir!r}: {_os_error_reason(exc)}",
                 json_output=args.json_output,
             )
 

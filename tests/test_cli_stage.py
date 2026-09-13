@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from dark_factory.changes.enums import StageStatus
+from dark_factory.changes.enums import RunStatus, StageStatus
+from dark_factory.changes.run_records import RunRecord, from_json
+from dark_factory.cli import run_records
 from dark_factory.cli.main import (
     EXIT_BLOCKED,
     EXIT_ERROR,
@@ -260,6 +262,27 @@ def test_evidence_dir_receives_snapshot_and_stage_result(
     assert persisted["run_id"] == json.loads(capsys.readouterr().out)["run_id"]
 
 
+def test_evidence_dir_receives_the_run_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = write_snapshot(tmp_path)
+    evidence = tmp_path / "evidence"
+    monkeypatch.setenv("DARK_FACTORY_COMMIT", "4f86c2a")
+    monkeypatch.setenv("DARK_FACTORY_PRODUCT_COMMIT", "731ac91")
+    assert main(stage_run_argv(snapshot, "--evidence-dir", str(evidence), "--json")) == (
+        EXIT_WAITING
+    )
+    run_id = json.loads(capsys.readouterr().out)["run_id"]
+    record = from_json(RunRecord, (evidence / "run_record.json").read_text(encoding="utf-8"))
+    assert record.run.id == run_id
+    assert record.run.status is RunStatus.WAITING
+    assert record.run.stages[0].status is StageStatus.WAITING
+    assert record.stage_results[0].status is StageStatus.WAITING
+    assert record.manifest.factory_commit == "4f86c2a"
+    assert record.manifest.product_commit == "731ac91"
+    assert record.change.id == "chg-001"
+
+
 def test_unusable_evidence_dir_fails_before_execution(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -286,6 +309,40 @@ def test_unpersistable_stage_result_fails_with_exit_1(
     payload = json.loads(captured.out)
     assert payload["error"] == "execution_error"
     assert "cannot persist the stage result" in payload["detail"]
+    assert captured.err == ""
+
+
+def test_missing_commit_refs_fail_before_the_stage_starts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = write_snapshot(tmp_path)
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(run_records, "_git_head", lambda: None)
+    for variable in ("DARK_FACTORY_COMMIT", "DARK_FACTORY_PRODUCT_COMMIT", "GITHUB_SHA"):
+        monkeypatch.delenv(variable, raising=False)
+    assert main(stage_run_argv(snapshot, "--evidence-dir", str(evidence), "--json")) == (
+        EXIT_INVALID_INPUT
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] == "invalid_input"
+    assert "DARK_FACTORY_COMMIT" in payload["detail"]
+    assert not (evidence / "stage_result.json").exists()  # the stage did not start
+
+
+def test_unpersistable_run_record_fails_with_exit_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = write_snapshot(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "run_record.json").mkdir()  # blocks the run-record write after execution
+    monkeypatch.setenv("DARK_FACTORY_COMMIT", "4f86c2a")
+    monkeypatch.setenv("DARK_FACTORY_PRODUCT_COMMIT", "731ac91")
+    assert main(stage_run_argv(snapshot, "--evidence-dir", str(evidence), "--json")) == EXIT_ERROR
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["error"] == "execution_error"
+    assert "cannot persist the run record" in payload["detail"]
     assert captured.err == ""
 
 
