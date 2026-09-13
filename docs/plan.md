@@ -5,7 +5,9 @@
 **Статус:** 🟡 В работе
 **Контекст:** репозиторий pre-MVP, greenfield (`src/` пуст). Все задачи стартуют со статусом 🔴. Слой/модуль — по модульному монолиту из HLD (`docs/hld.md`; Changes, Orchestration, Agents, Context, Execution, Quality + ports/adapters, api, cli, console, packs).
 
-**Принятые решения (данность, не пересматриваются здесь):** SDD-модель — единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit (ADR-001, workflow `/speckit-*`) — инструмент bootstrap-фазы до контрольной точки T-020 (ADR-017, частично перекрывает ADR-001). Конституция `.specify/memory/constitution.md` v2.0.1 (SDD обязателен для фич, канонический формат — OpenSpec, evidence-based validation, минимальные изменения, ADR-governance). Модель участия человека по фазам и границы автономной реализации — ADR-018 (реализация — T-016). Состав инфраструктуры MVP при конфликте определяет ADR-009 (минимальный bootstrap + OTel). SC/CI-провайдеры — через адаптеры за портами `SourceControlPort`/`CIPort`: MVP стартует на GitHub-адаптере, GitLab-адаптер — второй провайдер (ADR-019).
+**Принятые решения (данность, не пересматриваются здесь):** SDD-модель — Native SDD Core (ADR-020, полная спецификация — `docs/sdd-native-core.md`): ChangeSet + Product Baseline `.factory/`, дельты и reconciliation; Spec Kit (ADR-001, workflow `/speckit-*`) — инструмент bootstrap-фазы до готовности Native Core (T-020); OpenSpec (ADR-017, заменён ADR-020) — compatibility-инструмент. Конституция `.specify/memory/constitution.md` v3.0.0 (SDD обязателен для фич, каноническая модель — Native SDD Core, evidence-based validation, минимальные изменения, ADR-governance). Модель участия человека по фазам и границы автономной реализации — ADR-018 (реализация — T-016). Состав инфраструктуры MVP при конфликте определяет ADR-009 (минимальный bootstrap + OTel). SC/CI-провайдеры — через адаптеры за портами `SourceControlPort`/`CIPort`: MVP стартует на GitHub-адаптере, GitLab-адаптер — второй провайдер (ADR-019).
+
+**Правки 2026-09-14 (ADR-020, Native SDD Core):** T-020 переформулирована (Native SDD Core: `SDDPort` + `NativeChangeSetAdapter`, Product Baseline `.factory/`, ChangeSet и reconciliation — вместо перехода на OpenSpec), T-021 дополнена фиксацией GateDecision, T-022 — шаблоны Product Baseline/ChangeSet для продуктовых репо; Q-16 закрыт ADR-020 (ADR-017 заменён); ordering-диаграмма обновлена.
 
 **Правки 2026-09-13 (валидация ADR-001…018):** синхронизированы T-001 (PostgreSQL как state store, ADR-004), T-006 (durable effect ledger, ADR-006 п.3), T-022 (OpenSpec вместо `/speckit-constitution`, ADR-017), T-033 (Plane, ADR-013), T-040 (restore-тест, capacity smoke, проверка GitLab-лицензии — ADR-004/010/012), T-050 (AuthN-условия ADR-009 п.7), T-061/T-072 (P0-минимум evidence-индекса); ordering-диаграмма переименована (T-020 — OpenSpec-миграция).
 
@@ -180,15 +182,15 @@
 
 ### Этап 2 — SDD-слой
 
-### T-020. Переход на OpenSpec в Factory Flow (контрольная точка миграции со Spec Kit)
+### T-020. Native SDD Core: SDDPort + ChangeSet (контрольная точка перехода со Spec Kit)
 
 - **Родительская функция:** 3.2
 - **Приоритет:** P0
 - **Сложность:** M
 - **Слой:** Context/SDD
-- **Пакет / Компонент:** `context/sdd`, `openspec/`
-- **Описание:** Контрольная точка перехода на единый OpenSpec (ADR-017): настраиваются профили `factory-sdd` / `product-sdd` (custom schemas в `openspec/schemas/`), новые изменения фабрики и продуктов создаются в OpenSpec (`openspec/changes/<id>/`); строгость по типу задачи (fix без SDD-артефактов); constitution проекта читается как ограничение. Вводит `SDDPort` с реализациями `OpenSpecAdapter` (основная) и `SpecKitAdapter` (импорт legacy-артефактов; после переходного периода удаляется из штатного execution path) — ADR-017 п.8, контракты по образцу T-005. Поправка конституции под ADR-017 уже внесена (v2.0.0) — задача её исполняет, а не переоткрывает.
-- **Критерий готовности (DoD):** typecheck + lint + test; функционально: конвейер создаёт полную спеку фичи в `openspec/` пилота, фикс использует быстрый маршрут.
+- **Пакет / Компонент:** `context/sdd`, `.factory/`
+- **Описание:** Реализация канонической модели Native SDD Core (ADR-020, полная спецификация — `docs/sdd-native-core.md`): схемы артефактов (`change/v1`, `requirement/v1`, `task-graph/v1`, …) и Product Baseline `.factory/` (`product/` + `changes/`); ChangeSet с манифестом `change.yaml` (семантическое состояние — в Git, runtime-состояние — в PostgreSQL, ADR-004); дельта `delta.yaml` (add/modify/supersede/retire) и reconciliation к baseline; frontmatter-политика OKF-узлов. Вводит `SDDPort` с реализациями `NativeChangeSetAdapter` (основная), `SpecKitAdapter` (импорт legacy-артефактов bootstrap-фазы) и `OpenSpecAdapter` (compatibility import/export) — контракты по образцу T-005. После перехода новые изменения фабрики и продуктов создаются как ChangeSet; строгость по типу задачи (fix без SDD-артефактов); workflow profile и risk class определяют состав артефактов.
+- **Критерий готовности (DoD):** typecheck + lint + test; функционально: конвейер создаёт ChangeSet фичи в `.factory/changes/` пилота, acceptance → reconciliation переносит принятые артефакты в Product Baseline, фикс использует быстрый маршрут.
 - **Зависит от задач:** T-004, T-011
 - **Статус:** 🔴 Запланировано
 
@@ -199,20 +201,20 @@
 - **Сложность:** M
 - **Слой:** Quality
 - **Пакет / Компонент:** `quality/gates`
-- **Описание:** Детерминированные проверки спеки перед реализацией: наличие AC, трассировка AC → сценарий → задача, противоречия scope/out-of-scope, связность с constitution; blocking/non-blocking классификация.
+- **Описание:** Детерминированные проверки спеки перед реализацией: наличие AC, трассировка AC → сценарий → задача, противоречия scope/out-of-scope, связность с constitution; blocking/non-blocking классификация. Результат фиксируется как GateDecision (policy и версия, revision ChangeSet, результат, evidence, объяснение, агент/человек, разрешённый override — ADR-020).
 - **Критерий готовности (DoD):** typecheck + lint + test; гейт блокирует неполную спеку и пропускает корректную; поле `risk_class` нормализованного контракта заполняется из Implementation Contract (T-016) и участвует в выборе обязательного состава артефактов.
 - **Зависит от задач:** T-016, T-020
 - **Статус:** 🔴 Запланировано
 
-### T-022. Constitution/шаблоны для продуктовых репозиториев
+### T-022. Product Baseline/шаблоны для продуктовых репозиториев
 
 - **Родительская функция:** 3.2
 - **Приоритет:** P1
 - **Сложность:** S
 - **Слой:** Context/SDD
 - **Пакет / Компонент:** packs (product templates)
-- **Описание:** Шаблон constitution и базовых правил для продуктовых репо (аналог `.specify/` фабрики); правила минимальных изменений и evidence-based validation из конституции фабрики.
-- **Критерий готовности (DoD):** шаблоны применены к пилотному репо; product OpenSpec config/schema/constitution проверяются через `OpenSpecAdapter` (ADR-017 п.8); после T-020 `/speckit-*` в штатном исполнении не используются — `.specify/` и `specs/` остаются read-only как historical bootstrap evidence.
+- **Описание:** Шаблоны Product Baseline и ChangeSet для продуктовых репо (`.factory/`: `factory.yaml`, `product/`, `changes/`; frontmatter-профили артефактов); правила минимальных изменений и evidence-based validation из конституции фабрики.
+- **Критерий готовности (DoD):** шаблоны применены к пилотному репо; product baseline и ChangeSet проверяются через `NativeChangeSetAdapter` (ADR-020 п.8); после T-020 `/speckit-*` в штатном исполнении не используются — `.specify/` и `specs/` остаются read-only как historical bootstrap evidence.
 - **Зависит от задач:** T-020, T-070
 - **Статус:** 🔴 Запланировано
 
@@ -632,7 +634,7 @@
 flowchart TD
     A0["Этап 0: T-001 ADR-пакет → T-002 каркас → T-003 домен → T-006 схема БД → T-004 Flow → T-005 порты"]
     A1["Этап 1: T-010 harness → T-012 ContextBundle → T-011 роли → T-016 Implementation Contract → T-013 Quality → T-014 rework"]
-    A2["Этап 2: T-020 OpenSpec-миграция (SDDPort) → T-021 spec-gate"]
+    A2["Этап 2: T-020 Native SDD Core (SDDPort) → T-021 spec-gate"]
     A3["Этап 3: T-030 GitHub adapter → T-041 CI-раннеры → T-031 CI-шаблоны → T-032 merge policy"]
     A4["Этап 4: T-040 K8s bootstrap → T-043 Argo/GitOps → T-044 OCI → T-045 smoke"]
     A5["Этап 5: T-050 API → T-042 chart → T-051 Console"]
@@ -685,7 +687,7 @@ flowchart TD
 
 ## 5. Открытые архитектурные вопросы (на ADR)
 
-Исходные материалы проработки решения внутренне противоречивы; приоритет отдан наиболее актуальному HLD, но решение по каждому конфликту фиксируется **ADR'ом**, а не молчаливым выбором. Вопрос **Spec Kit vs OpenSpec** первоначально считался закрытым ADR-001 (Spec Kit; workflow `/speckit-*`) и находился вне списка, но был переоткрыт как Q-16 и решён ADR-017 в пользу единого OpenSpec; конституция обновлена (текущая редакция — v2.0.1).
+Исходные материалы проработки решения внутренне противоречивы; приоритет отдан наиболее актуальному HLD, но решение по каждому конфликту фиксируется **ADR'ом**, а не молчаливым выбором. Вопрос **Spec Kit vs OpenSpec** первоначально считался закрытым ADR-001 (Spec Kit; workflow `/speckit-*`) и находился вне списка, но был переоткрыт как Q-16 и решён ADR-017 в пользу единого OpenSpec; ADR-017 впоследствии заменён [ADR-020](adr/ADR-020-native-sdd-core.md) (Native SDD Core, итоговое видение SDD 2026-09-14); конституция обновлена (текущая редакция — v3.0.0).
 
 **Сводка решений (2026-09-13):** все вопросы раздела закрыты ADR-002…ADR-017 (ответы согласованы пользователем):
 
@@ -706,7 +708,7 @@ flowchart TD
 | Q-13 | [ADR-014](adr/ADR-014-react-uikit-storybook.md) | Small UIKit на React (Radix + shadcn), Storybook вместо Figma |
 | Q-14 | [ADR-015](adr/ADR-015-repository-boundaries.md) | 4 системных репозитория (dark-factory, -gitops, -runs, okf) + группа `products`: в P0 пилот и blueprint, далее — отдельный репозиторий на продукт; межрепозиторные связи — immutable SHA/semver/digest (принято с условиями) |
 | Q-15 | [ADR-016](adr/ADR-016-postgresql-outbox.md) | PostgreSQL outbox вместо Kafka |
-| Q-16 | [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) | Единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit — только bootstrap (частично перекрывает ADR-001) |
+| Q-16 | [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) → [ADR-020](adr/ADR-020-native-sdd-core.md) | Native SDD Core: ChangeSet + Product Baseline `.factory/`, дельты и reconciliation; Spec Kit — bootstrap, OpenSpec — compatibility (заменяет ADR-017) |
 
 **Вне списка Q-1…Q-16.** [ADR-018](adr/ADR-018-human-participation-autonomous-execution.md) принят по ревью ADR-011 (2026-09-13) и не отвечает ни на один вопрос этого раздела: он разделяет две смешанные ранее политики — release authorization (остаётся в ADR-011) и модель участия человека по фазам создания решения. Решение: Human-in-the-loop на discovery/design (требования, UX/UI, значимые архитектурные решения) и на merge; Human-off-the-loop на реализации; Human-on-the-loop на планировании и проверках. Реализация — **T-016** (Implementation Contract, классификация Known/Bounded/New path, условия эскалации); машинная проверка условия «риск ≥ R2» — T-080. [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) (2026-09-13, вне списка) фиксирует мультипровайдерный SC/CI-контур: GitHub-адаптер — первый провайдер MVP (T-030), GitLab-адаптер — второй (T-034); `ChangeRequestRef` для PR/MR, выбор провайдера на уровне репозитория, инвариант «один run — один провайдер», единая контрактная тест-сюита.
 

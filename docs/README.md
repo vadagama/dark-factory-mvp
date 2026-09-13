@@ -10,6 +10,7 @@
 | `plan.md` | План работ (приоритизированный бэклог) | `product` |
 | `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `ci-cd` |
 | `hld.md` | HLD: актуальная архитектура, связывает все ADR | `architect` |
+| `sdd-native-core.md` | Каноническая модель SDD: Native SDD Core (ChangeSet, Product Baseline, OKF) | `architect` |
 | `architecture-target.md` | Целевая архитектура, health score | `architect` |
 | `tech-dept.md` | Реестр технического долга | `architect` |
 | `adr/` | Архитектурные решения (ADR) | `architect` |
@@ -21,10 +22,10 @@
 | Путь | Назначение |
 |---|---|
 | `AGENTS.md` | Правила для агентов: роли, конвейер, DoD, структура репозитория |
-| `openspec/` | Канонический SDD-слой (ADR-017): профили `factory-sdd` / `product-sdd`, `specs/`, `changes/<change-id>/`. Создаётся в T-020 |
-| `.agents/skills/` | Локальные скиллы: `dark-factory` (оркестратор), `speckit-*` (SDD bootstrap-фазы до T-020, ADR-001) |
+| `.factory/` | Канонический SDD-слой Native SDD Core (ADR-020): `product/` baseline + `changes/`. Создаётся в T-020 |
+| `.agents/skills/` | Локальные скиллы: `dark-factory` (оркестратор), `speckit-*` (SDD bootstrap-фазы, ADR-001) |
 | `.specify/` | Spec Kit bootstrap-фазы: шаблоны, скрипты, `memory/constitution.md` (ADR-001) |
-| `specs/` | Артефакты фич Spec Kit bootstrap-фазы; после миграции — historical bootstrap evidence |
+| `specs/` | Артефакты фич Spec Kit bootstrap-фазы; после перехода на Native SDD Core — historical bootstrap evidence |
 
 ## Правила ведения
 

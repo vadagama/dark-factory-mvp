@@ -1,9 +1,10 @@
 # ADR-001: Adopt GitHub Spec Kit as the SDD toolkit
 
-- **Статус**: принято (действует только для bootstrap-фазы до T-020; частично заменён [ADR-017](ADR-017-unified-openspec-sdd-factory-profile.md))
+- **Статус**: принято (bootstrap-фаза; целевая модель заменена)
 - **Дата**: 2026-09-13
 - **Автор**: dark-factory (оркестратор); решение согласовано пользователем
-- **Частично перекрыт** [ADR-017](ADR-017-unified-openspec-sdd-factory-profile.md) (2026-09-13): OpenSpec принят как единый целевой SDD-формат; настоящий ADR сохраняется как историческое решение bootstrap-фазы — Spec Kit действителен до контрольной точки T-020.
+- **Частично перекрыт** [ADR-017](ADR-017-unified-openspec-sdd-factory-profile.md) (2026-09-13): OpenSpec принят как единый целевой SDD-формат.
+- **Перекрыт** [ADR-020](ADR-020-native-sdd-core.md) (2026-09-14): целевая SDD-модель — Native SDD Core; Spec Kit остаётся bootstrap- и compatibility-инструментом. Настоящий ADR сохраняется как историческое решение bootstrap-фазы — Spec Kit действителен до готовности Native SDD Core.
 
 ## Контекст
 

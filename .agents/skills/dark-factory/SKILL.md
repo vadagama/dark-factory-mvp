@@ -1,6 +1,6 @@
 ---
 name: dark-factory
-description: Оркестратор «тёмной фабрики» в репозитории dark-factory-mvp — классифицирует задачу, определяет конвейер ролей (product, design, architect, infrastructure, security, develop, quality, ci-cd, operation, yandex-cloud-engineer) и SDD-слой (speckit-* до T-020, OpenSpec после — ADR-001/ADR-017), ведёт git-цикл задачи, план работ и приёмку по DoD. Использовать для любой задачи в этом репозитории сначала оркестрация, потом исполнение.
+description: Оркестратор «тёмной фабрики» в репозитории dark-factory-mvp — классифицирует задачу, определяет конвейер ролей (product, design, architect, infrastructure, security, develop, quality, ci-cd, operation, yandex-cloud-engineer) и SDD-слой (speckit-* bootstrap до T-020, далее Native SDD Core — ADR-001/ADR-020), ведёт git-цикл задачи, план работ и приёмку по DoD. Использовать для любой задачи в этом репозитории сначала оркестрация, потом исполнение.
 ---
 
 # Dark Factory — оркестратор конвейера
@@ -35,10 +35,10 @@ description: Оркестратор «тёмной фабрики» в репо�
 
 ## Шаг 2.1. SDD-слой для фич
 
-Фичи с требованиями проходят SDD-слой; быстрому fix SDD-артефакты не нужны. В каждый момент действует ровно один канонический формат — два параллельных SDD-процесса не допускаются:
+Фичи с требованиями проходят SDD-слой; быстрому fix SDD-артефакты не нужны. В каждый момент действует ровно одна каноническая модель — два параллельных канонических SDD-процесса не допускаются:
 
-- **До контрольной точки T-020 — Spec Kit (bootstrap-фаза, ADR-001):** `/speckit-constitution` — один раз на проект, затем `/speckit-specify` → `/speckit-clarify` (опц.) → `/speckit-plan` → `/speckit-checklist` (опц.) → `/speckit-tasks` → `/speckit-analyze` (опц.) → `/speckit-implement` → `/speckit-converge`; артефакты — `specs/<фича>/`.
-- **После T-020 — OpenSpec (канонический формат, ADR-017):** профили `factory-sdd` (изменения фабрики) и `product-sdd` (изменения продуктов); артефакты — `openspec/changes/<change-id>/`, действующие требования — `openspec/specs/`. Новые изменения в Spec Kit не создаются; `specs/` и `.specify/` сохраняются как bootstrap evidence и немедленно не переписываются.
+- **До готовности Native SDD Core — Spec Kit (bootstrap-фаза, ADR-001):** `/speckit-constitution` — один раз на проект, затем `/speckit-specify` → `/speckit-clarify` (опц.) → `/speckit-plan` → `/speckit-checklist` (опц.) → `/speckit-tasks` → `/speckit-analyze` (опц.) → `/speckit-implement` → `/speckit-converge`; артефакты — `specs/<фича>/`.
+- **После T-020 — Native SDD Core (каноническая модель, ADR-020):** каждая разработка — ChangeSet со стабильным ID и цепочкой `Intent → Spec → Design → Tasks → Verification → Evidence → Reconciliation`; артефакты изменения — `.factory/changes/`, канонический Product Baseline — `.factory/product/` (для multi-repo продукта — отдельный product-spec репозиторий). Все самостоятельно адресуемые SDD-артефакты имеют YAML frontmatter и становятся узлами OKF-графа. Полная спецификация модели — `docs/sdd-native-core.md`; Spec Kit и OpenSpec — bootstrap- и compatibility-инструменты (адаптеры `SDDPort`), `specs/` и `.specify/` сохраняются как bootstrap evidence и немедленно не переписываются.
 
 Строгость выбираешь по типу задачи: значимая фича — полный SDD-маршрут, мелкий фикс — без SDD-артефактов.
 

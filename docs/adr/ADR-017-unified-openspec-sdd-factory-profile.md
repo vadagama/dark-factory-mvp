@@ -1,11 +1,12 @@
 # ADR-017: Unified OpenSpec SDD Model with Factory Profile
 
-- **Статус**: принято
+- **Статус**: заменено ([ADR-020](ADR-020-native-sdd-core.md), 2026-09-14)
 - **Дата**: 2026-09-13
 - **Автор**: software-architect
 - Решение согласовано пользователем (ревью первоначальной редакции, 2026-09-13)
 - Частично перекрывает [ADR-001](ADR-001-adopt-spec-kit.md): ADR-001 сохраняется как историческое решение bootstrap-фазы
 - **Уточнено** (2026-09-13, архитектурное ревью ADR-пакета): Implementation Contract в графе артефактов (пп.5–6, п.7), exit criteria удаления `SpecKitAdapter` (п.8)
+- **Заменено** [ADR-020](ADR-020-native-sdd-core.md) (2026-09-14): канонической моделью SDD принят Native SDD Core; OpenSpec — compatibility-инструмент. Реализация по настоящему ADR не выполнялась (`openspec/` не создан); ADR сохраняется как историческое решение.
 
 ## Контекст
 

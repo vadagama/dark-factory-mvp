@@ -30,7 +30,7 @@
 
 | ADR | Решение | Статус |
 |---|---|---|
-| [ADR-001](ADR-001-adopt-spec-kit.md) | Adopt GitHub Spec Kit as the SDD toolkit (bootstrap-фаза; частично заменён ADR-017) | принято (частично заменён ADR-017) |
+| [ADR-001](ADR-001-adopt-spec-kit.md) | Adopt GitHub Spec Kit as the SDD toolkit (bootstrap-фаза; заменён ADR-020) | принято (bootstrap; историческое) |
 | [ADR-002](ADR-002-python-core-stack.md) | Python core stack (PydanticAI + pydantic-graph) | принято |
 | [ADR-003](ADR-003-no-temporal-in-mvp.md) | No Temporal in MVP | принято |
 | [ADR-004](ADR-004-postgresql-factory-state.md) | PostgreSQL as factory state store | принято |
@@ -46,6 +46,7 @@
 | [ADR-014](ADR-014-react-uikit-storybook.md) | React Small UIKit + Storybook | принято |
 | [ADR-015](ADR-015-repository-boundaries.md) | Repository boundaries for factory, operational state and products | принято с условиями |
 | [ADR-016](ADR-016-postgresql-outbox.md) | PostgreSQL outbox event model | принято |
-| [ADR-017](ADR-017-unified-openspec-sdd-factory-profile.md) | Unified OpenSpec SDD model with factory profile (частично перекрывает ADR-001) | принято |
+| [ADR-017](ADR-017-unified-openspec-sdd-factory-profile.md) | Unified OpenSpec SDD model with factory profile (частично перекрывает ADR-001) | заменено (ADR-020) |
 | [ADR-018](ADR-018-human-participation-autonomous-execution.md) | Human participation and autonomous execution boundaries | принято |
 | [ADR-019](ADR-019-multi-provider-sc-ci-github-first.md) | Multi-provider SC/CI: GitHub-адаптер первым, GitLab — вторым | принято |
+| [ADR-020](ADR-020-native-sdd-core.md) | Native SDD Core: ChangeSet, Product Baseline, OKF-проекция (заменяет ADR-017) | принято |
