@@ -180,9 +180,8 @@ def test_help_exits_with_code_0(argv: list[str], capsys: pytest.CaptureFixture[s
 
 
 STUB_INVOCATIONS = [
-    (["stage", "run", "--change", "c.yaml", "--stage", "construction"], "stage run", "T009"),
-    (["stage", "resume", "--run-id", "run_01H", "--next-action", "wa"], "stage resume", "T009"),
-    (["run", "status", "--run-id", "run_01H"], "run status", "T009"),
+    (["stage", "resume", "--run-id", "run_01H", "--next-action", "wa"], "stage resume", "T011"),
+    (["run", "status", "--run-id", "run_01H"], "run status", "T011"),
     (["reconcile"], "reconcile", "T027"),
     (["outbox", "dispatch"], "outbox dispatch", "T028"),
     (["outbox", "dispatch", "--once"], "outbox dispatch", "T028"),
@@ -202,7 +201,6 @@ def test_stub_reports_not_implemented_on_stderr(
 @pytest.mark.parametrize(
     ("argv", "command"),
     [
-        (["stage", "run", "--change", "c.yaml", "--stage", "construction", "--json"], "stage run"),
         (["stage", "resume", "--run-id", "r", "--next-action", "ci", "--json"], "stage resume"),
         (["run", "status", "--run-id", "run_01H", "--json"], "run status"),
         (["reconcile", "--json"], "reconcile"),
