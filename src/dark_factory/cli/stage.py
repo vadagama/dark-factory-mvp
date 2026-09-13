@@ -15,11 +15,16 @@ Pipeline of the command (contract cli.md):
    secret): in the text summary line and, in ``--json`` mode, as an
    ``operation_key=...`` line on stderr — stdout stays exactly one
    StageResult document.
-4. **Stage execution**: deterministic stage steps (context assembly, machine
-   checks, aggregation, rework decision) are T010
-   (``orchestration/stages/``). Until then the executor is an honest stub
-   (:func:`execute_stage`): no harness/LLM calls, no machine checks, no fake
-   ``succeeded`` — every run returns ``waiting`` / ``wait_for_input``.
+4. **Stage execution**: deterministic stage steps (T010,
+   ``orchestration/stages/``): context assembly from the fixed snapshot,
+   machine checks (budget/limit exhaustion, required-gate applicability,
+   change-request availability), aggregation and the waiting/blocked
+   decision. The deterministic path calls no harness/LLM (ADR-003) and
+   evaluates no gate on a product SHA: machine gate execution runs in CI
+   (FR-009), so required gates are reported ``pending`` and the attempt
+   never claims ``succeeded`` (FR-009, SC-004). Run-state persistence is
+   T011: the default budget snapshot applies and ``attempt_number`` stays 1
+   until then.
 5. **Persist before wait** (ADR-006 p.8): with ``--evidence-dir`` the
    serialized StageResult is written to ``<evidence-dir>/stage_result.json``
    before the process exits with code 10. When that write fails the command
@@ -30,9 +35,9 @@ Exit codes (contract cli.md): 0 succeeded, 10 waiting, 20 blocked, 1 failed
 (execution error), 2 invalid input/configuration (the stage did not start —
 unreadable snapshot, schema mismatch, blank ``--run-id``/``--input-revision``,
 unusable evidence directory). Secrets never reach the output (ADR-009): only
-paths, identifiers and domain stage data are printed. ``--route`` and
-``--non-interactive`` are accepted but do not change the stub outcome yet
-(route-dependent steps and gates are T010, ADR-005).
+paths, identifiers and domain stage data are printed. ``--route`` (default:
+standard) fixes gate applicability (ADR-005); ``--non-interactive`` is
+accepted for CI runs.
 """
 
 import hashlib
@@ -46,11 +51,12 @@ from typing import Final
 import yaml
 from pydantic import ValidationError
 
-from dark_factory.changes.enums import Stage, StageStatus
+from dark_factory.changes.enums import Route, Stage, StageStatus
 from dark_factory.changes.keys import operation_key
-from dark_factory.changes.next_action import WaitForInputAction
+from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.run import Change, StageResult
 from dark_factory.changes.run_records import to_json
+from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.cli.main import (
     EXIT_BLOCKED,
     EXIT_ERROR,
@@ -59,6 +65,7 @@ from dark_factory.cli.main import (
     EXIT_WAITING,
     StageRunArgs,
 )
+from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 
 SNAPSHOT_EVIDENCE_NAME: Final[str] = "change_snapshot.yaml"
 """Evidence file with the byte-exact copy of the input snapshot (FR-001)."""
@@ -66,11 +73,13 @@ SNAPSHOT_EVIDENCE_NAME: Final[str] = "change_snapshot.yaml"
 STAGE_RESULT_EVIDENCE_NAME: Final[str] = "stage_result.json"
 """Evidence file with the serialized StageResult, written before any wait (ADR-006 p.8)."""
 
-STUB_NEXT_ACTION_REASON: Final[str] = (
-    "deterministic stage steps (context assembly, machine checks, aggregation,"
-    " rework decision) are not implemented yet (T010, orchestration/stages/);"
-    " the stage result is persisted and the run continues with a new invocation"
-)
+DEFAULT_STAGE_ROUTE: Final[Route] = Route.STANDARD
+"""Route applied when ``--route`` is omitted (contract cli.md).
+
+The standard policy never skips a gate, while the quick route drops the UI
+gate on construction — the conservative default is the full gate set
+(ADR-005).
+"""
 
 _EXIT_CODE_BY_STATUS: Final[dict[StageStatus, int]] = {
     StageStatus.SUCCEEDED: EXIT_OK,
@@ -153,29 +162,30 @@ def execute_stage(
     *,
     change: Change,
     stage: Stage,
+    route: Route,
     run_id: str,
     input_revision: str,
 ) -> StageResult:
-    """Execute one stage attempt; the deterministic stage steps are T010.
+    """Execute one stage attempt through the deterministic steps (T010).
 
-    T009 ships the CLI layer only, so the executor is an honest stub: it
-    calls no harness/LLM (ADR-003), runs no machine checks and no gates, and
-    never reports ``succeeded`` for work that was not done (FR-009, SC-004).
-    Every invocation returns ``waiting`` with ``wait_for_input`` pointing at
-    T010: the result is persisted (ADR-006 p.8) and the run continues with a
-    new invocation (or ``stage resume``) once the deterministic steps land.
-    ``attempt_number`` stays 1 until attempt state is wired to the state
-    store (later tasks); the route does not change the stub outcome.
+    Context assembly, machine checks, aggregation and the stage decision run
+    without harness/LLM (ADR-003); the checks see only the fixed snapshot and
+    the carried budget, and no gate is evaluated on a product SHA (FR-009),
+    so the attempt ends ``waiting`` or ``blocked`` — never ``succeeded``
+    (FR-009, SC-004). The route fixes gate applicability (ADR-005). The
+    run-state store is a later task (T011): the budget is the default
+    snapshot — exhaustion outcomes stay reachable for callers that carry a
+    persisted budget — and ``attempt_number`` stays 1.
     """
-    return StageResult(
+    context = build_context(
+        change=change,
         stage=stage,
+        route=route,
         run_id=run_id,
-        change_id=change.id,
-        attempt_number=1,
         input_revision=input_revision,
-        status=StageStatus.WAITING,
-        next_action=WaitForInputAction(reason=STUB_NEXT_ACTION_REASON),
+        budget=BudgetSnapshot(),
     )
+    return run_deterministic_stage(context)
 
 
 def exit_code_for(status: StageStatus) -> int:
@@ -194,7 +204,7 @@ def render_text(result: StageResult, key: str) -> str:
         f" (run_id={result.run_id}, change_id={result.change_id},"
         f" operation_key={key}, next_action={result.next_action.type})"
     ]
-    if isinstance(result.next_action, WaitForInputAction):
+    if isinstance(result.next_action, WaitForInputAction | StopAction):
         lines.append(f"reason: {result.next_action.reason}")
     return "\n".join(lines)
 
@@ -227,6 +237,7 @@ def run_stage_command(args: StageRunArgs) -> int:
     result = execute_stage(
         change=snapshot.change,
         stage=args.stage,
+        route=args.route if args.route is not None else DEFAULT_STAGE_ROUTE,
         run_id=run_id,
         input_revision=input_revision,
     )

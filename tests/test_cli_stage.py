@@ -78,7 +78,12 @@ def test_stage_run_json_matches_contract(
     assert payload["input_revision"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
     assert payload["artifacts"] == []
     assert payload["evidence"] == []
-    assert payload["gate_results"] == []
+    # Standard route (the default): construction requires the code and UI gates,
+    # unevaluated by the deterministic path (FR-009) and reported pending.
+    assert payload["gate_results"] == [
+        {"gate": "code", "status": "pending", "sha": None, "summary": None, "evidence_ids": []},
+        {"gate": "ui", "status": "pending", "sha": None, "summary": None, "evidence_ids": []},
+    ]
     assert payload["findings"] == []
     assert payload["usage"] is None
 
@@ -94,7 +99,16 @@ def test_stage_run_text_output_is_a_human_summary(
     assert "run_id=run_01H" in captured.out
     assert "operation_key=run_01H:construction:" in captured.out
     assert "next_action=wait_for_input" in captured.out
-    assert "T010" in captured.out
+    assert "reason: required gates not evaluated: code, ui" in captured.out
+
+
+def test_route_selects_gate_applicability(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    snapshot = write_snapshot(tmp_path)
+    assert main(stage_run_argv(snapshot, "--route", "quick", "--json")) == EXIT_WAITING
+    gates = [gate["gate"] for gate in json.loads(capsys.readouterr().out)["gate_results"]]
+    assert gates == ["code"]
 
 
 def test_stage_run_json_logs_operation_key_on_stderr(
