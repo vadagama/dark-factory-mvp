@@ -1,19 +1,21 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 2.0.1 → 2.1.0 (MINOR: новая операционная практика конвейера)
-Основание: запрос пользователя (2026-09-13) — каждая задача выполняется в отдельной
-  ветке, проверяется и завершается MR роли `ci-cd`.
+Version change: 2.1.0 → 3.0.0 (MAJOR: переопределена каноническая модель SDD)
+Основание: итоговое видение SDD пользователя (2026-09-14) — канонической моделью
+  принят Native SDD Core (ADR-020), заменяющий единый OpenSpec (ADR-017).
 Modified principles:
-  - V. Safety & Git Discipline — git-цикл задачи (ветка → проверка → MR) как штатная
-    часть конвейера вместо правила «коммиты и пуши — только по явной просьбе».
-    Инварианты сохранены: секреты не в git, Conventional Commits, `main` стабилен,
-    merge — человек (ADR-011).
+  - I. Specification-Driven Development (SDD) — каноническая модель: Native SDD Core
+    (ChangeSet + Product Baseline `.factory/`, delta specifications, reconciliation,
+    frontmatter-политика OKF). Spec Kit и OpenSpec — bootstrap-/compatibility-
+    инструменты; bootstrap-фаза на Spec Kit продолжается до готовности Native Core.
 Modified sections:
-  - Development Workflow & Quality Gates — добавлен git-цикл задачи и MR в DoD.
+  - Language & Communication Standards — `openspec/` → `.factory/`; идентификаторы SDD.
+  - Development Workflow & Quality Gates — гейты целевой модели поверх нормализованного
+    контракта ChangeSet с фиксацией GateDecision (ADR-020).
 Added sections: нет
 Removed sections: нет
-Follow-up TODOs: нет
+Follow-up TODOs: задачи T-020/T-021/T-022 переформулированы в docs/plan.md.
 -->
 
 # Software Dark Factory Constitution
@@ -26,24 +28,33 @@ Follow-up TODOs: нет
 чата; артефакты коммитятся. Оркестратор `dark-factory` подбирает строгость:
 быстрому fix SDD-артефакты не нужны, фиче — обязательны.
 
-**Каноническая модель — OpenSpec** (ADR-017): один формат с двумя профилями —
-`factory-sdd` (изменения ядра, агентов, flows, policies, adapters и инфраструктуры
-фабрики; повышенная строгость) и `product-sdd` (изменения продуктовых систем).
-Артефакты изменения — в `openspec/changes/<change-id>/`, действующие требования —
-в `openspec/specs/`. Спецификация хранится рядом с системой, которой принадлежит:
-изменения фабрики — в этом репозитории, изменения продукта — в его собственном.
+**Каноническая модель — Native SDD Core** (ADR-020, полная спецификация —
+`docs/sdd-native-core.md`): каждая разработка — ChangeSet со стабильным ID и
+цепочкой `Intent → Spec → Design → Tasks → Verification → Evidence →
+Reconciliation`; ChangeSet содержит дельту (`add/modify/supersede/retire`)
+относительно канонического Product Baseline. Baseline хранится в `.factory/`
+репозитория системы (для multi-repo продукта — в отдельном product-spec
+репозитории) и содержит только принятые состояния (`active`, `superseded`,
+`retired`); acceptance → reconciliation переводит артефакты ChangeSet в
+baseline. Все самостоятельно адресуемые SDD-артефакты имеют YAML frontmatter
+и становятся узлами OKF-графа; generated views и вспомогательная документация
+могут его не иметь. Центральный OKF агрегирует baselines как федеративная
+проекция и не заменяет их как source of truth.
 
-**Spec Kit — инструмент bootstrap-фазы** (ADR-001), действует до контрольной точки
-T-020: до неё фичи проходят `/speckit-specify` → `/speckit-plan` → `/speckit-tasks`
-→ `/speckit-implement` → `/speckit-converge` (опционально `/speckit-clarify`,
-`/speckit-checklist`, `/speckit-analyze`), артефакты живут в `specs/<фича>/`.
-Существующие `.specify/` и `specs/<фича>/` немедленно не переписываются; после
-миграции они сохраняются как historical bootstrap evidence. После T-020 новые
-изменения фабрики и продуктов создаются только в OpenSpec.
+**Spec Kit — инструмент bootstrap-фазы** (ADR-001), действует до готовности
+Native SDD Core (T-020): до этого момента фичи проходят `/speckit-specify` →
+`/speckit-plan` → `/speckit-tasks` → `/speckit-implement` → `/speckit-converge`
+(опционально `/speckit-clarify`, `/speckit-checklist`, `/speckit-analyze`),
+артефакты живут в `specs/<фича>/`. Существующие `.specify/` и `specs/<фича>/` немедленно не
+переписываются; после перехода они сохраняются как historical bootstrap evidence.
+**OpenSpec — compatibility-инструмент** (ADR-017 заменён ADR-020): импорт/экспорт
+— через адаптеры `SDDPort`; отдельный актуальный baseline в формате OpenSpec не
+поддерживается.
 
-Параллельные SDD-процессы не допускаются: в каждый момент действует ровно один
-канонический формат, переход выполняется один раз — через T-020, а не по усмотрению
-исполнителя. Импорт legacy-артефактов Spec Kit — через `SpecKitAdapter` (ADR-017 п.8).
+Параллельные канонические SDD-процессы не допускаются: в каждый момент действует
+ровно одна каноническая модель, переход выполняется один раз — через T-020, а не
+по усмотрению исполнителя. Импорт legacy-артефактов Spec Kit — через
+`SpecKitAdapter` (ADR-020 п.8).
 
 ### II. Minimal Surgical Changes
 
@@ -80,9 +91,9 @@ T-020: до неё фичи проходят `/speckit-specify` → `/speckit-pl
 
 ## Language & Communication Standards
 
-- Документация (`docs/`, `openspec/`, `specs/`, ADR, конституция) и общение с
+- Документация (`docs/`, `.factory/`, `specs/`, ADR, конституция) и общение с
   пользователем — русский; код, идентификаторы, коммиты, имена файлов ADR —
-  английский. Идентификаторы OpenSpec (`change-id`, имена схем и профилей) —
+  английский. Идентификаторы SDD (`change-id`, `id` артефактов, схемы) —
   английские.
 - Один документ — одна тема; даты и версии — в именах файлов
   (`vision-2026-09-12-v1.md`).
@@ -107,8 +118,10 @@ T-020: до неё фичи проходят `/speckit-specify` → `/speckit-pl
   реализации; `/speckit-converge` — сопоставление кода со спецификацией.
 - Quality gates SDD в целевой модели (после T-020): completeness, consistency,
   policy compliance, test coverage и evidence проверяются гейтами самой фабрики
-  (T-021) поверх нормализованного контракта OpenSpec, а не средствами
-  SDD-инструмента. Наличие артефакта не равно пройденному гейту (ADR-017 п.7).
+  (T-021) поверх нормализованного контракта ChangeSet; результат фиксируется как
+  GateDecision (policy и версия, revision, результат, evidence, объяснение,
+  агент/человек, разрешённый override — ADR-020). Наличие артефакта не равно
+  пройденному гейту.
 - Критические находки gate блокируют переход к следующему этапу в обеих фазах.
 
 ## Governance
@@ -122,4 +135,4 @@ T-020: до неё фичи проходят `/speckit-specify` → `/speckit-pl
 - Все агенты читают конституцию в начале сессии. Приёмка DoD включает проверку
   соответствия принципам; несоответствие блокирует завершение задачи.
 
-**Version**: 2.1.0 | **Ratified**: 2026-09-13 | **Last Amended**: 2026-09-13
+**Version**: 3.0.0 | **Ratified**: 2026-09-13 | **Last Amended**: 2026-09-14

@@ -150,12 +150,12 @@ class EventPublisherPort(Protocol):
 ```python
 @runtime_checkable
 class SDDPort(Protocol):
-    async def create_change(self, proposal: OpenSpecChange, /) -> str: ...
+    async def create_change(self, change: ChangeSet, /) -> str: ...
     async def read_requirements(self, change_id: str, /) -> RequirementsSnapshot: ...
     async def apply_delta(self, change_id: str, *, expected_revision: str) -> str: ...
 ```
 
-`OpenSpecAdapter` — основной, `SpecKitAdapter` — импорт legacy (ADR-017 §8). Контракт артефактов — [`openspec-change.md`](./openspec-change.md).
+`NativeChangeSetAdapter` — основной, `SpecKitAdapter` — bootstrap-импорт legacy-артефактов `specs/`, `OpenSpecAdapter` — compatibility import/export (ADR-020 п.8). Контракт артефактов — [`changeset.md`](./changeset.md).
 
 ## KnowledgePort
 
@@ -165,7 +165,7 @@ class KnowledgePort(Protocol):
     async def collect(self, request: ContextRequest, /) -> ContextBundle: ...
 ```
 
-Сбор источников контекста в `ContextBundle` с версиями и provenance (план T-012, FR-001). Вход — `ContextRequest(change_id, run_id)`; сам `ContextBundle` — domain-тип из `dark_factory.context.bundle`, ре-экспортируемый через `dark_factory.ports` вместе с `build_bundle`. Источник — `ContextSource(kind, location, revision, content_hash, retrieved_at)`: `kind` — `SourceKind` (`repo`, `spec`, `constitution`, `adr`, `engineering_pack`; один `spec` закрывает `specs/` до T-020 и `openspec/` после — их различает `location`), `revision` — закреплённая версия (git sha), `content_hash` — sha256 содержимого, `retrieved_at` — летучий штамп, в hash не входит. `bundle_hash` — sha256 канонической сериализации кортежей `(kind, location, revision, content_hash)`, отсортированных детерминированно: одинаковые входы → одинаковый bundle (воспроизводимость, DoD T-012). Поиск/traversal источников придут с реальными провайдерами (YAGNI); в P0 реализация — in-memory фейк.
+Сбор источников контекста в `ContextBundle` с версиями и provenance (план T-012, FR-001). Вход — `ContextRequest(change_id, run_id)`; сам `ContextBundle` — domain-тип из `dark_factory.context.bundle`, ре-экспортируемый через `dark_factory.ports` вместе с `build_bundle`. Источник — `ContextSource(kind, location, revision, content_hash, retrieved_at)`: `kind` — `SourceKind` (`repo`, `spec`, `constitution`, `adr`, `engineering_pack`; один `spec` закрывает `specs/` до T-020 и `.factory/` после — их различает `location`), `revision` — закреплённая версия (git sha), `content_hash` — sha256 содержимого, `retrieved_at` — летучий штамп, в hash не входит. `bundle_hash` — sha256 канонической сериализации кортежей `(kind, location, revision, content_hash)`, отсортированных детерминированно: одинаковые входы → одинаковый bundle (воспроизводимость, DoD T-012). Поиск/traversal источников придут с реальными провайдерами (YAGNI); в P0 реализация — in-memory фейк.
 
 ## ExecutionPort
 

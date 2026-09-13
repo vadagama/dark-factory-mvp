@@ -29,7 +29,7 @@
 | Ephemeral execution | Нет постоянно живущих воркеров: pod на стадию + scheduled reconciler; Runner — CLI, а не сервис | [ADR-003](adr/ADR-003-no-temporal-in-mvp.md), [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) |
 | Идемпотентность по умолчанию | at-least-once запуск + effectively-once контролируемые side effects (operation/attempt/effect keys, effect ledger) | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) п.3 |
 | Расширяемость через плагины | Стабильное ядро + SDK + типы плагинов + FactoryPack; поставка поэтапная | [ADR-008](adr/ADR-008-plugin-architecture-core-sdk.md) |
-| Evidence-based | Каждый шаг оставляет проверяемую цепочку доказательств; наличие артефакта ≠ пройденный гейт | [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md), [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) п.7 |
+| Evidence-based | Каждый шаг оставляет проверяемую цепочку доказательств; наличие артефакта ≠ пройденный гейт | [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md), [ADR-020](adr/ADR-020-native-sdd-core.md) |
 | Участие человека по фазам | Human-in-the-loop на намерении/решениях/merge; Human-off-the-loop на реализации | [ADR-018](adr/ADR-018-human-participation-autonomous-execution.md) |
 
 ---
@@ -38,7 +38,7 @@
 
 | ADR | Решение | Статус | Разделы HLD |
 |---|---|---|---|
-| [ADR-001](adr/ADR-001-adopt-spec-kit.md) | Spec Kit как SDD-инструмент bootstrap-фазы (до T-020); частично заменён ADR-017 | принято (bootstrap) | §12 |
+| [ADR-001](adr/ADR-001-adopt-spec-kit.md) | Spec Kit как SDD-инструмент bootstrap-фазы; целевая модель заменена ADR-020 | принято (bootstrap; историческое) | §12 |
 | [ADR-002](adr/ADR-002-python-core-stack.md) | Python core stack: модульный монолит, PydanticAI за `HarnessPort`, pydantic-graph внутри стадии, FastAPI | принято | §2, §6, §7, §10 |
 | [ADR-003](adr/ADR-003-no-temporal-in-mvp.md) | Temporal в MVP не нужен; подключение позже через `WorkflowEnginePort` | принято | §8, §20 |
 | [ADR-004](adr/ADR-004-postgresql-factory-state.md) | PostgreSQL — серверная БД состояния: execution/stage/attempt/leases/outbox/очередь | принято | §9 |
@@ -54,9 +54,10 @@
 | [ADR-014](adr/ADR-014-react-uikit-storybook.md) | Small UIKit на React (Radix + shadcn), Storybook как исполняемая UI-спецификация | принято | §6, §13 |
 | [ADR-015](adr/ADR-015-repository-boundaries.md) | Границы репозиториев: 4 системных + динамическая группа `products`; протокол версионирования | принято с условиями | §6, §15, §16 |
 | [ADR-016](adr/ADR-016-postgresql-outbox.md) | PostgreSQL outbox вместо Kafka: `event_delivery`, ordering, retry/dead-letter, retention | принято (ревизия 3) | §9, §20 |
-| [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) | Единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit — только bootstrap | принято | §12 |
+| [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) | Единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit — только bootstrap | заменено (ADR-020) | §12 |
 | [ADR-018](adr/ADR-018-human-participation-autonomous-execution.md) | Модель участия человека по фазам; Implementation Contract и условия эскалации | принято | §8, §17 |
 | [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) | Мультипровайдерный SC/CI: GitHub-адаптер первым, GitLab — вторым; `ChangeRequestRef`, инвариант «один run — один провайдер» | принято | §7, §13 |
+| [ADR-020](adr/ADR-020-native-sdd-core.md) | Native SDD Core: ChangeSet + Product Baseline `.factory/`; центральный OKF — федеративная проекция; Spec Kit/OpenSpec — bootstrap- и compatibility-адаптеры | принято | §12, §16 |
 
 Шаблон новых решений — [`adr/ADR-000-template.md`](adr/ADR-000-template.md); правила процесса — [`adr/README.md`](adr/README.md).
 
@@ -131,7 +132,7 @@ flowchart TD
 | `agents` | Ролевые профили как сменные исполнители стадий | [ADR-007](adr/ADR-007-nine-role-catalog.md), T-011 |
 | `context` | Сборка и фиксация `ContextBundle` для агентов | T-012 |
 | `execution` | Провайдеры исполнения агентной работы (worktree, контейнер, job) | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) |
-| `quality` | Детерминированные гейты качества результата изменения | [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) п.7, T-013 |
+| `quality` | Детерминированные гейты качества результата изменения | [ADR-020](adr/ADR-020-native-sdd-core.md), T-013 |
 | `ports` | Абстрактные интерфейсы, развязывающие ядро и внешние системы | [ADR-002](adr/ADR-002-python-core-stack.md), [ADR-015](adr/ADR-015-repository-boundaries.md) п.3 |
 | `adapters` | Конкретные реализации портов для внешних систем и runtime | [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) |
 | `api`, `cli`, `console`, `packs`, `flows`, `rules` | Точки входа и расширения (наполняются задачами T-030…T-090) | [ADR-008](adr/ADR-008-plugin-architecture-core-sdk.md) |
@@ -153,7 +154,7 @@ flowchart TD
 | `TrackerPort` | get_change / publish_status / request_approval | Plane; NoOp-заглушка до готовности | [ADR-013](adr/ADR-013-plane-tracker-trackerport.md) |
 | `TelemetryPort` | OTLP-экспорт, usage/cost-атрибуты | OTLP; backend опционален | [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md) п.2–3 |
 | `EventPublisherPort` | Публикация событий без привязки домена к транспорту | PostgreSQL outbox | [ADR-016](adr/ADR-016-postgresql-outbox.md) п.7 |
-| `SDDPort` | Жизненный цикл спецификаций изменения | `OpenSpecAdapter` (основной), `SpecKitAdapter` (legacy) | [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) п.8 |
+| `SDDPort` | Жизненный цикл спецификаций изменения | `NativeChangeSetAdapter` (основной), `SpecKitAdapter` (bootstrap-импорт), `OpenSpecAdapter` (compatibility) | [ADR-020](adr/ADR-020-native-sdd-core.md) п.8 |
 
 Порты — единая точка интеграции: второй провайдер/трекер/harness добавляется как новый адаптер без изменения Flow, reconcile и CI-шаблонов ([ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) п.1). Совместимость подтверждается единой контрактной тест-сюитой портов (fake → GitHub → GitLab).
 
@@ -278,33 +279,33 @@ Transactional outbox в БД фабрики: изменение состояни
 
 ---
 
-## 12. SDD-слой: единый OpenSpec
+## 12. SDD-слой: Native SDD Core
 
-Каноническая модель — **OpenSpec** с двумя профилями одной схемы ([ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md)):
-
-| Профиль | Назначение | Строгость |
-|---|---|---|
-| `factory-sdd` | Изменения ядра, агентов, flows, policies, adapters, инфраструктуры фабрики | Повышенная |
-| `product-sdd` | Изменения создаваемых продуктовых систем | Базовая, расширяемая по risk class |
-
-Артефакты изменения — `openspec/changes/<change-id>/`, действующие требования — `openspec/specs/`. Спецификация хранится рядом с системой, которой принадлежит.
+Каноническая модель — **Native SDD Core** ([ADR-020](adr/ADR-020-native-sdd-core.md); полная спецификация — [`sdd-native-core.md`](sdd-native-core.md)): каждая разработка — ChangeSet со стабильным ID и цепочкой `Intent → Spec → Design → Tasks → Verification → Evidence → Reconciliation`; ChangeSet содержит дельту относительно канонического Product Baseline.
 
 ```mermaid
 flowchart TD
-    P["Proposal"] --> S["Requirements / spec deltas"]
-    P --> I["Impact & risk"]
+    I["Intent"] --> S["Spec delta"]
     S --> D["Design"]
-    I --> D
-    D --> T["Test & evidence plan"]
-    T --> W["Implementation tasks"]
-    W --> V["Verification evidence"]
-    V --> R["Retrospective & learning"]
-    R --> A["Archive & spec update"]
+    D --> T["Task graph"]
+    T --> X["Implementation"]
+    X --> V["Verification"]
+    V --> E["Evidence + Gates"]
+    E --> R["Reconciliation"]
+    R --> B["Product baseline"]
+    V -->|gap or drift| S
 ```
 
-- OpenSpec управляет жизненным циклом спецификаций, **но не принимает решение о прохождении гейта**: гейт T-021 работает через внутренний нормализованный контракт (completeness, consistency, policy compliance, coverage, evidence, approved Implementation Contract) ([ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) п.7).
-- `SDDPort` — единая точка интеграции; `OpenSpecAdapter` — основной, `SpecKitAdapter` — импорт legacy-артефактов.
-- **Spec Kit** ([ADR-001](adr/ADR-001-adopt-spec-kit.md)) — bootstrap-инструмент до контрольной точки T-020; новые изменения после T-020 создаются только в OpenSpec, `.specify/` и `specs/<фича>/` сохраняются как historical bootstrap evidence. Два параллельных SDD-процесса не допускаются.
+Ключевые решения:
+
+- **ChangeSet** — `.factory/changes/<year>/<id>/` с манифестом `change.yaml`. Семантическое состояние (`draft → proposed → specified → designed → ready → accepted → reconciled → closed`) хранится в Git; runtime-состояние (job, lease, retry, attempt) — в PostgreSQL (§9). Состав артефактов определяется workflow profile и risk class (§8.3); путь каталога ChangeSet стабилен.
+- **Product Baseline** — `.factory/product/` рядом с кодом; для multi-repo продукта — отдельный product-spec репозиторий. Baseline содержит только принятые состояния (`active`, `superseded`, `retired`); acceptance → reconciliation (`add/modify/supersede/retire`) обновляет baseline и связи графа.
+- **Spec** — дельта над baseline (`delta.yaml`), а не копия всей спецификации; **декомпозиция** — `tasks/graph.yaml` (WorkGraph с трассировкой `satisfies`), `tasks.md` — генерируемое представление для человека, Plane — внешнее рабочее представление графа ([ADR-013](adr/ADR-013-plane-tracker-trackerport.md)).
+- **Frontmatter-политика**: все самостоятельно адресуемые SDD-артефакты имеют минимальный YAML frontmatter (`schema`, `id`, `type`, `title`, `product`, `status`, `change`) и становятся узлами OKF-графа; generated views и вспомогательная документация могут его не иметь.
+- **Verification, evidence и gates**: проверки определяются до начала реализации (`verification/plan.yaml`); evidence — ссылки, digest и provenance в Git, тяжёлые отчёты — в CI artifacts/Object Storage; gates фиксируют GateDecision (policy и версия, revision ChangeSet, результат, evidence, объяснение, агент/человек, разрешённый override). Гейт работает поверх нормализованного контракта ChangeSet: наличие артефакта не равно пройденному гейту.
+- **Размещение знаний**: product repositories — canonical knowledge; центральный OKF — федеративная read-проекция (индексация baselines, enterprise knowledge graph, поиск, context retrieval), не source of truth и не bottleneck (§16).
+- `SDDPort` — единая точка интеграции; `NativeChangeSetAdapter` — основной, `SpecKitAdapter` — bootstrap-импорт legacy-артефактов, `OpenSpecAdapter` — compatibility import/export.
+- **Spec Kit** ([ADR-001](adr/ADR-001-adopt-spec-kit.md)) остаётся инструментом bootstrap-разработки до готовности Native SDD Core (T-020); `.specify/` и `specs/<фича>/` сохраняются как historical bootstrap evidence. **OpenSpec** ([ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md), заменён) — compatibility-инструмент. Два параллельных канонических SDD-процесса не допускаются.
 
 ---
 
@@ -351,8 +352,8 @@ flowchart TD
 | `dark-factory` | Модульный монолит: core, CLI, API, Console, adapters, agents, flows, rules, packs, CI-шаблоны, charts | P0 |
 | `dark-factory-gitops` | Желаемое состояние окружений: Argo CD Applications, values, immutable digests; без secrets | P0 |
 | `dark-factory-runs` | Компактный immutable индекс evidence | P0 |
-| `okf` | Knowledge graph с самостоятельным жизненным циклом | Целевой, вне MVP |
-| `products/` | Группа репозиториев (group/org): пилот — один репозиторий; далее — отдельный репозиторий на продукт по критерию извлечения | P0 (пилот) |
+| `okf` | Knowledge graph: федеративная проекция продуктовых baselines ([ADR-020](adr/ADR-020-native-sdd-core.md)) | Целевой, вне MVP |
+| `products/` | Группа репозиториев (group/org): пилот — один репозиторий; далее — отдельный репозиторий на продукт по критерию извлечения; для multi-repo продукта — отдельный product-spec репозиторий с baseline `.factory/` | P0 (пилот) |
 
 Связи между репозиториями — не ветки и не `latest`, а immutable идентификаторы (commit SHA, semver, artifact digest), иначе run невоспроизводим:
 
@@ -378,6 +379,7 @@ flowchart TD
 ```
 
 - Продукт не зависит от внутреннего Python API фабрики — интеграция через схемы, CLI и versioned packs.
+- Канонический baseline продукта хранится рядом с кодом (`.factory/`); для multi-repo продукта — в отдельном product-spec репозитории (`<product>-spec`), откуда координирующие ChangeSet связывают репозитории-цели ([ADR-020](adr/ADR-020-native-sdd-core.md)). Центральный `okf` агрегирует baselines как федеративную read-проекцию и не заменяет их как source of truth.
 - `dark-factory` — защищённый модульный монолит; границы доверия (trusted core и policies vs agents/prompts/packs/CI-шаблоны) — разные `CODEOWNERS`, разрешённые пути, risk classes, pipeline gates ([ADR-015](adr/ADR-015-repository-boundaries.md) п.3).
 
 ---
@@ -419,13 +421,14 @@ flowchart TD
 | SC/CI-провайдеры | GitHub первым, GitLab вторым | T-034 — GitLab-адаптер на той же контрактной сюите | [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) |
 | Автономность release | Merge — человек; auto-merge — после статистики | Накопление статистики пилота (T-072) → T-085 | [ADR-011](adr/ADR-011-risk-based-merge-release-policy.md) |
 | Инфраструктура | Минимальный bootstrap + OTel | Миграция в shared/DC-контур — T-091 | [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md) |
-| SDD-формат | OpenSpec + Spec Kit bootstrap | Контрольная точка T-020 | [ADR-017](adr/ADR-017-unified-openspec-sdd-factory-profile.md) |
+| SDD-модель | Native SDD Core (ChangeSet, Product Baseline, OKF-проекция) | Устойчивость схем `change/v1` при росте профилей и числа продуктов; точка — T-020 | [ADR-020](adr/ADR-020-native-sdd-core.md) |
 
 ---
 
 ## 20. Связанные документы
 
 - Продуктовое видение и скоуп MVP — `docs/vision-2026-09-13-v1.md`
+- Каноническая модель SDD (Native SDD Core) — `docs/sdd-native-core.md`
 - План работ, критические пути, Definition of Done — `docs/plan.md`
 - Принципы, гейты и язык документации — `.specify/memory/constitution.md`, `AGENTS.md`
 - Архитектурные решения — `docs/adr/` (реестр — `docs/adr/README.md`)

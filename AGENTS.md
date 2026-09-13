@@ -6,7 +6,7 @@
 
 **Software Dark Factory** — MVP «тёмной фабрики» разработки ПО: конвейер, в котором специализированные агенты-роли (product, design, architect, infrastructure, security, develop, quality, CI/CD, operation) превращают задачу в работающий, протестированный и задокументированный код с минимальным участием человека.
 
-- Статус: pre-MVP, каркас кода и базовый CI готовы (T-002); архитектурные решения приняты (ADR-001…ADR-019).
+- Статус: pre-MVP, каркас кода и базовый CI готовы (T-002); архитектурные решения приняты (ADR-001…ADR-020).
 - Стек: Python (модульный монолит), PydanticAI за `HarnessPort`, pydantic-graph внутри стадии, FastAPI, PostgreSQL как state store, React + Radix/shadcn для Console, локальный Kubernetes + Helm + Argo CD — см. ADR-002, ADR-004, ADR-005, ADR-010, ADR-014. Изменение стека — только новым ADR.
 - Язык: документация и общение с пользователем — русский; код, идентификаторы, коммиты — английский.
 
@@ -46,11 +46,11 @@
 
 Git-цикл задачи обязателен для любой задачи с изменениями кода и детализирован в `docs/development-workflow.md`. Роль `ci-cd` дополнительно подключается, когда задаче нужны CI/CD, деплой или секреты; `infrastructure` — когда нужны среды, IaC, сеть или IAM; `quality` — когда нужна независимая проверка; `security` — когда изменение затрагивает границы доверия, данные или доступы.
 
-SDD-слой для фич. Каноническая модель — **OpenSpec** (ADR-017): профили `factory-sdd` (изменения самой фабрики) и `product-sdd` (изменения продуктов); артефакты — `openspec/changes/<change-id>/`, действующие требования — `openspec/specs/`.
+SDD-слой для фич. Каноническая модель — **Native SDD Core** (ADR-020, полная спецификация — `docs/sdd-native-core.md`): каждая разработка — ChangeSet со стабильным ID и цепочкой `Intent → Spec → Design → Tasks → Verification → Evidence → Reconciliation`; ChangeSet содержит дельту (`add/modify/supersede/retire`) относительно канонического Product Baseline в `.factory/` репозитория системы (для multi-repo продукта — в отдельном product-spec репозитории). Все самостоятельно адресуемые SDD-артефакты имеют YAML frontmatter и становятся узлами OKF-графа; generated views и вспомогательная документация могут его не иметь. Центральный OKF — федеративная проекция, не source of truth.
 
-До контрольной точки **T-020** действует bootstrap-фаза на Spec Kit (ADR-001): `/speckit-constitution` — один раз на проект, затем `/speckit-specify` → `/speckit-clarify` (опц.) → `/speckit-plan` → `/speckit-checklist` (опц.) → `/speckit-tasks` → `/speckit-analyze` (опц.) → `/speckit-implement` → `/speckit-converge`; артефакты — `specs/<фича>/`. После T-020 новые изменения создаются только в OpenSpec; `.specify/` и `specs/<фича>/` сохраняются как bootstrap evidence и немедленно не переписываются.
+До готовности Native SDD Core (контрольная точка **T-020**) действует bootstrap-фаза на Spec Kit (ADR-001): `/speckit-constitution` — один раз на проект, затем `/speckit-specify` → `/speckit-clarify` (опц.) → `/speckit-plan` → `/speckit-checklist` (опц.) → `/speckit-tasks` → `/speckit-analyze` (опц.) → `/speckit-implement` → `/speckit-converge`; артефакты — `specs/<фича>/`. После T-020 новые изменения фабрики и продуктов создаются как ChangeSet в Native SDD Core; `.specify/` и `specs/<фича>/` сохраняются как bootstrap evidence и немедленно не переписываются. Spec Kit и OpenSpec — bootstrap- и compatibility-инструменты (адаптеры `SDDPort`), архитектуру SDD не определяют.
 
-Два параллельных SDD-процесса не допускаются: в каждый момент действует ровно один канонический формат. Оркестратор выбирает строгость под тип задачи: быстрому fix SDD-артефакты не нужны.
+Два параллельных канонических SDD-процесса не допускаются: в каждый момент действует ровно одна каноническая модель. Оркестратор выбирает строгость под тип задачи: быстрому fix SDD-артефакты не нужны.
 
 ## Жёсткие правила
 
@@ -77,11 +77,9 @@ SDD-слой для фич. Каноническая модель — **OpenSpec
 │   ├── adr/                   # архитектурные решения
 │   ├── development-workflow.md # git-цикл задачи: ветка → проверка → MR
 │   ├── hld.md                 # актуальная архитектура; связывает все ADR
+│   ├── sdd-native-core.md     # каноническая модель SDD: Native SDD Core (ADR-020)
 │   └── vision-*.md, plan.md   # создаются скиллом product
-├── openspec/                  # канонический SDD-слой (ADR-017); создаётся в T-020
-│   ├── schemas/               # профили factory-sdd / product-sdd
-│   ├── specs/                 # действующие требования
-│   └── changes/<change-id>/   # артефакты изменения
+├── .factory/                  # Native SDD Core (ADR-020): product baseline + changes; создаётся в T-020
 ├── specs/                     # артефакты фич Spec Kit bootstrap-фазы (до T-020)
 └── src/                       # код фабрики (модульный монолит на Python, ADR-002)
 ```
@@ -99,5 +97,5 @@ SDD-слой для фич. Каноническая модель — **OpenSpec
 ## Интеграции
 
 - MCP-серверы подключаются через `.zed/context_servers.json` (создать при необходимости; не выдумывать серверы, которых нет).
-- SDD: канонический формат — OpenSpec (ADR-017). Spec Kit — CLI `specify` v1.0.6 (установлен через `uv tool`), используется в bootstrap-фазе до T-020 (ADR-001).
+- SDD: каноническая модель — Native SDD Core (ADR-020; полная спецификация — `docs/sdd-native-core.md`). Spec Kit — CLI `specify` v1.0.6 (установлен через `uv tool`) — bootstrap-инструмент до T-020 (ADR-001); OpenSpec — compatibility-инструмент (импорт/экспорт через адаптеры `SDDPort`).
 - CI/CD: не настроено (pre-MVP). Настроить через скилл `ci-cd`, когда появится код.

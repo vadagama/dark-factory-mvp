@@ -9,7 +9,7 @@ description: "Task list for Dark Factory MVP implementation"
 
 **Input**: Design documents from `/specs/001-dark-factory-mvp/`
 
-**Prerequisites**: `plan.md` (tech stack, structure), `spec.md` (user stories P1–P6), `research.md`, `data-model.md`, `contracts/`, `quickstart.md`, `.specify/memory/constitution.md` v2.0.1
+**Prerequisites**: `plan.md` (tech stack, structure), `spec.md` (user stories P1–P6), `research.md`, `data-model.md`, `contracts/`, `quickstart.md`, `.specify/memory/constitution.md` v3.0.0
 
 **Тесты**: Отдельные тест-задачи не генерируются — спецификация не запрашивает TDD. Тесты входят в DoD каждой задачи (`ruff` + `mypy --strict` + `pytest`, см. `docs/plan.md` §6) и исполняются как часть реализации (unit, contract, integration, crash-тесты).
 
@@ -83,13 +83,13 @@ description: "Task list for Dark Factory MVP implementation"
 
 **Goal**: Задача нормализуется в снапшот, Product публикует MR с proposal'ом изменения; реализация разрешена только для согласованной ревизии спецификации.
 
-**Independent Test**: Подать задачу → получить MR с proposal'ом (`openspec/changes/<change-id>/`) → согласовать конкретную ревизию (SHA) → убедиться, что `construction` без approval не стартует, а смена ревизии инвалидирует approval.
+**Independent Test**: Подать задачу → получить MR с ChangeSet'ом (`.factory/changes/<year>/<id>/`) → согласовать конкретную ревизию (SHA) → убедиться, что `construction` без approval не стартует, а смена ревизии инвалидирует approval.
 
 - [x] T014 [US2] [docs T-011] Профили ядра Product/Develop/Quality и минимальные skills (`intake`, `requirements-refinement`, `spec-авторинг`, `implementation`, `implementation-rework`, `code-review`, `acceptance-verification`, `change-request`); версионированные манифесты (входы/выходы, tools, ограничения, stop-conditions) + контракт `AgentProfile → TaskEnvelope → AgentResult` (ADR-007) — `src/dark_factory/agents/profiles/`, `src/dark_factory/agents/skills/`. Зависит от T015 (docs T-012) и T019 (docs T-010 — harness, US3, interleaved: T019 до T014).
-- [x] T015 [P] [US2] [docs T-012] `ContextBundle`: сбор источников (`repo`, `specs/`/`openspec/`, конституция, ADR, engineering pack) с provenance, revision/hash; версионирование набора на запуск; изолированный worktree. Ввести `KnowledgePort` и `ExecutionPort` (contract-тесты на фейках); bundle воспроизводим — одинаковый hash на одинаковых входах — `src/dark_factory/context/`, `src/dark_factory/ports/`
-- [ ] T016 [US2] [docs T-020] Контрольная точка OpenSpec: профили `factory-sdd`/`product-sdd` (`openspec/schemas/`), создание изменений в `openspec/changes/<change-id>/`; `SDDPort` с `OpenSpecAdapter` (основной) и `SpecKitAdapter` (импорт legacy, ADR-017 §8); строгость по типу задачи (fix — без SDD-артефактов); `.specify/` и `specs/` — read-only bootstrap evidence. Зависит от T005, T014 — `src/dark_factory/context/sdd/`, `openspec/`
-- [ ] T017 [US2] [docs T-021] Specification gate: детерминированные проверки (наличие AC, трассировка AC → сценарий → задача, противоречия scope/out-of-scope, связность с конституцией), blocking/non-blocking, поля `risk_class` из Implementation Contract (T023) в нормализованном контракте. Зависит от T016 (T-020), T023 (T-016, US3 — interleaved) — `src/dark_factory/quality/gates/`
-- [ ] T018 [US2] [docs T-022] Constitution/шаблоны для продуктовых репозиториев: правила минимальных изменений и evidence-based validation; проверка через `OpenSpecAdapter`. Зависит от T016 (T-020), T041 (T-070) — `packs/`
+- [x] T015 [P] [US2] [docs T-012] `ContextBundle`: сбор источников (`repo`, `specs/` до T-020 → `.factory/` после, конституция, ADR, engineering pack) с provenance, revision/hash; версионирование набора на запуск; изолированный worktree. Ввести `KnowledgePort` и `ExecutionPort` (contract-тесты на фейках); bundle воспроизводим — одинаковый hash на одинаковых входах — `src/dark_factory/context/`, `src/dark_factory/ports/`
+- [ ] T016 [US2] [docs T-020] Контрольная точка Native SDD Core (ADR-020, `docs/sdd-native-core.md`): Product Baseline `.factory/` (`product/` + `changes/`), ChangeSet с манифестом `change.yaml` (workflow profile, risk_class) и дельтой `spec/delta.yaml` (`add/modify/supersede/retire`), reconciliation к baseline; `SDDPort` с `NativeChangeSetAdapter` (основной), `SpecKitAdapter` (bootstrap-импорт legacy `specs/`) и `OpenSpecAdapter` (compatibility, ADR-020 п.8); строгость по типу задачи (fix — без SDD-артефактов); `.specify/` и `specs/` — read-only bootstrap evidence. Зависит от T005, T014 — `src/dark_factory/context/sdd/`, `.factory/`
+- [ ] T017 [US2] [docs T-021] Specification gate: детерминированные проверки (наличие AC, трассировка AC → сценарий → задача, противоречия scope/out-of-scope, связность с конституцией), blocking/non-blocking; результат фиксируется как `GateDecision` (policy и версия, revision ChangeSet, результат, evidence, объяснение, агент/человек, разрешённый override — ADR-020); поле `risk_class` из Implementation Contract (T023) в нормализованном контракте ChangeSet. Зависит от T016 (T-020), T023 (T-016, US3 — interleaved) — `src/dark_factory/quality/gates/`
+- [ ] T018 [US2] [docs T-022] Product Baseline/шаблоны ChangeSet для продуктовых репозиториев (`.factory/`: `factory.yaml`, `product/`, `changes/`; frontmatter-профили артефактов): правила минимальных изменений и evidence-based validation; проверка через `NativeChangeSetAdapter` (ADR-020 п.8). Зависит от T016 (T-020), T041 (T-070) — `packs/`
 
 **Checkpoint**: US2 проверяется независимо — реализация блокируется без version-bound approval.
 
@@ -248,7 +248,7 @@ description: "Task list for Dark Factory MVP implementation"
 # Последовательно (реестр: docs T-011 зависит от T-012):
 Task: "T015 [US2] ContextBundle + KnowledgePort/ExecutionPort — src/dark_factory/context/"
 Task: "T014 [US2] Профили ядра Product/Develop/Quality + skills — src/dark_factory/agents/"
-Task: "T016 [US2] OpenSpec-миграция + SDDPort — openspec/"
+Task: "T016 [US2] Native SDD Core + SDDPort — .factory/"
 Task: "T017 [US2] Specification gate — src/dark_factory/quality/gates/"
 ```
 

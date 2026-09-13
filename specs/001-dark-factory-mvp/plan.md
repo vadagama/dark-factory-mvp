@@ -4,7 +4,7 @@
 
 **Input**: Feature specification from `/specs/001-dark-factory-mvp/spec.md`
 
-**Note**: Bootstrap-фаза Spec Kit (ADR-001). Канонический SDD-формат — OpenSpec (ADR-017); переход — в T-020. Этот план и его артефакты живут в `specs/001-dark-factory-mvp/` как bootstrap evidence и после T-020 не переписываются.
+**Note**: Bootstrap-фаза Spec Kit (ADR-001). Канонический SDD — Native SDD Core (ADR-020); переход — в T-020. Этот план и его артефакты живут в `specs/001-dark-factory-mvp/` как bootstrap evidence и после T-020 не переписываются; артефакты актуализированы под Native SDD Core 2026-09-14.
 
 ## Summary
 
@@ -19,7 +19,7 @@ MVP «тёмной фабрики»: сквозной агентный конв�
 - **Идемпотентность по умолчанию**: operation/attempt/effect keys + durable effect ledger; at-least-once запуск и effectively-once side effects (ADR-006 §3).
 - **Мультипровайдерный SC/CI**: GitHub-адаптер первым, GitLab — вторым; единый `ChangeRequestRef`; инвариант «один run — один провайдер» (ADR-019). Терминология: «MR» в `spec.md` — change request в широком смысле (GitHub PR / GitLab MR), канонический доменный тип — `ChangeRequestRef`.
 - **Delivery через GitOps** в локальном Docker Desktop Kubernetes + Helm + Argo CD (ADR-010).
-- **Канонический SDD — OpenSpec** с профилями `factory-sdd`/`product-sdd`; Spec Kit — только bootstrap до T-020 (ADR-017).
+- **Канонический SDD — Native SDD Core** (ADR-020): ChangeSet + Product Baseline `.factory/`, дельты и reconciliation; Spec Kit — bootstrap до T-020, OpenSpec — compatibility-адаптер.
 
 Этот план не переизобретает архитектуру: он переводит spec.md в исполнимую структуру (Technical Context, Constitution Check, Project Structure) и производит артефакты Phase 0/1 (`research.md`, `data-model.md`, `contracts/`, `quickstart.md`).
 
@@ -58,15 +58,15 @@ MVP «тёмной фабрики»: сквозной агентный конв�
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-Источник — `.specify/memory/constitution.md` v2.0.1.
+Источник — `.specify/memory/constitution.md` v3.0.0.
 
 | Принцип | Гейт для этого плана | Статус | Обоснование |
 |---|---|---|---|
-| I. Specification-Driven Development | Фича проходит SDD-слой; артефакты коммитятся; ровно один канонический формат | ✅ PASS | Bootstrap Spec Kit (ADR-001) до T-020; OpenSpec вводится в T-020 (ADR-017). Параллельных SDD-процессов нет. |
+| I. Specification-Driven Development | Фича проходит SDD-слой; артефакты коммитятся; ровно один канонический формат | ✅ PASS | Bootstrap Spec Kit (ADR-001) до T-020; Native SDD Core вводится в T-020 (ADR-020). Параллельных SDD-процессов нет. |
 | II. Minimal Surgical Changes | Смена стека/зависимостей/структуры — только через ADR или явное согласование | ✅ PASS | Стек и структура заданы ADR-002/008/015. Новых стековых решений план не вводит. |
 | III. Evidence-Based Validation | Каждое изменение валидируется фактически: тесты + диагностика | ✅ PASS | DoD каждой задачи — `ruff` + `mypy --strict` + `pytest`; `quickstart.md` задаёт проверяемые сценарии. |
-| IV. Governance via ADR & Docs-First | Значимые решения — ADR до реализации; противоречия не допускаются | ✅ PASS | Все значимые решения уже приняты (ADR-001…019, HLD). План новых ADR не требует; при выявлении — заводится до кода. |
-| V. Safety & Git Discipline | Секреты вне git; коммиты — по явной просьбе; Conventional Commits | ✅ PASS | Секреты — k8s Secret/env (ADR-009); план не коммитит и не пушит. |
+| IV. Governance via ADR & Docs-First | Значимые решения — ADR до реализации; противоречия не допускаются | ✅ PASS | Все значимые решения уже приняты (ADR-001…020, HLD). План новых ADR не требует; при выявлении — заводится до кода. |
+| V. Safety & Git Discipline | Секреты вне git; git-цикл задачи (ветка → проверка → MR); Conventional Commits | ✅ PASS | Секреты — k8s Secret/env (ADR-009); работа — в ветке задачи, MR против `main`, merge — человек (ADR-011, `docs/development-workflow.md`). |
 
 **Итог гейта Phase 0**: PASS. Нарушений, требующих обоснования в Complexity Tracking, нет.
 
@@ -87,7 +87,7 @@ specs/001-dark-factory-mvp/
 │   ├── cli.md           #   контракт Factory Runner CLI
 │   ├── api.md           #   контракт FastAPI API
 │   ├── events.md        #   контракт outbox-событий
-│   └── openspec-change.md # контракт артефактов OpenSpec-изменения
+│   └── changeset.md     # контракт артефактов ChangeSet (ADR-020)
 ├── checklists/          # /speckit-checklist
 └── tasks.md             # Phase 2 (/speckit-tasks — НЕ создаётся этим планом)
 ```

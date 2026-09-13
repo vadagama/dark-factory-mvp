@@ -88,9 +88,9 @@
 
 ## R-14. SDD-формат
 
-- **Decision**: канонический — OpenSpec с профилями `factory-sdd`/`product-sdd` (артефакты `openspec/changes/<change-id>/`, требования `openspec/specs/`); Spec Kit — bootstrap до T-020, артефакты `specs/<фича>/` сохраняются как historical evidence. Два параллельных SDD-процесса не допускаются; гейт T-021 работает поверх внутреннего нормализованного контракта, а не силами SDD-инструмента.
-- **Rationale**: ADR-017 §7–8; ADR-001 (bootstrap).
-- **Alternatives considered**: остаться на Spec Kit (отклонено: Q-16); оба формата параллельно (запрещено конституцией).
+- **Decision** (обновлено 2026-09-14: ADR-020 заменяет ADR-017): канонический — Native SDD Core (`docs/sdd-native-core.md`): ChangeSet со стабильным ID и цепочкой `Intent → Spec → Design → Tasks → Verification → Evidence → Reconciliation`, дельта (`add/modify/supersede/retire`) относительно канонического Product Baseline `.factory/`, reconciliation после acceptance. Spec Kit — bootstrap до T-020 (артефакты `specs/<фича>/` сохраняются как historical evidence); OpenSpec — compatibility-адаптер, отдельный baseline в формате OpenSpec не поддерживается. Два параллельных SDD-процесса не допускаются; гейт T-021 работает поверх нормализованного контракта ChangeSet (GateDecision), а не силами SDD-инструмента.
+- **Rationale**: ADR-020; ADR-017 — историческое решение (заменено); ADR-001 (bootstrap).
+- **Alternatives considered**: остаться на Spec Kit (отклонено: Q-16 закрыт ADR-020); оба формата параллельно (запрещено конституцией).
 
 ## R-15. Модель участия человека
 

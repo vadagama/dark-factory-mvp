@@ -57,7 +57,7 @@ uv run factory stage run --change ./fixtures/chg_smoke.yaml --stage construction
 Предпосылки: T-011 (Product), T-012 (context), T-020/T-021 (SDD, spec-gate).
 
 1. Подать задачу из CLI/Console/трекера → создать Change (FR-001).
-2. Product публикует MR с proposal'ом; `openspec/changes/<change-id>/` содержит артефакты контракта [`openspec-change.md`](./contracts/openspec-change.md).
+2. Product публикует MR с ChangeSet'ом; `.factory/changes/<year>/<id>/` содержит артефакты контракта [`changeset.md`](./contracts/changeset.md).
 3. До согласования реализация заблокирована гейтом; согласование связано с ревизией (SHA) спецификации (FR-003).
 
 **Ожидаемо**: при отсутствии approval стадия `construction` не стартует; после смены ревизии спецификации прежнее approval не действует.
