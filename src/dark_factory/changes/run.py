@@ -1,0 +1,269 @@
+"""Core change entities and status invariants (T-003).
+
+``ChangeRun``/``StageRun`` carry authoritative operational state (ADR-004):
+transitions are validated against explicit tables, ``state_revision`` guards
+concurrent writers (ADR-006 p.4), and ``StageResult`` is an immutable artifact
+used as transport and recovery input between CI jobs (ADR-005 p.2, ADR-006 p.4).
+The stage-level flow table (stage x NextAction) is built on top of this in T-004.
+"""
+
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Final, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from dark_factory.changes.enums import (
+    ChangeSource,
+    FindingSeverity,
+    FindingStatus,
+    Provider,
+    RiskClass,
+    Route,
+    RunStatus,
+    Stage,
+    StageStatus,
+)
+from dark_factory.changes.findings import Finding, GateResult
+from dark_factory.changes.next_action import NextAction
+from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, Evidence, RepositoryRef
+from dark_factory.changes.usage import BudgetSnapshot, Usage
+
+SCHEMA_VERSION: Final = 1
+"""Schema version of the versioned contracts RunRecord/StageResult (ADR-015 p.3)."""
+
+# Literal contract type of SCHEMA_VERSION; keep the two in sync.
+type SchemaVersion = Literal[1]
+
+RUN_STATUS_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
+    RunStatus.PENDING: frozenset({RunStatus.RUNNING, RunStatus.CANCELED, RunStatus.SUPERSEDED}),
+    RunStatus.RUNNING: frozenset(
+        {
+            RunStatus.WAITING,
+            RunStatus.BLOCKED,
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELED,
+            RunStatus.SUPERSEDED,
+        }
+    ),
+    RunStatus.WAITING: frozenset(
+        {
+            RunStatus.RUNNING,
+            RunStatus.BLOCKED,
+            RunStatus.FAILED,
+            RunStatus.CANCELED,
+            RunStatus.SUPERSEDED,
+        }
+    ),
+    RunStatus.BLOCKED: frozenset(
+        {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELED, RunStatus.SUPERSEDED}
+    ),
+    RunStatus.SUCCEEDED: frozenset(),
+    RunStatus.FAILED: frozenset(),
+    RunStatus.CANCELED: frozenset(),
+    RunStatus.SUPERSEDED: frozenset(),
+}
+
+STAGE_STATUS_TRANSITIONS: Final[dict[StageStatus, frozenset[StageStatus]]] = {
+    StageStatus.PENDING: frozenset(
+        {
+            StageStatus.IN_PROGRESS,
+            StageStatus.SKIPPED,
+            StageStatus.CANCELED,
+            StageStatus.SUPERSEDED,
+        }
+    ),
+    StageStatus.IN_PROGRESS: frozenset(
+        {
+            StageStatus.WAITING,
+            StageStatus.SUCCEEDED,
+            StageStatus.FAILED,
+            StageStatus.BLOCKED,
+            StageStatus.CANCELED,
+            StageStatus.SUPERSEDED,
+        }
+    ),
+    StageStatus.WAITING: frozenset(
+        {
+            StageStatus.IN_PROGRESS,
+            StageStatus.FAILED,
+            StageStatus.BLOCKED,
+            StageStatus.CANCELED,
+            StageStatus.SUPERSEDED,
+        }
+    ),
+    StageStatus.BLOCKED: frozenset(
+        {
+            StageStatus.IN_PROGRESS,
+            StageStatus.FAILED,
+            StageStatus.CANCELED,
+            StageStatus.SUPERSEDED,
+        }
+    ),
+    # A stage failure is not terminal: a retry starts a new attempt of the same
+    # logical operation (ADR-006 p.3/p.7).
+    StageStatus.FAILED: frozenset(
+        {StageStatus.IN_PROGRESS, StageStatus.CANCELED, StageStatus.SUPERSEDED}
+    ),
+    # A new input revision (for example after a rework round) is a new logical
+    # operation and gets its own StageRun (ADR-006 p.3); the succeeded one is final.
+    StageStatus.SUCCEEDED: frozenset(),
+    StageStatus.SKIPPED: frozenset(),
+    StageStatus.SUPERSEDED: frozenset(),
+    StageStatus.CANCELED: frozenset(),
+}
+
+RUN_TERMINAL_STATUSES: Final[frozenset[RunStatus]] = frozenset(
+    status for status, targets in RUN_STATUS_TRANSITIONS.items() if not targets
+)
+STAGE_TERMINAL_STATUSES: Final[frozenset[StageStatus]] = frozenset(
+    status for status, targets in STAGE_STATUS_TRANSITIONS.items() if not targets
+)
+
+# Statuses a StageResult may carry: an attempt still in progress has no result.
+_RESULT_STATUSES: Final[frozenset[StageStatus]] = frozenset(
+    {
+        StageStatus.WAITING,
+        StageStatus.SUCCEEDED,
+        StageStatus.FAILED,
+        StageStatus.BLOCKED,
+    }
+)
+
+
+class InvalidStatusTransition(ValueError):
+    """A status pair outside the transition table was requested."""
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+class Change(BaseModel):
+    """A unit of work flowing through the factory (intake output, hld-mvp 8)."""
+
+    id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str | None = None
+    source: ChangeSource
+    external_ref: str | None = None
+    product: RepositoryRef
+    risk_class: RiskClass
+    change_request: ChangeRequestRef | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class StageRun(BaseModel):
+    """Operational state of one stage of a run."""
+
+    id: str = Field(min_length=1)
+    stage: Stage
+    status: StageStatus = StageStatus.PENDING
+    attempt_number: int = Field(default=1, ge=1)
+    input_revision: str | None = None
+    state_revision: int = Field(default=1, ge=1)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    def apply_status(self, target: StageStatus) -> None:
+        """Move to ``target``; raises InvalidStatusTransition outside the table."""
+        if target not in STAGE_STATUS_TRANSITIONS[self.status]:
+            raise InvalidStatusTransition(
+                f"Stage transition {self.status.value} -> {target.value} is not allowed"
+            )
+        self.status = target
+        self.state_revision += 1
+        if target in STAGE_TERMINAL_STATUSES:
+            self.finished_at = _now()
+
+
+class ChangeRun(BaseModel):
+    """One execution of a change through the factory.
+
+    ``provider`` is fixed at run start and never changes during the run
+    (exclusive execution, ADR-019 p.5). ``state_revision`` is the optimistic
+    concurrency guard (ADR-006 p.4).
+    """
+
+    id: str = Field(min_length=1)
+    change_id: str = Field(min_length=1)
+    route: Route
+    provider: Provider
+    status: RunStatus = RunStatus.PENDING
+    state_revision: int = Field(default=1, ge=1)
+    stages: list[StageRun] = []
+    budget: BudgetSnapshot = Field(default_factory=BudgetSnapshot)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+    finished_at: datetime | None = None
+
+    def apply_status(self, target: RunStatus) -> None:
+        """Move to ``target``; raises InvalidStatusTransition outside the table."""
+        if target not in RUN_STATUS_TRANSITIONS[self.status]:
+            raise InvalidStatusTransition(
+                f"Run transition {self.status.value} -> {target.value} is not allowed"
+            )
+        self.status = target
+        self.state_revision += 1
+        self.updated_at = _now()
+        if target in RUN_TERMINAL_STATUSES:
+            self.finished_at = self.updated_at
+
+
+class StageResult(BaseModel):
+    """Immutable result of a stage attempt (versioned contract, ADR-015 p.3).
+
+    ``status`` must be a result status, and the result is persisted before any
+    external wait (ADR-006 p.8).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: SchemaVersion = SCHEMA_VERSION
+    stage: Stage
+    run_id: str = Field(min_length=1)
+    change_id: str = Field(min_length=1)
+    attempt_number: int = Field(default=1, ge=1)
+    input_revision: str | None = None
+    status: StageStatus
+    next_action: NextAction
+    artifacts: list[ArtifactRef] = []
+    evidence: list[Evidence] = []
+    gate_results: list[GateResult] = []
+    findings: list[Finding] = []
+    usage: Usage | None = None
+    produced_at: datetime = Field(default_factory=_now)
+
+    @field_validator("status")
+    @classmethod
+    def _status_is_a_result(cls, value: StageStatus) -> StageStatus:
+        if value not in _RESULT_STATUSES:
+            allowed = ", ".join(sorted(status.value for status in _RESULT_STATUSES))
+            raise ValueError(f"StageResult.status must be one of: {allowed}; got {value.value!r}")
+        return value
+
+
+def completion_violations(run: ChangeRun, stage_results: Sequence[StageResult]) -> list[str]:
+    """Invariants gating a successful terminal status; empty list means completion is allowed.
+
+    - every required evidence must be available (ADR-009 p.9);
+    - no open blocker findings may remain (finalizer contract, hld-mvp 8).
+
+    Non-successful runs are not checked: these invariants only gate success.
+    """
+    if run.status is not RunStatus.SUCCEEDED:
+        return []
+    violations: list[str] = []
+    for result in stage_results:
+        for item in result.evidence:
+            if item.required and not item.available:
+                violations.append(
+                    f"required evidence {item.id!r} of stage {result.stage.value} is unavailable"
+                )
+        for finding in result.findings:
+            if finding.severity is FindingSeverity.BLOCKER and finding.status is FindingStatus.OPEN:
+                violations.append(
+                    f"open blocker finding {finding.id!r} of stage {result.stage.value}"
+                )
+    return violations

@@ -1,0 +1,190 @@
+"""Enumerations of the change domain (T-003).
+
+Values are stable wire strings: they are serialized into run records and
+persisted between CI jobs, so renaming a value is a breaking schema change
+(versioned contracts, ADR-015 p.3).
+"""
+
+from enum import StrEnum
+
+
+class Provider(StrEnum):
+    """Source control / CI provider of a repository (ADR-019)."""
+
+    GITLAB = "gitlab"
+    GITHUB = "github"
+
+
+class Route(StrEnum):
+    """Factory Flow route of a run (ADR-005)."""
+
+    QUICK = "quick"
+    STANDARD = "standard"
+
+
+class RiskClass(StrEnum):
+    """Risk class of a change; drives gates and human control points."""
+
+    R0 = "R0"
+    R1 = "R1"
+    R2 = "R2"
+    R3 = "R3"
+    R4 = "R4"
+
+
+class Role(StrEnum):
+    """Agent role catalog (ADR-007)."""
+
+    PRODUCT = "product"
+    DESIGN = "design"
+    ARCHITECT = "architect"
+    INFRASTRUCTURE = "infrastructure"
+    SECURITY = "security"
+    DEVELOP = "develop"
+    QUALITY = "quality"
+    CI_CD = "ci_cd"
+    OPERATION = "operation"
+
+
+class Stage(StrEnum):
+    """Factory Flow stages (T-004).
+
+    Specification -> Planning -> Construction -> Review/Verification -> Release.
+    """
+
+    SPECIFICATION = "specification"
+    PLANNING = "planning"
+    CONSTRUCTION = "construction"
+    REVIEW_VERIFICATION = "review_verification"
+    RELEASE = "release"
+
+
+class Gate(StrEnum):
+    """MVP gates (vision 3.9): Specification, Planning, Code, UI, Review, Verification, Release."""
+
+    SPECIFICATION = "specification"
+    PLANNING = "planning"
+    CODE = "code"
+    UI = "ui"
+    REVIEW = "review"
+    VERIFICATION = "verification"
+    RELEASE = "release"
+
+
+class RunStatus(StrEnum):
+    """Lifecycle status of a ChangeRun (execution)."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING = "waiting"
+    BLOCKED = "blocked"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    SUPERSEDED = "superseded"
+
+
+class StageStatus(StrEnum):
+    """Lifecycle status of a StageRun."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    WAITING = "waiting"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    SKIPPED = "skipped"
+    SUPERSEDED = "superseded"
+    CANCELED = "canceled"
+
+
+class FindingSeverity(StrEnum):
+    """Severity of a review finding."""
+
+    BLOCKER = "blocker"
+    MAJOR = "major"
+    MINOR = "minor"
+    INFO = "info"
+
+
+class FindingStatus(StrEnum):
+    """Lifecycle status of a finding."""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+    WAIVED = "waived"
+    OBSOLETE = "obsolete"
+
+
+class FindingOrigin(StrEnum):
+    """Who produced a finding."""
+
+    AGENT = "agent"
+    HUMAN = "human"
+    CI = "ci"
+
+
+class GateStatus(StrEnum):
+    """Result status of one gate."""
+
+    PENDING = "pending"
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class DecisionOutcome(StrEnum):
+    """Outcome of an approval decision."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    WAIVED = "waived"
+
+
+class DecisionSource(StrEnum):
+    """Who made an approval decision (ADR-018)."""
+
+    HUMAN = "human"
+    POLICY = "policy"
+    AGENT = "agent"
+
+
+class ChangeSource(StrEnum):
+    """Intake source of a change."""
+
+    TRACKER = "tracker"
+    CONSOLE = "console"
+    CLI = "cli"
+    API = "api"
+
+
+class ChangeRequestStatus(StrEnum):
+    """Status of a change request in core terms (ADR-019 p.2)."""
+
+    DRAFT = "draft"
+    OPEN = "open"
+    MERGED = "merged"
+    CLOSED = "closed"
+
+
+class EvidenceType(StrEnum):
+    """Kind of evidence attached to a result."""
+
+    LOG = "log"
+    REPORT = "report"
+    SCREENSHOT = "screenshot"
+    SBOM = "sbom"
+    SPEC = "spec"
+    DIFF = "diff"
+    TEST_RESULTS = "test_results"
+    DEPLOYMENT = "deployment"
+    SMOKE = "smoke"
+    OTHER = "other"
+
+
+class StopOutcome(StrEnum):
+    """Terminal outcome carried by NextAction.stop (stop conditions, T-004)."""
+
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELED = "canceled"
