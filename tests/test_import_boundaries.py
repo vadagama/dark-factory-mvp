@@ -4,16 +4,32 @@ Rule A: core modules (everything outside ``dark_factory.adapters``) must not imp
 ``dark_factory.adapters`` or its subpackages.
 Rule B: ``dark_factory.adapters`` may import from the core only ``dark_factory.ports``
 (plus its own subpackages).
+Rule C: core modules must not import external-system SDKs; providers are reached
+only through adapters (explicit denylist; infrastructure drivers such as
+sqlalchemy/psycopg/pydantic are deliberately not on it).
 """
 
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 PACKAGE = "dark_factory"
 ADAPTERS = f"{PACKAGE}.adapters"
 PORTS = f"{PACKAGE}.ports"
 SRC_DIR = Path(__file__).resolve().parents[1] / "src" / PACKAGE
+
+EXTERNAL_SDK_MODULES: Final[tuple[str, ...]] = (
+    "pydantic_ai",  # agent harness SDK (T-010)
+    "githubkit",  # GitHub SDK
+    "gidgethub",  # GitHub SDK
+    "pygithub",  # GitHub SDK
+    "gitlab",  # GitLab SDK (python-gitlab)
+    "plane",  # Plane tracker SDK
+    "kubernetes",  # Kubernetes client
+    "boto3",  # S3-compatible object storage
+    "minio",  # MinIO object storage
+)
 
 
 @dataclass(frozen=True)
@@ -74,10 +90,19 @@ def _imported_names(node: ast.AST, package: str) -> list[tuple[int, str]]:
     return []
 
 
+def _matches_external_sdk(name: str) -> bool:
+    """True when ``name`` is (inside) one of the denylisted external SDK modules."""
+    return any(_matches(name, sdk) for sdk in EXTERNAL_SDK_MODULES)
+
+
 def _violated_rule(package: str, imported: str) -> str | None:
-    """Return "A" or "B" if ``package`` importing ``imported`` breaks a boundary rule."""
+    """Return "A", "B" or "C" if ``package`` importing ``imported`` breaks a rule."""
     if not _matches(package, ADAPTERS):
-        return "A" if _matches(imported, ADAPTERS) else None
+        if _matches(imported, ADAPTERS):
+            return "A"
+        if _matches_external_sdk(imported):
+            return "C"
+        return None
     if not _matches(imported, PACKAGE):
         return None
     if _matches(imported, PORTS) or _matches(imported, ADAPTERS):
@@ -146,3 +171,23 @@ def test_rule_b_allows_ports_and_own_subpackages() -> None:
         "dark_factory.adapters.gitlab", "dark_factory.adapters.gitlab", source
     )
     assert violations == []
+
+
+def test_rule_c_flags_core_importing_external_sdks() -> None:
+    source = (
+        "import pydantic_ai\nfrom gitlab.v4.objects import ProjectMergeRequest\nimport githubkit\n"
+    )
+    violations = check_source("dark_factory.orchestration", "dark_factory.orchestration", source)
+    assert [v.rule for v in violations] == ["C", "C", "C"]
+
+
+def test_rule_c_allows_adapters_and_core_infrastructure() -> None:
+    # Only adapters may import external SDKs; infrastructure drivers that core
+    # legitimately uses (sqlalchemy, psycopg, pydantic) are not on the denylist.
+    source = "import pydantic_ai\nfrom gitlab import Gitlab\n"
+    violations = check_source(
+        "dark_factory.adapters.github", "dark_factory.adapters.github", source
+    )
+    assert violations == []
+    core_source = "import sqlalchemy\nimport psycopg\nimport pydantic\n"
+    assert check_source("dark_factory.changes", "dark_factory.changes", core_source) == []
