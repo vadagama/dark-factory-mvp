@@ -9,6 +9,7 @@ SUBPACKAGES = (
     "dark_factory.adapters",
     "dark_factory.agents",
     "dark_factory.changes",
+    "dark_factory.cli",
     "dark_factory.context",
     "dark_factory.execution",
     "dark_factory.orchestration",
