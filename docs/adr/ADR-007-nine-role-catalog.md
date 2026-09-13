@@ -1,0 +1,39 @@
+# ADR-007: Nine-Role Agent Catalog
+
+- **Статус**: принято
+- **Дата**: 2026-09-13
+- **Автор**: software-architect
+- Решение согласовано пользователем (ответы на вопросы раздела 5 plan.md, 2026-09-13)
+
+## Контекст
+
+- Q-6 plan §5: 9 ролевых профилей AI-DLC (`hld-mvp.md` §6, `tech-stack.md`, `git-structure.md` §5, `awslabs-aidlc-workflows.md`, `target-agents-and-skills.md`) против 5 логических ролей Analyst/Planner/Implementer/Reviewer/Verifier (`factory-components.md` §8) и 3 ролей (`autonomous-development-aidlc-dmtools.md` §5).
+- Влияние: число профилей/skills в MVP, маршрутизация; несовместимые манифесты ролей при старте T-011/T-081/T-082.
+
+## Решение
+
+1. Каталог — **9 широких ролей** (профили исполнения, не сервисы): Product, Design, Architect, Develop, Quality, Security, Infrastructure, CI/CD, Operation (`hld-mvp.md` §6; reviewer — режим независимой проверки соответствующим профилем, не десятая роль).
+2. Каталог **расширяем**: новая роль — плагин типа `agent` с манифестом (ADR-008), без изменения ядра и таблицы переходов Flow.
+3. Профили — версионированные манифесты: входы/выходы, tools, ограничения, stop-conditions; контракт `AgentProfile → TaskEnvelope → AgentResult` (T-003).
+4. На стадии запускаются только нужные роли; ядро MVP — Product, Develop, Quality (T-011), остальные подключаются по маршруту/риску (T-081, T-082).
+
+Связанные задачи: T-011, T-081, T-082.
+
+## Альтернативы
+
+| Вариант | Плюсы | Минусы | Почему не выбран |
+|---|---|---|---|
+| 9 ролей (AI-DLC) | Полное покрытие цикла и риск-профилей; соответствует HLD и гейтам UI/Planning/release | Больше манифестов и skills для содержания | Выбрано |
+| 5 логических ролей (`factory-components.md` §8) | Меньше профилей | Смешивает Design/Security/Infrastructure в общих профилях; слабее маршрутизация риск-классов | Отклонено |
+| 3 роли (`autonomous-development-aidlc-dmtools.md` §5) | Минимум на старте | Гейты UI/Planning/release остаются без ответственных профилей | Отклонено |
+
+## Последствия
+
+**Позитивные**
+- Единый контракт манифеста; маршрутизация риск-классов (T-080) отображается на роли напрямую.
+
+**Негативные / риски**
+- 9 профилей — дороже содержание skills/evals; риск «пустых» профилей без кейсов — подключать по мере появления маршрутов.
+
+**Дальше**
+- T-011: профили ядра и skills первого slice; T-081: Design/Architect + гейты UI/Planning; T-082: Infrastructure/Security/CI-CD/Operation; каталог ролей — в `agents/profiles`.

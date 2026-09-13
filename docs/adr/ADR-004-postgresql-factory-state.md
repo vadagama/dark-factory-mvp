@@ -1,0 +1,43 @@
+# ADR-004: PostgreSQL as Factory State Store
+
+- **Статус**: принято
+- **Дата**: 2026-09-13
+- **Автор**: software-architect
+- Решение согласовано пользователем (ответы на вопросы раздела 5 plan.md, 2026-09-13)
+- **Уточнено** (2026-09-13, архитектурное ревью ADR-пакета): добавлено требование восстанавливаемости authoritative state (п.7)
+
+## Контекст
+
+- Q-3 plan §5: PostgreSQL как state store, leases, outbox/event store, очередь задач — против полного отсутствия серверной БД ядра. За: `tech-stack.md`, `autonomous-development-aidlc-dmtools.md` (state/lease), `awslabs-aidlc-workflows.md` (event store), `factory-modularity.md` (State Store = PostgreSQL, PostgreSQL outbox), `graphs-and-pydantic-ai.md` («pydantic-graph + PostgreSQL state/event log + GitLab CI»), `dmtools-agents.md` (execution_leases). Против: `hld-mvp.md` §1/§13, `deployment.md` §10.
+- Связан с Q-5 (recovery-семантика) и Q-15 (события).
+
+## Решение
+
+1. **PostgreSQL — серверная БД состояния фабрики в MVP**: state store execution/stages, leases (`execution_leases`), outbox/event store, очередь задач (события — ADR-016).
+2. Разделение источников истины сохраняется: **GitLab** — durable-координатор верхнего уровня (pipelines, MR) и исполнитель сборок; **Git** — долгоживущая истина (спеки, ADR, код, run records в `dark-factory-runs`); **PostgreSQL** — операционное состояние и координация, не замена Git-истине.
+3. Основной вывод ответа Q-5 сохраняется полностью: ephemeral job pods + reconciler CronJob, Factory Runner — CLI, без постоянного workflow-воркера (ADR-006).
+4. Настоящее решение **перекрывает формулировку vision «без серверной БД ядра»** и вспомогательную таблицу внутри ответа Q-5 («PostgreSQL не обязателен для core; GitLab хранит operational state»); vision и plan правятся оркестратором синхронно с настоящим ADR-пакетом.
+5. Архитектурно дёшево: self-hosted Plane (ADR-013) всё равно требует PostgreSQL — отдельный инфраструктурный контур не добавляется; БД фабрики и БД Plane — логически разделённые инстансы.
+6. SQLite Console остаётся опциональным восстанавливаемым кэшем-проекцией, не источником истины.
+7. **Восстанавливаемость состояния** (условие к T-040): для authoritative operational state фиксируются MVP-значения RPO/RTO; backup автоматизирован и проверяется restore-тестом (обязателен в DoD T-040). Процедура восстановления: подъём PostgreSQL из backup → сверка `execution`/`stage`/`attempt`/`lease`/`outbox` с observed-состоянием GitLab (ADR-006 п.2) и run records; расхождение разрешается в пользу PostgreSQL. Данные, существующие только в PostgreSQL (usage-агрегаты, журнал reconcile), восстановимы не дальше последнего backup — допустимое окно задаёт RPO.
+
+Связанные задачи: T-003, **T-006** (схема состояния и миграции), T-005, T-040, T-042, T-050.
+
+## Альтернативы
+
+| Вариант | Плюсы | Минусы | Почему не выбран |
+|---|---|---|---|
+| PostgreSQL: state + leases + outbox + очередь | Идемпотентность/блокировки/очереди на проверенной базе; упрощает recovery ADR-006 | +1 сервис в локальном K8s; backup/retention — новая обязанность | Выбрано |
+| Без серверной БД ядра (SQLite опционально для Console cache) | Ноль сервисов, проще bootstrap | Leases/очередь/идемпотентность — самодельные средства на Git+CI-артефактах; recovery-семантика Q-5 сложнее | Отклонено: стоимость самодельной координации выше стоимости одного инстанса |
+
+## Последствия
+
+**Позитивные**
+- Recovery-семантика ADR-006 и событийная модель ADR-016 получают транзакционную базу; агрегаты бюджета/usage (T-062) не изобретаются заново.
+
+**Негативные / риски**
+- +~1GB в профиле 24GB — учесть в values-local (T-042).
+- Риск «PostgreSQL как скрытая истина» — митигируется п.2 и run records в Git.
+
+**Дальше**
+- T-006: схемы таблиц, миграции и инварианты состояния (включая effect ledger, ADR-006 п.3); T-040: bootstrap PostgreSQL (PVC, backup, restore-тест, RPO/RTO) вместе с Plane; T-042: chart-зависимость.
