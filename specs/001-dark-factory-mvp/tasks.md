@@ -73,7 +73,7 @@ description: "Task list for Dark Factory MVP implementation"
 - [x] T010 [US1] Детерминированные шаги стадии без LLM: сборка контекста, машинные проверки, агрегация, решение о доработке (детерминированный путь не обращается к harness) — `src/dark_factory/orchestration/stages/`
 - [x] T011 [US1] Персистенция записи запуска: `RunRecord` (`schema_version` + `manifest` + `change` + `run` + `stage_results` + `decisions`) в `--evidence-dir`/артефакт; immutable refs, без `latest` (ADR-015 §5) — `src/dark_factory/cli/run_records.py`
 - [x] T012 [US1] Идемпотентность запуска: повтор `stage run` с той же `operation_key` не создаёт второй внешний эффект; `find_existing` перед созданием, сверка эффекта перед повтором (FR-017, ADR-006 §3) — `src/dark_factory/orchestration/idempotency.py`, `tests/integration/`
-- [ ] T013 [US1] Fixture и паритет локально/CI: `fixtures/chg_smoke.yaml`; job, запускающий тот же релиз ядра тем же CLI (US1 scenario 2), `--non-interactive` в CI; `doctor` + `stage run` в pipeline — `fixtures/chg_smoke.yaml`, `.github/workflows/ci.yml`
+- [x] T013 [US1] Fixture и паритет локально/CI: `fixtures/chg_smoke.yaml`; job, запускающий тот же релиз ядра тем же CLI (US1 scenario 2), `--non-interactive` в CI; `doctor` + `stage run` в pipeline — `fixtures/chg_smoke.yaml`, `.github/workflows/ci.yml`
 
 **Checkpoint**: US1 полностью функциональна и проверяется независимо (quickstart §2).
 
