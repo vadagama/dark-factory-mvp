@@ -8,6 +8,7 @@
 |---|---|---|
 | `vision-<дата>-<версия>.md` | Видение продукта, дорожная карта, скоуп MVP | `analyst` |
 | `plan.md` | План работ (приоритизированный бэклог) | `analyst` |
+| `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `devops` |
 | `hld.md` | HLD: актуальная архитектура, связывает все ADR | `software-architect` |
 | `architecture-target.md` | Целевая архитектура, health score | `software-architect` |
 | `tech-dept.md` | Реестр технического долга | `software-architect` |
