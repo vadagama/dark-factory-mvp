@@ -1,0 +1,16 @@
+# US1 walking skeleton smoke change: a minimal valid Change snapshot
+# (schema dark_factory.changes.run.Change) for a deterministic construction
+# stage run without LLM, locally (quickstart §2) and in the CI parity job
+# (US1 scenario 2, .github/workflows/ci.yml job factory-us1-parity).
+# Keep it stable: the file bytes fix the input_revision of the stage run.
+id: chg_smoke
+title: US1 walking skeleton smoke change
+description: >-
+  Deterministic construction stage input for the US1 walking skeleton:
+  the same snapshot is run locally (quickstart §2) and by the CI parity
+  job (US1 scenario 2) to prove local/CI result equivalence without LLM.
+source: cli
+product:
+  provider: github
+  slug: vadagama/dark-factory-mvp
+risk_class: R0
