@@ -7,7 +7,9 @@ or database) and make every keyed mutation idempotent.
 
 from dark_factory.adapters.fakes.artifacts import FakeArtifactStore
 from dark_factory.adapters.fakes.events import FakeEventPublisher
+from dark_factory.adapters.fakes.execution import FakeExecution
 from dark_factory.adapters.fakes.harness import FakeHarness
+from dark_factory.adapters.fakes.knowledge import FakeKnowledge
 from dark_factory.adapters.fakes.scm import FakeMergeRequests, FakePipelines, FakeRepository
 from dark_factory.adapters.fakes.telemetry import FakeTelemetry
 from dark_factory.adapters.fakes.tracker import FakeTracker
@@ -16,7 +18,9 @@ from dark_factory.adapters.fakes.workflow import FakeReconciliationService, Fake
 __all__ = [
     "FakeArtifactStore",
     "FakeEventPublisher",
+    "FakeExecution",
     "FakeHarness",
+    "FakeKnowledge",
     "FakeMergeRequests",
     "FakePipelines",
     "FakeReconciliationService",
