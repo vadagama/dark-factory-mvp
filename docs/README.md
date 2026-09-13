@@ -8,11 +8,10 @@
 |---|---|---|
 | `vision-<дата>-<версия>.md` | Видение продукта, дорожная карта, скоуп MVP | `analyst` |
 | `plan.md` | План работ (приоритизированный бэклог) | `analyst` |
-| `architecture.md` | Текущая архитектура системы | `software-architect` |
+| `hld.md` | HLD: актуальная архитектура, связывает все ADR | `software-architect` |
 | `architecture-target.md` | Целевая архитектура, health score | `software-architect` |
 | `tech-dept.md` | Реестр технического долга | `software-architect` |
 | `adr/` | Архитектурные решения (ADR) | `software-architect` |
-| `notion/` | Снапшот исходных документов Notion (исследования и проектные обсуждения; не каноническая документация) | импорт |
 
 ## Вне `docs/` — связанные артефакты
 

@@ -8,7 +8,7 @@
 
 ## Контекст
 
-- Q-3 plan §5: PostgreSQL как state store, leases, outbox/event store, очередь задач — против полного отсутствия серверной БД ядра. За: `tech-stack.md`, `autonomous-development-aidlc-dmtools.md` (state/lease), `awslabs-aidlc-workflows.md` (event store), `factory-modularity.md` (State Store = PostgreSQL, PostgreSQL outbox), `graphs-and-pydantic-ai.md` («pydantic-graph + PostgreSQL state/event log + GitLab CI»), `dmtools-agents.md` (execution_leases). Против: `hld-mvp.md` §1/§13, `deployment.md` §10.
+- Q-3 plan §5: PostgreSQL как state store, leases, outbox/event store, очередь задач — против полного отсутствия серверной БД ядра.
 - Связан с Q-5 (recovery-семантика) и Q-15 (события).
 
 ## Решение

@@ -9,7 +9,7 @@
 
 ## Контекст
 
-- Q-15 plan §5: Kafka как внутренний транспорт (`dmtools-agents.md` §2 «Kafka event») против PostgreSQL outbox (`factory-modularity.md` §9: «отдельная Kafka не требуется, PostgreSQL outbox») и событий как CI-триггеров без шины (`hld-mvp.md`, `deployment.md` — webhook + scheduled reconcile). Связан с Q-3 (ADR-004).
+- Q-15 plan §5: Kafka как внутренний транспорт против PostgreSQL outbox и событий как CI-триггеров без шины (webhook + scheduled reconcile). Связан с Q-3 (ADR-004).
 - Влияние: инфраструктура, гарантии доставки, сложность fast-jobs (T-090).
 - Ревизия 2: внешнее ревью подтвердило выбор PostgreSQL outbox для MVP, но выявило главный пробел — outbox был определён как хранилище событий, без механизма доставки и модели нескольких потребителей: не задано, кто опрашивает outbox, резервирует события, вызывает обработчик или GitLab pipeline, фиксирует доставку и выполняет retry. PostgreSQL самостоятельно CI job не запустит. Эти аспекты обязательны до реализации T-063/T-090 и включены в решение.
 
@@ -19,7 +19,7 @@
 
 2. Модель доставки — **at-least-once**; exactly-once не заявляется. Потребители обязаны обеспечивать дедупликацию и идемпотентную обработку по `eventId`/`commandId`: повторная обработка одного `eventId` допустима, каждый обработчик хранит результат дедупликации, бизнес-операции идемпотентны по `eventId` либо `commandId`.
 
-3. Событие использует версионированный envelope (`factory-modularity.md` §9): `eventId`, `eventType`, `eventVersion`, `occurredAt`, `changeId`, `runId`, `stage`, `aggregateId`, `aggregateVersion`, `correlationId`, `causationId`, `artifactRefs`, `payload`.
+3. Событие использует версионированный envelope: `eventId`, `eventType`, `eventVersion`, `occurredAt`, `changeId`, `runId`, `stage`, `aggregateId`, `aggregateVersion`, `correlationId`, `causationId`, `artifactRefs`, `payload`.
 
 4. Доставку выполняет короткоживущий **Outbox Dispatcher CronJob** (в духе reconciler-модели ADR-006; постоянно работающий worker не требуется). Он резервирует доступные доставки, запускает внутренние обработчики или GitLab CI pipelines, фиксирует успешную доставку и выполняет retry. Резервирование — короткий lease / `FOR UPDATE SKIP LOCKED`; внешний вызов (например, запуск GitLab CI) не держится внутри долгой транзакции.
 
@@ -58,10 +58,10 @@ flowchart TD
 
 | Вариант | Плюсы | Минусы | Почему не выбран |
 |---|---|---|---|
-| Kafka как внутренний транспорт (`dmtools-agents.md` §2) | Зрелая шина: retention, replay, fan-out | Ещё один сервис и эксплуатация в профиле 24GB | Отклонено для MVP |
-| События как CI-триггеры без шины (`hld-mvp.md`, `deployment.md`) | Нулевая инфраструктура | Нет надёжной доставки и истории событий между компонентами | Отклонено как единственный механизм |
+| Kafka как внутренний транспорт | Зрелая шина: retention, replay, fan-out | Ещё один сервис и эксплуатация в профиле 24GB | Отклонено для MVP |
+| События как CI-триггеры без шины | Нулевая инфраструктура | Нет надёжной доставки и истории событий между компонентами | Отклонено как единственный механизм |
 | Outbox + постоянный dispatcher-сервис | Простой жизненный цикл, низкая латентность | Ещё один всегда работающий процесс в профиле 24GB | Заменён короткоживущим Dispatcher CronJob (п.4, ADR-006) |
-| PostgreSQL outbox (`factory-modularity.md` §9) | Транзакционность с состоянием; ноль новых сервисов; история в БД | Throughput-потолок PostgreSQL | Выбрано (ревизия 2, accepted with amendments) |
+| PostgreSQL outbox | Транзакционность с состоянием; ноль новых сервисов; история в БД | Throughput-потолок PostgreSQL | Выбрано (ревизия 2, accepted with amendments) |
 
 ## Последствия
 

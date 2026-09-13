@@ -8,7 +8,7 @@
 
 ## Контекст
 
-- Q-1 plan §5: язык/стек Factory Core — «Go + Temporal-воркеры» (`docs/notion/architecture/orchestrator.md`) против «Python модульный монолит (PydanticAI/pydantic-graph)» (`hld-mvp.md`, `factory-components.md`, `tech-stack.md`, `factory-modularity.md`, `graphs-and-pydantic-ai.md`, `dmtools-agents.md`, `target-agents-and-skills.md`). Приоритет у HLD MVP v0.6.
+- Q-1 plan §5: язык/стек Factory Core — «Go + Temporal-воркеры» против «Python модульный монолит (PydanticAI/pydantic-graph)».
 - Влияние: весь код конвейера, найм/навыки, скорость итераций; блокер для T-002 (scaffolding).
 
 ## Решение
@@ -27,7 +27,7 @@
 
 | Вариант | Плюсы | Минусы | Почему не выбран |
 |---|---|---|---|
-| Go + Temporal-воркеры (`orchestrator.md`) | Производительность, статическая типизация, зрелый durable engine | Второй стек параллельно с агентами/packs (Python), медленнее итерация промптов/контрактов, Temporal-инфраструктура в MVP | Отклонён: большинство документов и приоритетный HLD — за Python; Temporal решён отдельно (ADR-003) |
+| Go + Temporal-воркеры | Производительность, статическая типизация, зрелый durable engine | Второй стек параллельно с агентами/packs (Python), медленнее итерация промптов/контрактов, Temporal-инфраструктура в MVP | Отклонён: выбран Python-стек; Temporal решён отдельно (ADR-003) |
 | Python модульный монолит (PydanticAI/pydantic-graph) | Один стек с агентами и packs, быстрый цикл, нативные PydanticAI/pydantic-graph | Дисциплина границ модулей; чистая CPU-производительность не целевая | Выбрано |
 
 ## Последствия

@@ -8,7 +8,7 @@
 
 ## Контекст
 
-- Q-8 plan §5: полный корпоративный стек (Keycloak, Vault, MinIO/Harbor, Prometheus/Grafana/Loki/Tempo, Sentry — `tech-stack.md` этап 2, `git-structure.md` §11, `droid-improvements.md`, `processes-tracker.md`, `ui-ux.md`, `self-improvement.md`) против минимального bootstrap + OTel (`hld-mvp.md`, `deployment.md` §5/§11). По Langfuse документы расходятся (обязателен: `dm-ai-agent-instructions.md`, `plane.md`, `processes-tracker.md`, `droid-improvements.md`, `ui-ux.md`; опционален: `hld-mvp.md`, `deployment.md`, `self-improvement.md`); страница `langfuse.md` пуста. Registry: «любой OCI» vs Harbor.
+- Q-8 plan §5: полный корпоративный стек (Keycloak, Vault, MinIO/Harbor, Prometheus/Grafana/Loki/Tempo, Sentry) против минимального bootstrap + OTel. По Langfuse исходные материалы расходятся; Registry: «любой OCI» vs Harbor.
 - Влияние: объём bootstrap, ресурсы 24GB, сложность первого запуска; решение до T-060/T-040.
 
 ## Решение
@@ -33,7 +33,7 @@
 |---|---|---|---|
 | Полный корпоративный стек в MVP | Продакшн-наблюдаемость, готовность к DC | Bootstrap нереалистичен на MacBook 24GB; порог входа; медленный первый запуск | Отклонено; стек отложен в T-091 |
 | Минимальный bootstrap + OTel как контракт | Быстрый первый запуск; смена backend без изменения кода | Ограниченная ретроспектива инцидентов в MVP | Выбрано |
-| Langfuse обязателен для AI-трасс | Готовый UI трасс LLM | Ещё один сервис; противоречие в снапшоте, страница пуста | Отклонено: Pydantic Evals + OTel закрывают MVP-потребность |
+| Langfuse обязателен для AI-трасс | Готовый UI трасс LLM | Ещё один сервис; противоречие в исходных материалах | Отклонено: Pydantic Evals + OTel закрывают MVP-потребность |
 
 ## Последствия
 
