@@ -9,7 +9,7 @@
 
 ## Контекст
 
-- Q-11 plan §5: merge train / merged-results pipelines требуют Premium/Ultimate (`ci-trunk-based.md`, `orchestrator.md`); версия «GitLab 16» и лицензия инстанса не подтверждены (`hld-mvp.md` §8/§16, `deployment.md` §5).
+- Q-11 plan §5: merge train / merged-results pipelines требуют Premium/Ultimate; версия «GitLab 16» и лицензия инстанса не подтверждены.
 - Влияние: доступные CI-паттерны trunk-based (T-031); альтернативы при CE — sequence pipelines, manual approvals.
 
 ## Решение
@@ -17,7 +17,7 @@
 1. Целевая редакция GitLab — **Premium** (компания располагает инстансом GitLab 16).
 2. Версия и лицензия инстанса подтверждаются на bootstrap (T-040) — до включения Premium-паттернов.
 3. **Критический путь MVP не строится исключительно на Premium-функциях**: базовый контур (MR, обязательные гейты, pipeline) — CE-совместимый; merge train / merged-results включаются как ускорители после подтверждения лицензии.
-4. При недоступности Premium — документированный fallback: sequence pipelines и manual approvals (`deployment.md` §5). CE-механика approval: protected branch + manual protected job, фиксирующий identity/revision approval, после которого merge выполняет только trusted finalizer (ADR-011 п.2); механика проходит интеграционный тест в T-032 до включения fallback'а. CE-fallback не ослабляет инвариант «merge — только человек»; смена паттерна не меняет контракты Flow и CI-шаблонов (T-031).
+4. При недоступности Premium — документированный fallback: sequence pipelines и manual approvals. CE-механика approval: protected branch + manual protected job, фиксирующий identity/revision approval, после которого merge выполняет только trusted finalizer (ADR-011 п.2); механика проходит интеграционный тест в T-032 до включения fallback'а. CE-fallback не ослабляет инвариант «merge — только человек»; смена паттерна не меняет контракты Flow и CI-шаблонов (T-031).
 
 Связанные задачи: T-030, T-031, T-032, T-040.
 
@@ -26,7 +26,7 @@
 | Вариант | Плюсы | Минусы | Почему не выбран |
 |---|---|---|---|
 | GitLab Premium | Merge train/merged-results, встроенные approvals/protected branches — полные паттерны trunk-based | Лицензионная зависимость; нужна верификация инстанса | Выбрано (с проверкой лицензии в T-040) |
-| GitLab CE + обходные паттерны | Нет лицензионного риска | Sequence pipelines/manual approvals медленнее и сложнее в поддержке; `ci-trunk-based.md` рассчитан на Premium | Fallback, не цель |
+| GitLab CE + обходные паттерны | Нет лицензионного риска | Sequence pipelines/manual approvals медленнее и сложнее в поддержке; исходный процесс был рассчитан на Premium | Fallback, не цель |
 
 ## Последствия
 

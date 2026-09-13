@@ -9,7 +9,7 @@
 
 ## Контекст
 
-- Q-16 plan §5: ADR-001 выбрал Spec Kit, но снапшот целиком описывает OpenSpec-формат (`proposal.md`, `openspec/changes/<id>/` — `spec-driven-development.md`, `requirements-levels.md`, `target-agents-and-skills.md` — skill `openspec-change`); соответствие стадий Flow (Specification/Planning) командам `/speckit-*`, расположение и формат спек в продуктовых репо нигде не закреплены.
+- Q-16 plan §5: ADR-001 выбрал Spec Kit, но исходные материалы проработки целиком описывают OpenSpec-формат (`proposal.md`, `openspec/changes/<id>/`, skill `openspec-change`); соответствие стадий Flow (Specification/Planning) командам `/speckit-*`, расположение и формат спек в продуктовых репо нигде не закреплены.
 - Влияние: контракты спецификационного гейта (T-020/T-021), шаблоны `specs/`, трассируемость evidence; решение до T-020.
 - Ревью первоначальной редакции настоящего ADR («Spec Kit для фабрики, OpenSpec для продуктов») выявило архитектурный разрыв: фабрика должна уметь разрабатывать саму себя тем же процессом, которым она разрабатывает продукты. Постоянная пара форматов потребовала бы поддерживать self-improvement loop в двух форматах, два набора skills и две модели трассировки.
 - OpenSpec поддерживает project config, собственные схемы, шаблоны и зависимости между артефактами ([OpenSpec Customization](https://github.com/Fission-AI/OpenSpec/blob/main/docs/customization.md)); адаптируется профиль и схема, а не код инструмента.

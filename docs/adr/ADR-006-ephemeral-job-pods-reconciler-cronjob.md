@@ -9,7 +9,7 @@
 
 ## Контекст
 
-- Q-5 plan §5: постоянно живущий worker/execution controller (`tech-stack.md`, `dmtools-agents.md` — controller/reconciler как компонент контура) против отсутствия постоянных процессов — Runner создаёт pod на стадию, reconcile по расписанию (`hld-mvp.md` §13: «Factory Runner — CLI/entrypoint, а не отдельный постоянно работающий сервис», `deployment.md`).
+- Q-5 plan §5: постоянно живущий worker/execution controller (controller/reconciler как компонент контура) против отсутствия постоянных процессов — Runner создаёт pod на стадию, reconcile по расписанию («Factory Runner — CLI/entrypoint, а не отдельный постоянно работающий сервис»).
 - Влияние: ресурсы MacBook 24GB, идемпотентность, recovery-семантика (Q-3, ADR-004).
 - Ревизия 2: внешнее ревью подтвердило направление решения и выявило главный риск не в отсутствии постоянно работающего worker, а в недоопределённости модели состояния и повторного выполнения (кто принимает окончательное решение о состоянии execution; семантика retry при увеличении attempt).
 
@@ -163,8 +163,8 @@ flowchart TD
 
 | Вариант | Плюсы | Минусы | Почему не выбран |
 |---|---|---|---|
-| Постоянный worker/execution controller (`tech-stack.md`, `dmtools-agents.md`) | Реакция за секунды, полноценные leases/очереди/приоритеты, единый control plane | Второй orchestration control plane рядом с GitLab CI при сценариях, пока выражаемых pipeline/job-моделью; постоянный процесс в профиле 24GB; сложнее bootstrap | Не выбран для MVP — архитектурная причина (дублирование control plane), ресурсный профиль вторичен; зафиксирован как целевая эволюция с триггерами hard/soft/capacity (п.10) |
-| Ephemeral CI job pods + идемпотентный reconciler CronJob (`hld-mvp.md`, `deployment.md`) | Нет постоянного воркера; pod уже временная среда исполнения; предсказуемый профиль ресурсов; retry/timeout/визуализация — из GitLab CI | Latency recovery до интервала CronJob; идемпотентность — обязанность каждого обработчика; корректность параллелизма требует PG-lease поверх `Forbid` | Выбрано (ревизия 2, accepted with amendments) |
+| Постоянный worker/execution controller | Реакция за секунды, полноценные leases/очереди/приоритеты, единый control plane | Второй orchestration control plane рядом с GitLab CI при сценариях, пока выражаемых pipeline/job-моделью; постоянный процесс в профиле 24GB; сложнее bootstrap | Не выбран для MVP — архитектурная причина (дублирование control plane), ресурсный профиль вторичен; зафиксирован как целевая эволюция с триггерами hard/soft/capacity (п.10) |
+| Ephemeral CI job pods + идемпотентный reconciler CronJob | Нет постоянного воркера; pod уже временная среда исполнения; предсказуемый профиль ресурсов; retry/timeout/визуализация — из GitLab CI | Latency recovery до интервала CronJob; идемпотентность — обязанность каждого обработчика; корректность параллелизма требует PG-lease поверх `Forbid` | Выбрано (ревизия 2, accepted with amendments) |
 
 ## Последствия
 

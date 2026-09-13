@@ -8,13 +8,17 @@ version = "0.1.0"
 description = "Software Dark Factory MVP: agent pipeline that turns tasks into working, tested code."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.9",
+    "pyyaml>=6.0.2",
+]
 
 [dependency-groups]
 dev = [
     "ruff>=0.14",
     "mypy>=1.14",
     "pytest>=8.3",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -46,6 +50,7 @@ select = [
 python_version = "3.12"
 files = ["src", "tests"]
 strict = true
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"

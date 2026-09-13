@@ -8,7 +8,7 @@
 
 ## Контекст
 
-- Q-12 plan §5: Plane (self-hosted, webhook+HMAC — `plane.md`, `processes-tracker.md`, `requirements-levels.md` («Plane CE»), `droid-improvements.md`) против Linear (SaaS — `graphs-and-pydantic-ai.md`, `dmtools-agents.md`); Jira-наследие dmtools — только источник паттернов, отвергнут как целевой трекер (`dm-ai-agent-instructions.md`, `dmtools-agents.md`); открытый вопрос зафиксирован в `hld-mvp.md` §16.
+- Q-12 plan §5: Plane (self-hosted, webhook+HMAC) против Linear (SaaS); Jira-наследие dmtools — только источник паттернов, отвергнут как целевой трекер.
 - Влияние: intake-контур и webhook-интеграции (T-033); блокирует полный intake, но не P0-ядро (CLI-интейк).
 
 ## Решение
@@ -26,7 +26,7 @@
 
 | Вариант | Плюсы | Минусы | Почему не выбран |
 |---|---|---|---|
-| Plane (self-hosted, webhook+HMAC) | Данные внутри контура; рекомендован большинством документов снапшота | Self-hosting-нагрузка: +сервис и его БД | Выбрано |
+| Plane (self-hosted, webhook+HMAC) | Данные внутри контура; рекомендован большинством исходных материалов | Self-hosting-нагрузка: +сервис и его БД | Выбрано |
 | Linear (SaaS) | Нулевая эксплуатация, зрелый API | Данные вовне контура; нет self-hosted webhook+HMAC | Отклонено |
 | Jira (наследие dmtools) | Существующие процессы | Тяжеловесен; отвергнут источниками как целевой трекер | Отклонено: только источник паттернов |
 
@@ -34,7 +34,7 @@
 
 **Позитивные**
 - Intake из трекера и публикация статусов/ссылок обратно; контур остаётся полностью self-hosted.
-- Открытый вопрос `hld-mvp.md` §16 закрыт; замена трекера изолирована `TrackerPort`.
+- Замена трекера изолирована `TrackerPort`.
 
 **Негативные / риски**
 - +сервис в K8s и его PostgreSQL — учесть в ресурсном профиле (ADR-010).

@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Реализовать MVP Dark Factory согласно docs/notion/strategy.md (зачем строим) и docs/notion/architecture/hld-mvp.md v0.6 (объём и ограничения MVP): сквозной агентный конвейер intake → спецификация → согласование → реализация → review/rework → merge → сборка → dev-деплой → smoke → обновление трекера"
+**Input**: User description: "Реализовать MVP Dark Factory согласно docs/vision-2026-09-13-v1.md (зачем строим) и docs/hld.md (объём и ограничения MVP): сквозной агентный конвейер intake → спецификация → согласование → реализация → review/rework → merge → сборка → dev-деплой → smoke → обновление трекера"
 
 ## User Scenarios & Testing *(mandatory)*
 

@@ -1,24 +1,16 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 → 2.0.0 (MAJOR: переопределён принцип I)
-Основание: ADR-017 (единый OpenSpec с профилями factory-sdd / product-sdd;
-  Spec Kit — bootstrap-инструмент до контрольной точки T-020). ADR-017 частично
-  перекрывает ADR-001, на котором была основана редакция 1.0.0.
-Modified principles:
-  - I. Specification-Driven Development (SDD) — канонический формат заменён
-    со Spec Kit на OpenSpec; изменены обязательный workflow и пути артефактов
-    (`openspec/changes/<change-id>/`, `openspec/specs/` вместо `specs/<фича>/`);
-    добавлен переходный период bootstrap-фазы
+Version change: 2.0.0 → 2.0.1 (PATCH: уточнение формулировок)
+Основание: неканонический внешний источник проработки решения выведен из
+  командно-ориентированной документации; ссылки на него удалены из docs-контура.
+Modified principles: нет
 Modified sections:
-  - Language & Communication Standards — `openspec/` добавлен в перечень
-    документации на русском
-  - Development Workflow & Quality Gates — quality gates разделены на
-    bootstrap-фазу (speckit-гейты) и целевую модель (гейты фабрики, T-021)
+  - Language & Communication Standards — удалён пункт о неканоническом источнике;
+    источник истины по архитектуре — ADR и `docs/hld.md`
 Added sections: нет
 Removed sections: нет
-Follow-up TODOs: после T-020 удалить раздел про bootstrap-фазу и понизить
-  ADR-001 до статуса «заменено» (потребует PATCH/MINOR-поправки)
+Follow-up TODOs: нет
 -->
 
 # Software Dark Factory Constitution
@@ -88,8 +80,8 @@ Conventional Commits на английском; ветки `feat/<кратко>`
   английские.
 - Один документ — одна тема; даты и версии — в именах файлов
   (`vision-2026-09-12-v1.md`).
-- `docs/notion/` — снапшот исследований Notion, не каноническая документация:
-  при конфликте приоритет у ADR и актуальных документов `docs/`.
+- Источник истины по архитектуре — ADR и актуальные документы `docs/`
+  (сводная картина — `docs/hld.md`); при конфликте приоритет у ADR.
 
 ## Development Workflow & Quality Gates
 
@@ -119,4 +111,4 @@ Conventional Commits на английском; ветки `feat/<кратко>`
 - Все агенты читают конституцию в начале сессии. Приёмка DoD включает проверку
   соответствия принципам; несоответствие блокирует завершение задачи.
 
-**Version**: 2.0.0 | **Ratified**: 2026-09-13 | **Last Amended**: 2026-09-13
+**Version**: 2.0.1 | **Ratified**: 2026-09-13 | **Last Amended**: 2026-09-13

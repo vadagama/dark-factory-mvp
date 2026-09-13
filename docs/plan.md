@@ -3,9 +3,9 @@
 **На основе:** `docs/vision-2026-09-13-v1.md`
 **Дата:** 2026-09-13
 **Статус:** 🟡 В работе
-**Контекст:** репозиторий pre-MVP, greenfield (`src/` пуст). Все задачи стартуют со статусом 🔴. Слой/модуль — по модульному монолиту HLD MVP (Changes, Orchestration, Agents, Context, Execution, Quality + ports/adapters, api, cli, console, packs).
+**Контекст:** репозиторий pre-MVP, greenfield (`src/` пуст). Все задачи стартуют со статусом 🔴. Слой/модуль — по модульному монолиту из HLD (`docs/hld.md`; Changes, Orchestration, Agents, Context, Execution, Quality + ports/adapters, api, cli, console, packs).
 
-**Принятые решения (данность, не пересматриваются здесь):** SDD-модель — единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit (ADR-001, workflow `/speckit-*`) — инструмент bootstrap-фазы до контрольной точки T-020 (ADR-017, частично перекрывает ADR-001). Конституция `.specify/memory/constitution.md` v2.0.0 (SDD обязателен для фич, канонический формат — OpenSpec, evidence-based validation, минимальные изменения, ADR-governance). Модель участия человека по фазам и границы автономной реализации — ADR-018 (реализация — T-016). Состав инфраструктуры MVP при конфликте определяет ADR-009 (минимальный bootstrap + OTel). SC/CI-провайдеры — через адаптеры за портами `SourceControlPort`/`CIPort`: MVP стартует на GitHub-адаптере, GitLab-адаптер — второй провайдер (ADR-019).
+**Принятые решения (данность, не пересматриваются здесь):** SDD-модель — единый OpenSpec с профилями `factory-sdd` / `product-sdd`; Spec Kit (ADR-001, workflow `/speckit-*`) — инструмент bootstrap-фазы до контрольной точки T-020 (ADR-017, частично перекрывает ADR-001). Конституция `.specify/memory/constitution.md` v2.0.1 (SDD обязателен для фич, канонический формат — OpenSpec, evidence-based validation, минимальные изменения, ADR-governance). Модель участия человека по фазам и границы автономной реализации — ADR-018 (реализация — T-016). Состав инфраструктуры MVP при конфликте определяет ADR-009 (минимальный bootstrap + OTel). SC/CI-провайдеры — через адаптеры за портами `SourceControlPort`/`CIPort`: MVP стартует на GitHub-адаптере, GitLab-адаптер — второй провайдер (ADR-019).
 
 **Правки 2026-09-13 (валидация ADR-001…018):** синхронизированы T-001 (PostgreSQL как state store, ADR-004), T-006 (durable effect ledger, ADR-006 п.3), T-022 (OpenSpec вместо `/speckit-constitution`, ADR-017), T-033 (Plane, ADR-013), T-040 (restore-тест, capacity smoke, проверка GitLab-лицензии — ADR-004/010/012), T-050 (AuthN-условия ADR-009 п.7), T-061/T-072 (P0-минимум evidence-индекса); ordering-диаграмма переименована (T-020 — OpenSpec-миграция).
 
@@ -51,7 +51,7 @@
 - **Описание:** Pydantic-модели: Change, ChangeRun, StageRun, StageResult, NextAction, ArtifactRef, Evidence, Decision, Finding, GateResult, Usage, BudgetSnapshot; сериализация в run records (JSON/YAML) для сохранения между CI jobs.
 - **Критерий готовности (DoD):** typecheck + lint + test (round-trip сериализация, инварианты переходов статусов).
 - **Зависит от задач:** T-002
-- **Статус:** 🔴 Запланировано
+- **Статус:** ✅ Выполнено (2026-09-13): модуль `dark_factory.changes` — Pydantic v2 контракты (Change, ChangeRun, StageRun, immutable StageResult, NextAction — закрытое дискриминированное объединение из 8 вариантов, ArtifactRef, Evidence, ChangeRequestRef/RepositoryRef по ADR-019, Decision, Finding, GateResult, Usage, BudgetSnapshot, RunManifest/RunRecord со schema_version), ключи идемпотентности ADR-006 п.3, детерминированные таблицы переходов статусов run/stage с единой валидацией (`apply_status`), инварианты завершения ADR-009 п.9, сериализация run records JSON/YAML (round-trip); добавлены зависимости pydantic + pyyaml и плагин mypy; ruff + mypy strict + pytest (45 тестов) — зелёные локально, CI повторяет те же команды
 
 ### T-004. Factory Flow: стадии, переходы, гейты, маршруты
 
@@ -287,7 +287,7 @@
 - **Сложность:** M
 - **Слой:** Infrastructure
 - **Пакет / Компонент:** `deploy/bootstrap`
-- **Описание:** Воспроизводимый bootstrap по deployment.md: Docker Desktop K8s, namespaces (argocd, factory, ci, factory-runs, apps-dev), quotas, service accounts, baseline NetworkPolicy с deny-by-default; негативные egress-тесты (factory-runs изолирована от factory/ci/argocd); защита kube context; PostgreSQL фабрики (ADR-004: state/leases/outbox/очередь, PVC, backup, автоматизированный restore-тест, MVP-значения RPO/RTO) — вместе с БД Plane, логически раздельно; проверка доступности и учётных данных SC/CI-провайдеров (GitHub App для MVP; версия/лицензия GitLab-инстанса — ADR-012, требуется к T-034); capacity smoke полного контура (idle + один e2e job: peak RAM, CPU, диск — ADR-010 п.2).
+- **Описание:** Воспроизводимый bootstrap (ADR-010): Docker Desktop K8s, namespaces (argocd, factory, ci, factory-runs, apps-dev), quotas, service accounts, baseline NetworkPolicy с deny-by-default; негативные egress-тесты (factory-runs изолирована от factory/ci/argocd); защита kube context; PostgreSQL фабрики (ADR-004: state/leases/outbox/очередь, PVC, backup, автоматизированный restore-тест, MVP-значения RPO/RTO) — вместе с БД Plane, логически раздельно; проверка доступности и учётных данных SC/CI-провайдеров (GitHub App для MVP; версия/лицензия GitLab-инстанса — ADR-012, требуется к T-034); capacity smoke полного контура (idle + один e2e job: peak RAM, CPU, диск — ADR-010 п.2).
 - **Критерий готовности (DoD):** скрипт воспроизводим на чистом Docker Desktop; тесты изоляции зелёные; restore-тест PostgreSQL проходит (RPO/RTO зафиксированы); capacity smoke выполнен с запасом до повышения concurrency; учётные данные провайдеров зафиксированы (evidence); версия/лицензия GitLab — к T-034.
 - **Зависит от задач:** T-001 (deployment-цель)
 - **Статус:** 🔴 Запланировано
@@ -672,7 +672,7 @@ flowchart TD
 
 Суммы пересчитаны по фактическому составу задач (21 рабочий день в месяце). Прежняя редакция таблицы занижала объём: заявленные «41 задача» и «~215–290 дней» не соответствовали содержимому раздела 1 ещё до добавления T-006/T-016/T-064.
 
-**MVP (P0):** 121–145 дней ≈ **6–7 мес.** одним исполнителем последовательно; при параллелизме 2 потоков (Core/Agents ∥ Delivery/Console) — **~3–3.5 мес.** [assumption — оценка экспертная, в документах Notion трудоёмкость не указана]. Оценки не включают время простоя на внешние зависимости (SC/CI-провайдеры/трекер/LLM-квоты).
+**MVP (P0):** 121–145 дней ≈ **6–7 мес.** одним исполнителем последовательно; при параллелизме 2 потоков (Core/Agents ∥ Delivery/Console) — **~3–3.5 мес.** [assumption — оценка экспертная]. Оценки не включают время простоя на внешние зависимости (SC/CI-провайдеры/трекер/LLM-квоты).
 
 ## 4. Критические пути
 
@@ -685,7 +685,7 @@ flowchart TD
 
 ## 5. Открытые архитектурные вопросы (на ADR)
 
-Снапшот `docs/notion/**` внутренне противоречив (заявлено в `docs/notion/README.md`); приоритет у HLD MVP v0.6, но решение по каждому конфликту фиксируется **ADR'ом**, а не молчаливым выбором. Вопрос **Spec Kit vs OpenSpec** первоначально считался закрытым ADR-001 (Spec Kit; workflow `/speckit-*`) и находился вне списка, но был переоткрыт как Q-16 и решён ADR-017 в пользу единого OpenSpec; конституция обновлена до v2.0.0.
+Исходные материалы проработки решения внутренне противоречивы; приоритет отдан наиболее актуальному HLD, но решение по каждому конфликту фиксируется **ADR'ом**, а не молчаливым выбором. Вопрос **Spec Kit vs OpenSpec** первоначально считался закрытым ADR-001 (Spec Kit; workflow `/speckit-*`) и находился вне списка, но был переоткрыт как Q-16 и решён ADR-017 в пользу единого OpenSpec; конституция обновлена (текущая редакция — v2.0.1).
 
 **Сводка решений (2026-09-13):** все вопросы раздела закрыты ADR-002…ADR-017 (ответы согласованы пользователем):
 
@@ -715,101 +715,82 @@ flowchart TD
 ### Q-1. Язык/стек Factory Core
 
 - **Суть:** Go + Temporal-воркеры vs Python модульный монолит (PydanticAI/pydantic-graph).
-- **Документы:** `docs/notion/architecture/orchestrator.md` (Go + Temporal) против `hld-mvp.md`, `factory-components.md`, `tech-stack.md`, `factory-modularity.md`, `graphs-and-pydantic-ai.md`, `dmtools-agents.md`, `target-agents-and-skills.md` (Python).
 - **Влияние на MVP:** весь код конвейера, найм/навыки, скорость итераций; принят Python (HLD приоритетен) — требуется фиксирующий ADR до T-002.
 
 ### Q-2. Temporal в MVP: обязателен vs исключён
 
-- **Суть:** часть документов строит процесс на Temporal ChangeWorkflow (ожидания, retry, resume), часть исключает его: состояние в Git/MR/CI/run records.
-- **Документы (за Temporal):** `orchestrator.md`, `plane.md`, `processes-tracker.md`, `dm-ai-agent-instructions.md`, `droid-improvements.md`, `dmtools-agents.md`, `requirements-levels.md` (DiscoveryWorkflow), `ui-ux.md`, `spec-driven-development.md` (таблица ответственности); отложенно — `factory-modularity.md` (Temporal «шагом 10»).
-- **Документы (против):** `hld-mvp.md`, `deployment.md` (§1, §15), `target-agents-and-skills.md` §10, `graphs-and-pydantic-ai.md` («Temporal не нужен для MVP»), `self-improvement.md`.
+- **Суть:** часть исходных материалов строит процесс на Temporal ChangeWorkflow (ожидания, retry, resume), часть исключает его: состояние в Git/MR/CI/run records.
 - **Влияние:** механизм долговременных ожиданий/resume (StageResult/NextAction + reconcile vs durable workflow); инфраструктура MacBook; сложность реализации rework-лимитов. Vision принял «исключён» — нужен ADR-статус.
 
 ### Q-3. Серверная БД состояния фабрики (PostgreSQL)
 
 - **Суть:** PostgreSQL как state store, leases, outbox/event store, очередь задач vs полное отсутствие серверной БД ядра (SQLite опционально для Console cache).
-- **Документы (за БД):** `tech-stack.md`, `autonomous-development-aidlc-dmtools.md` (state/lease), `awslabs-aidlc-workflows.md` (event store), `factory-modularity.md` (State Store=PostgreSQL, PostgreSQL outbox), `graphs-and-pydantic-ai.md` («Для MVP достаточно: pydantic-graph + PostgreSQL state/event log + GitLab CI»), `dmtools-agents.md` (execution_leases).
-- **Документы (против):** `hld-mvp.md`, `deployment.md` §10.
 - **Влияние:** идемпотентность/блокировки/очереди без БД сложнее (Git+CI-артефакты); доп. контур на 24GB. Связан с Q-5 и Q-15.
 
 ### Q-4. Scope pydantic-graph: durable engine vs только внутри стадии
 
 - **Суть:** durable Pydantic Graph как WorkflowEnginePort между CI jobs vs TaskGraph только внутри одной стадии, продолжение через StageResult/NextAction; промежуточная позиция — «лёгкий workflow-core на pydantic-graph», но не весь флоу.
-- **Документы:** `tech-stack.md` (durable за портом) против `hld-mvp.md` §5–6, `deployment.md` §2, `target-agents-and-skills.md`; `graphs-and-pydantic-ai.md` — промежуточная («не превращать всю фабрику в один граф», но workflow-core на pydantic-graph).
 - **Влияние:** сложность ядра, восстановление после падения job, тестопригодность.
 
 ### Q-5. Постоянный worker/reconciler vs временные CI job pods
 
 - **Суть:** отдельный постоянно живущий worker-процесс (execution controller) vs отсутствие постоянных процессов: Runner создаёт pod на стадию, reconcile — scheduled job.
-- **Документы:** `tech-stack.md` (worker), `dmtools-agents.md` (controller/reconciler как компонент контура) против `hld-mvp.md`, `deployment.md` (Runner job pods, «Factory Runner — CLI/entrypoint, а не отдельный постоянно работающий сервис»).
 - **Влияние:** ресурсы 24GB, идемпотентность, recovery-семантика (Q-3).
 
 ### Q-6. Каталог ролей: 9 vs 5 vs 3
 
 - **Суть:** 9 ролевых профилей AI-DLC vs 5 логических ролей (Analyst/Planner/Implementer/Reviewer/Verifier) vs 3 роли.
-- **Документы:** 9 — `hld-mvp.md` §6, `tech-stack.md`, `git-structure.md`, `awslabs-aidlc-workflows.md`, `target-agents-and-skills.md`; 5 — `factory-components.md` §8; 3 — `autonomous-development-aidlc-dmtools.md` §5.
 - **Влияние:** число профилей/skills в MVP, маршрутизация; несовместимые манифесты ролей при старте T-011/T-081/T-082.
 
 ### Q-7. Состав модулей Core и плагинная модель
 
 - **Суть:** 6 модулей HLD vs +delivery/learning vs полная плагинная архитектура (стабильное ядро + SDK + 8 типов плагинов + FactoryPack) vs `factory-delivery-loop` с 10 bounded contexts.
-- **Документы:** `hld-mvp.md` §4 против `git-structure.md` §4, `factory-modularity.md` (§2–3, §10–11), `dmtools-agents.md` (заключение), `graphs-and-pydantic-ai.md` (структура каталогов).
 - **Влияние:** границы MVP-кода, необходимость SDK/plugin-registry в первой итерации, структура репо (Q-14).
 
 ### Q-8. Платформенные сервисы и наблюдаемость
 
-- **Суть:** полный корпоративный стек (Keycloak, Vault, MinIO/Harbor, Prometheus/Grafana/Loki/Tempo, Sentry) vs минимальный bootstrap + OTel как нейтральный контракт; для AI-трасс — Langfuse vs Pydantic Evals+OTel(+Arize Phoenix); Registry — «любой OCI» vs Harbor. Страница `langfuse.md` в снапшоте пуста.
-- **Документы (полный стек):** `tech-stack.md` (этап 2), `git-structure.md` §11, `droid-improvements.md`, `processes-tracker.md` (Harbor/Prometheus/Grafana/Loki/Sentry), `self-improvement.md` (Tempo/Loki/Prometheus; Langfuse не нужен), `ui-ux.md` (Sentry/RUM).
-- **Документы (минимум):** `hld-mvp.md`, `deployment.md` §5/§11; Langfuse обязателен: `dm-ai-agent-instructions.md`, `plane.md`, `processes-tracker.md`, `droid-improvements.md`, `ui-ux.md`; Langfuse опционален: `hld-mvp.md`, `deployment.md`, `self-improvement.md`.
+- **Суть:** полный корпоративный стек (Keycloak, Vault, MinIO/Harbor, Prometheus/Grafana/Loki/Tempo, Sentry) vs минимальный bootstrap + OTel как нейтральный контракт; для AI-трасс — Langfuse vs Pydantic Evals+OTel(+Arize Phoenix); Registry — «любой OCI» vs Harbor.
 - **Влияние:** объём bootstrap, ресурсы, сложность первого запуска; выбрать состав MVP-наблюдаемости до T-060/T-040.
 
 ### Q-9. Deployment-цель MVP
 
 - **Суть:** локальный Docker Desktop Kubernetes + Helm + Argo CD на MacBook 24GB vs VM (Compose/RKE2) vs «K8S или VM».
-- **Документы:** `hld-mvp.md` §13, `deployment.md` против `tech-stack.md` (этап 2: VM) и `autonomous-development-aidlc-dmtools.md` («K8S или VM»).
 - **Влияние:** лицензия Docker Desktop (корпоративное использование — проверка в bootstrap), ARM64-совместимость, воспроизводимость, запасной путь при нехватке ресурсов.
 
 ### Q-10. Уровень автономности merge/release в MVP
 
 - **Суть:** merge — только человек; production — вне MVP vs Human Off The Loop с автоматическим релизом низкого риска.
-- **Документы:** `hld-mvp.md` §9, `deployment.md` §15, `target-agents-and-skills.md` §8 (авто только «после формальных gates и накопления статистики») против `autonomous-agent-system.md`, `strategy.md` (авто-релиз низкого риска в целевой модели).
 - **Влияние:** merge policy (T-032), скорость цикла, требования к статистике перед T-085; риск-уставка R-классов.
 
 ### Q-11. GitLab edition и версия
 
 - **Суть:** merge train / merged-results pipelines требуют Premium/Ultimate; версия «GitLab 16» и лицензия инстанса не подтверждены.
-- **Документы:** `ci-trunk-based.md`, `orchestrator.md` (Premium-функции) против ограничений в `hld-mvp.md` §8/§16, `deployment.md` §5.
 - **Влияние:** доступные CI-паттерны trunk-based (T-031), альтернативы при CE (sequence pipelines, manual approvals).
 - **Уточнение 2026-09-13 (ADR-019):** MVP исполняется на GitHub-адаптере; вопрос блокирует только GitLab-провайдера (T-034) — подтверждение версии/лицензии перед его стартом (ADR-012).
 
 ### Q-12. Трекер: Plane vs Linear
 
 - **Суть:** Plane (self-hosted, webhook+HMAC) vs Linear (SaaS) vs Jira-наследие dmtools (только как источник паттернов, не целевой трекер).
-- **Документы:** Plane — `plane.md`, `processes-tracker.md`, `requirements-levels.md` («Plane CE»), `droid-improvements.md`; Plane/Linear — `graphs-and-pydantic-ai.md`, `dmtools-agents.md`; открытый вопрос зафиксирован в `hld-mvp.md` §16; Jira отвергнут — `dm-ai-agent-instructions.md`, `dmtools-agents.md`.
 - **Влияние:** intake-контур и webhook-интеграции (T-033), self-hosting-нагрузка, лицензии; блокирует полный intake, но не P0-ядро (CLI-интейк).
 
 ### Q-13. UI pack пилота
 
-- **Суть:** Small UIKit на React (Radix + адаптированный shadcn, Storybook вместо Figma) vs иной pack; HLD оставил выбор pack пилота открытым.
-- **Документы:** за Small UIKit — `strategy.md`, `research/figma-vs-code-html-css-js.md`, `dark-factory-console.md`, `ui-ux.md`, `uikit-radix-shadcn.md` (фиксирует «React поверх Radix/shadcn, не Web Components»), `self-improvement.md`; открытый вопрос — `hld-mvp.md` §12/§16.
+- **Суть:** Small UIKit на React (Radix + адаптированный shadcn, Storybook вместо Figma) vs иной pack; выбор pack пилота оставлен открытым.
 - **Влияние:** engineering pack пилота (T-070/T-071), UI-гейты, вход для Design-профиля.
 
 ### Q-14. Структура и naming репозиториев
 
-- **Суть:** четыре платформенных репозитория + отдельный репозиторий на продукт (`git-structure.md`, Итог; в первоначальной формулировке вопроса ошибочно сведено к одному общему репозиторию `products` — исправлено ADR-015, пересмотр 2) vs `dark-factory-orchestrator` vs три репо (platform/sdk/plugins) vs `dark-factory-capabilities` vs `foundation/*`.
-- **Документы:** `git-structure.md` против `dm-ai-agent-instructions.md`, `factory-modularity.md` §10, `droid-improvements.md` §6, `self-improvement.md`.
+- **Суть:** четыре платформенных репозитория + отдельный репозиторий на продукт (в первоначальной формулировке вопроса ошибочно сведено к одному общему репозиторию `products` — исправлено ADR-015, пересмотр 2) vs `dark-factory-orchestrator` vs три репо (platform/sdk/plugins) vs `dark-factory-capabilities` vs `foundation/*`.
 - **Влияние:** границы кода/CI/релизов с первого дня; решение нужно до T-002/T-061 (names: `-gitops`, `-runs` нужны уже в P0).
 
 ### Q-15. Событийная модель между компонентами
 
 - **Суть:** Kafka как внутренний транспорт vs PostgreSQL outbox vs события как CI-триггеры без шины.
-- **Документы:** `dmtools-agents.md` §2 (Kafka event) против `factory-modularity.md` §9 («отдельная Kafka не требуется, PostgreSQL outbox») и `hld-mvp.md`/`deployment.md` (webhook + scheduled reconcile, без шины).
 - **Влияние:** инфраструктура (связан с Q-3), гарантии доставки, сложность fast-jobs (T-090).
 
 ### Q-16. Интеграция SDD-слоя (Spec Kit) в Factory Flow
 
-- **Суть:** ADR-001 выбрал Spec Kit, но снапшот целиком описывает OpenSpec-формат (`proposal.md`, `openspec/changes/<id>/`); соответствие стадий Flow (Specification/Planning) командам `/speckit-*`, расположение и формат спек в продуктовых репо нигде не закреплены.
-- **Документы:** `spec-driven-development.md` (OpenSpec как основной формат), `requirements-levels.md` (артефакты в OpenSpec), `target-agents-and-skills.md` (skills `openspec-change`) против ADR-001 (Spec Kit) и конституции.
+- **Суть:** ADR-001 выбрал Spec Kit, но исходные материалы проработки целиком описывают OpenSpec-формат (`proposal.md`, `openspec/changes/<id>/`); соответствие стадий Flow (Specification/Planning) командам `/speckit-*`, расположение и формат спек в продуктовых репо нигде не закреплены.
 - **Влияние:** контракты спецификационного гейта (T-020/T-021), шаблоны `specs/`, трассируемость evidence; решить до T-020.
 
 ---

@@ -8,12 +8,12 @@
 
 ## Контекст
 
-- Q-7 plan §5: 6 модулей HLD (`hld-mvp.md` §4) против «+delivery/learning» (`git-structure.md` §4) против полной плагинной архитектуры — стабильное ядро + SDK + 8 типов плагинов + FactoryPack (`factory-modularity.md` §2–3, §10–11) против `factory-delivery-loop` с 10 bounded contexts (`dmtools-agents.md`, заключение; `graphs-and-pydantic-ai.md` — структура каталогов).
+- Q-7 plan §5: 6 модулей HLD против «+delivery/learning» против полной плагинной архитектуры — стабильное ядро + SDK + 8 типов плагинов + FactoryPack — против `factory-delivery-loop` с 10 bounded contexts.
 - Влияние: границы MVP-кода, необходимость SDK/plugin-registry в первой итерации, структура репо (Q-14, ADR-015).
 
 ## Решение
 
-1. Фиксируется архитектурная модель: **стабильное ядро + SDK + 8 типов плагинов + FactoryPack** (`factory-modularity.md`).
+1. Фиксируется архитектурная модель: **стабильное ядро + SDK + 8 типов плагинов + FactoryPack**.
 2. Типы плагинов: `agent`, `tool`, `workflow`, `gate`, `connector`, `executor`, `knowledge`, `blueprint` (+`ui-extension` после появления Console). В ядре — Changes, Orchestration, Agents, Context, Execution, Quality и порты; промпты, знания конкретных систем, UI kit, реализация CI — через плагины/packs.
 3. **Поставка поэтапная** (направление зафиксировано; не «все 8 типов в MVP-коде»): порты/адаптеры (T-005) — швы SDK с первой итерации; минимальный реестр/загрузчик манифестов (`factory.small.kz/v1alpha1`, capability/compatibility) — с первой pack-задачей T-070; каталог блоков/scorecards — P3 (T-087); FactoryPack и маркетплейс — P3 (T-088). Минимальный контракт совместимости для CI-проверки: `manifest_schema_version`, `requires_core` (допустимый диапазон), уникальный plugin id, fail-closed загрузка несовместимого плагина, contract-тесты против поддерживаемых версий ядра; политика деприкаций — при T-088.
 4. Способ исполнения плагина (in-process / subprocess / sidecar) — свойство манифеста; в MVP — in-process и subprocess. **Граница доверия** (согласована с ADR-015 п.3): in-process — только для встроенных, version-pinned плагинов trusted core (allowlist в ядре); манифест не может самостоятельно повысить режим доверия; остальные плагины в MVP — subprocess (timeout, лимиты ресурсов, capability allowlist, без наследования секретов). Внешние/marketplace-плагины не подключаются до решения о подписи, provenance и sandboxing (T-088).
