@@ -16,6 +16,9 @@ dependencies = [
     "sqlalchemy>=2.0",
 ]
 
+[project.scripts]
+factory = "dark_factory.cli.main:main"
+
 [dependency-groups]
 dev = [
     "ruff>=0.14",

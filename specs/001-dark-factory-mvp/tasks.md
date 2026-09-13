@@ -67,7 +67,7 @@ description: "Task list for Dark Factory MVP implementation"
 
 ### Реализация для User Story 1 (слой `cli/` поверх Foundational)
 
-- [ ] T007 [P] [US1] Factory Runner CLI: точка входа и разбор команд `stage run`, `stage resume`, `run status`, `reconcile`, `outbox dispatch`, `doctor` по контракту `contracts/cli.md` (опции `--change`, `--stage`, `--route`, `--input-revision`, `--run-id`, `--json`, `--evidence-dir`, `--non-interactive`) — `src/dark_factory/cli/__main__.py`, `src/dark_factory/cli/main.py`
+- [x] T007 [P] [US1] Factory Runner CLI: точка входа и разбор команд `stage run`, `stage resume`, `run status`, `reconcile`, `outbox dispatch`, `doctor` по контракту `contracts/cli.md` (опции `--change`, `--stage`, `--route`, `--input-revision`, `--run-id`, `--json`, `--evidence-dir`, `--non-interactive`) — `src/dark_factory/cli/__main__.py`, `src/dark_factory/cli/main.py`
 - [ ] T008 [US1] `factory doctor`: проверка окружения и конфигурации, отсутствие секретов в выводе, exit-код 2 при невалидной конфигурации — `src/dark_factory/cli/doctor.py`
 - [ ] T009 [US1] `factory stage run`: фиксация снапшота входа до агентной работы (FR-001), вычисление `input_revision` → `operation_key` (ADR-006 §3), исполнение стадии, сериализация immutable `StageResult` (`schema_version: Literal[1]`, `status` только `waiting|succeeded|failed|blocked`), маппинг exit-кодов 0/10/20/1/2 — `src/dark_factory/cli/stage.py`
 - [ ] T010 [US1] Детерминированные шаги стадии без LLM: сборка контекста, машинные проверки, агрегация, решение о доработке (детерминированный путь не обращается к harness) — `src/dark_factory/orchestration/stages/`
