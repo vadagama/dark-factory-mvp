@@ -6,13 +6,14 @@
 
 | Файл / папка | Назначение | Кто создаёт |
 |---|---|---|
-| `vision-<дата>-<версия>.md` | Видение продукта, дорожная карта, скоуп MVP | `analyst` |
-| `plan.md` | План работ (приоритизированный бэклог) | `analyst` |
-| `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `devops` |
-| `hld.md` | HLD: актуальная архитектура, связывает все ADR | `software-architect` |
-| `architecture-target.md` | Целевая архитектура, health score | `software-architect` |
-| `tech-dept.md` | Реестр технического долга | `software-architect` |
-| `adr/` | Архитектурные решения (ADR) | `software-architect` |
+| `vision-<дата>-<версия>.md` | Видение продукта, дорожная карта, скоуп MVP | `product` |
+| `plan.md` | План работ (приоритизированный бэклог) | `product` |
+| `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `ci-cd` |
+| `hld.md` | HLD: актуальная архитектура, связывает все ADR | `architect` |
+| `architecture-target.md` | Целевая архитектура, health score | `architect` |
+| `tech-dept.md` | Реестр технического долга | `architect` |
+| `adr/` | Архитектурные решения (ADR) | `architect` |
+| `descriptions/` | Понятные описания реализованных модулей, контрактов и runtime-механизмов | `architect` |
 
 ## Вне `docs/` — связанные артефакты
 
