@@ -57,11 +57,11 @@ def make_change() -> Change:
     )
 
 
-def make_run() -> ChangeRun:
+def make_run(route: Route = Route.STANDARD) -> ChangeRun:
     return ChangeRun(
         id="run-001",
         change_id="chg-001",
-        route=Route.STANDARD,
+        route=route,
         provider=Provider.GITHUB,
         created_at=NOW,
         updated_at=NOW,
