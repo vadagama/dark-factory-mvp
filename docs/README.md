@@ -13,6 +13,7 @@
 | `architecture-target.md` | Целевая архитектура, health score | `software-architect` |
 | `tech-dept.md` | Реестр технического долга | `software-architect` |
 | `adr/` | Архитектурные решения (ADR) | `software-architect` |
+| `descriptions/` | Понятные описания реализованных модулей, контрактов и runtime-механизмов | `software-architect` |
 
 ## Вне `docs/` — связанные артефакты
 
