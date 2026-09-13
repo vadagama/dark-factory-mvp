@@ -1,0 +1,14 @@
+{
+  "format_on_save": "on",
+  "formatter": "language_server",
+  "tab_size": 2,
+  "ensure_final_newline": true,
+  "remove_trailing_whitespace_on_save": true,
+  "file_scan_exclusions": {
+    "**/.git": true,
+    "**/node_modules": true,
+    "**/.venv": true,
+    "**/dist": true,
+    "**/build": true
+  }
+}
