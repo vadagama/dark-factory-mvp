@@ -1,0 +1,171 @@
+# Contract: Ports (Python `Protocol`)
+
+**Feature**: `001-dark-factory-mvp` | **Date**: 2026-09-13 | **Plan**: [`../plan.md`](../plan.md) | **Data model**: [`../data-model.md`](../data-model.md)
+
+Порты — единственная точка интеграции ядра с внешними системами (HLD §7, ADR-015 §3). Зависимости направлены **к** портам: адаптеры импортируют только `dark_factory.ports`; импорт `adapters` из ядра запрещён (проверяется `tests/test_import_boundaries.py`).
+
+Ниже — контрактные сигнатуры. Реализации — в `adapters/`; в P0 — фейки. Единая контрактная тест-сюита исполняется против fake → GitHub → GitLab (ADR-019 §6).
+
+## Общие типы
+
+```python
+# dark_factory.ports — общие типы результата
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
+
+@dataclass(frozen=True)
+class HealthStatus:
+    healthy: bool
+    detail: str | None = None
+
+@dataclass(frozen=True)
+class PipelineStatus:
+    """Наблюдаемое состояние CI-пайплайна (провайдер-нейтрально)."""
+    ref: str
+    status: str            # queued | in_progress | success | failure | canceled
+    url: str | None = None
+```
+
+Все методы, меняющие внешнее состояние, принимают `idempotency_key`/`effect_key` и возвращают `external_ref` для effect ledger (ADR-006 §3).
+
+## HarnessPort
+
+```python
+@runtime_checkable
+class HarnessPort(Protocol):
+    async def run_stage(self, envelope: TaskEnvelope, /) -> AgentResult: ...
+    async def health(self, /) -> HealthStatus: ...
+```
+
+Первый адаптер — PydanticAI (ADR-002 §2); `TaskEnvelope → AgentResult` — контракт задания/результата агента. Детерминированные шаги стадии исполняются без обращения к harness.
+
+## WorkflowEnginePort
+
+```python
+@runtime_checkable
+class WorkflowEnginePort(Protocol):
+    async def start(self, *, idempotency_key: str, expected_revision: int | None = None) -> str: ...
+    async def resume(self, run_id: str, *, idempotency_key: str) -> str: ...
+    async def cancel(self, run_id: str, *, idempotency_key: str, reason: str) -> None: ...
+    async def get_status(self, run_id: str, /) -> RunStatus: ...
+```
+
+Лёгкий workflow-core; позже — Temporal тем же портом (ADR-003, ADR-006 §9). `idempotency_key` и `expected_revision` обязательны (ADR-006 §9).
+
+## ReconciliationService
+
+Отдельный сервис, **не** метод движка (ADR-006 §9).
+
+```python
+@runtime_checkable
+class ReconciliationService(Protocol):
+    async def reconcile(self, *, desired: ReconcileDesired, observed: ReconcileObserved) -> ReconcileResult: ...
+```
+
+Разрешение рассинхрона «CI ↔ PostgreSQL» — в пользу PostgreSQL **после** сверки observed (HLD §9.1). Конкурентность — PG lease + монотонный `fencing_token`.
+
+## SourceControlPort
+
+Разделён на `RepositoryPort` / `MergeRequestPort` / `PipelinePort` (принцип dmtools; доменный тип CR — единый `ChangeRequestRef`, ADR-019).
+
+```python
+@runtime_checkable
+class RepositoryPort(Protocol):
+    async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str: ...
+    async def ensure_branch(self, repository: RepositoryRef, branch: str, *, from_revision: str, idempotency_key: str) -> str: ...
+
+@runtime_checkable
+class MergeRequestPort(Protocol):
+    async def open(self, request: OpenChangeRequest, *, idempotency_key: str) -> ChangeRequestRef: ...
+    async def find_existing(self, repository: RepositoryRef, change_id: str, /) -> ChangeRequestRef | None: ...
+    async def add_comment(self, cr: ChangeRequestRef, body: str, *, idempotency_key: str) -> None: ...
+    async def merge(self, cr: ChangeRequestRef, *, expected_sha: str, idempotency_key: str) -> None: ...
+
+@runtime_checkable
+class PipelinePort(Protocol):
+    async def status(self, repository: RepositoryRef, ref: str, /) -> PipelineStatus: ...
+```
+
+`find_existing` и `expected_sha` перед merge — реализация FR-011/FR-017. Поля `status` CR берутся из единого `ChangeRequestStatus`.
+
+## CIPort
+
+```python
+@runtime_checkable
+class CIPort(Protocol):
+    async def run_stage_job(self, request: StageJobRequest, *, idempotency_key: str) -> str: ...
+    async def gate_status(self, job_ref: str, /) -> GateResult: ...
+    async def artifacts(self, job_ref: str, /) -> list[ArtifactRef]: ...
+```
+
+Провайдер: GitHub Actions (MVP), GitLab CI (T-034).
+
+## TrackerPort
+
+```python
+@runtime_checkable
+class TrackerPort(Protocol):
+    async def get_change(self, external_ref: str, /) -> Change | None: ...
+    async def publish_status(self, change_id: str, status: str, *, idempotency_key: str) -> None: ...
+    async def request_approval(self, change_id: str, gate: Gate, *, idempotency_key: str) -> None: ...
+```
+
+Plane (self-hosted, webhook + HMAC); до готовности — NoOp-заглушка. Недоступность трекера не блокирует CLI/Console (FR-020).
+
+## ArtifactStorePort
+
+```python
+@runtime_checkable
+class ArtifactStorePort(Protocol):
+    async def put(self, spec: ArtifactSpec, /) -> ArtifactRef: ...
+    async def get(self, ref: ArtifactRef, /) -> bytes: ...
+    async def exists(self, ref: ArtifactRef, /) -> bool: ...
+```
+
+CI artifacts провайдера; в DC — S3/MinIO (ADR-009, ADR-015 §4).
+
+## TelemetryPort
+
+```python
+@runtime_checkable
+class TelemetryPort(Protocol):
+    def span(self, name: str, /, **attributes: str) -> ContextManager[Span]: ...
+    def record_usage(self, usage: Usage, /, **attributes: str) -> None: ...
+```
+
+OTLP-экспорт; корреляция `change → run → stage → agent → tool` (ADR-009 §2).
+
+## EventPublisherPort
+
+```python
+@runtime_checkable
+class EventPublisherPort(Protocol):
+    async def publish(self, event: DomainEvent, /) -> None: ...
+```
+
+Производители не зависят от схемы таблиц outbox (ADR-016 §7); запись события — в той же транзакции, что изменение состояния.
+
+## SDDPort
+
+```python
+@runtime_checkable
+class SDDPort(Protocol):
+    async def create_change(self, proposal: OpenSpecChange, /) -> str: ...
+    async def read_requirements(self, change_id: str, /) -> RequirementsSnapshot: ...
+    async def apply_delta(self, change_id: str, *, expected_revision: str) -> str: ...
+```
+
+`OpenSpecAdapter` — основной, `SpecKitAdapter` — импорт legacy (ADR-017 §8). Контракт артефактов — [`openspec-change.md`](./openspec-change.md).
+
+## Порты, вводимые позже (не авансом)
+
+- `KnowledgePort`, `ExecutionPort` — T-012.
+- `CIPort` — T-030 (формализован выше как контракт, реализация — там).
+- `SDDPort` — T-020.
+
+## Инварианты контракта
+
+- Ядро не импортирует SDK провайдеров и `adapters` (ADR-015 §3).
+- Все mutating-операции идемпотентны по ключу; повтор не создаёт второй внешний эффект (FR-017).
+- Один run исполняется ровно в одном провайдере; порты не смешивают провайдеров в рамках run (ADR-019 §5).
+- Контрактные сюиты одинаковы для fake/GitHub/GitLab.
