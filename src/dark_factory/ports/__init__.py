@@ -1,1 +1,92 @@
-"""Abstract interfaces (ports) decoupling the factory core from external systems."""
+"""Abstract interfaces (ports) decoupling the factory core from external systems.
+
+Single public surface of the port layer (ADR-015 p.3): adapters import only
+``dark_factory.ports``, never ``dark_factory.changes`` or SDKs. This package
+re-exports the port contracts, their DTOs and the domain types that appear in
+port signatures.
+"""
+
+from dark_factory.changes.enums import (
+    ChangeRequestStatus,
+    ChangeSource,
+    Gate,
+    Provider,
+    RiskClass,
+    Role,
+    RunStatus,
+    Stage,
+)
+from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
+from dark_factory.changes.run import Change
+from dark_factory.changes.usage import Usage
+from dark_factory.ports.agents import (
+    AGENTS_SCHEMA_VERSION,
+    AgentResult,
+    AgentSchemaVersion,
+    TaskEnvelope,
+)
+from dark_factory.ports.common import (
+    ArtifactSpec,
+    HealthStatus,
+    OpenChangeRequest,
+    PipelineStatus,
+    Span,
+)
+from dark_factory.ports.errors import HeadMismatchError, PortError, RunNotFoundError
+from dark_factory.ports.events import DomainEvent, EventType
+from dark_factory.ports.protocols import (
+    ArtifactStorePort,
+    EventPublisherPort,
+    HarnessPort,
+    MergeRequestPort,
+    PipelinePort,
+    ReconciliationService,
+    RepositoryPort,
+    TelemetryPort,
+    TrackerPort,
+    WorkflowEnginePort,
+)
+from dark_factory.ports.reconciliation import ReconcileDesired, ReconcileObserved, ReconcileResult
+
+__all__ = [
+    "AGENTS_SCHEMA_VERSION",
+    "AgentResult",
+    "AgentSchemaVersion",
+    "ArtifactRef",
+    "ArtifactSpec",
+    "ArtifactStorePort",
+    "Change",
+    "ChangeRequestRef",
+    "ChangeRequestStatus",
+    "ChangeSource",
+    "DomainEvent",
+    "EventPublisherPort",
+    "EventType",
+    "Gate",
+    "HarnessPort",
+    "HeadMismatchError",
+    "HealthStatus",
+    "MergeRequestPort",
+    "OpenChangeRequest",
+    "PipelinePort",
+    "PipelineStatus",
+    "PortError",
+    "Provider",
+    "ReconcileDesired",
+    "ReconcileObserved",
+    "ReconcileResult",
+    "ReconciliationService",
+    "RepositoryPort",
+    "RepositoryRef",
+    "RiskClass",
+    "Role",
+    "RunNotFoundError",
+    "RunStatus",
+    "Span",
+    "Stage",
+    "TaskEnvelope",
+    "TelemetryPort",
+    "TrackerPort",
+    "Usage",
+    "WorkflowEnginePort",
+]

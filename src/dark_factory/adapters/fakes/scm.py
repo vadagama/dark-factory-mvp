@@ -1,0 +1,160 @@
+"""In-memory fakes of the source control ports (ADR-019 p.2/p.6)."""
+
+from dataclasses import dataclass, field
+
+from dark_factory.ports import (
+    ChangeRequestRef,
+    ChangeRequestStatus,
+    HeadMismatchError,
+    MergeRequestPort,
+    OpenChangeRequest,
+    PipelinePort,
+    PipelineStatus,
+    RepositoryPort,
+    RepositoryRef,
+)
+
+
+def _repo_key(repository: RepositoryRef) -> tuple[str, str]:
+    return (repository.provider.value, repository.slug)
+
+
+class FakeRepository(RepositoryPort):
+    """In-memory ``RepositoryPort``.
+
+    ``ensure_branch`` is idempotent by ``idempotency_key``: a replay returns the
+    revision recorded at the first call even if the branch head moved since. A
+    call with a new key on an existing branch creates no second branch and
+    returns its current head. Revisions resolve through created branches; the
+    fake records no other refs.
+    """
+
+    def __init__(self) -> None:
+        self._branches: dict[tuple[str, str, str], str] = {}
+        self._branch_keys: dict[str, str] = {}
+
+    async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str:
+        try:
+            return self._branches[(*_repo_key(repository), ref)]
+        except KeyError:
+            raise KeyError(f"no revision recorded for {repository.slug!r}@{ref!r}") from None
+
+    async def ensure_branch(
+        self,
+        repository: RepositoryRef,
+        branch: str,
+        *,
+        from_revision: str,
+        idempotency_key: str,
+    ) -> str:
+        replayed = self._branch_keys.get(idempotency_key)
+        if replayed is not None:
+            return replayed
+        head = self._branches.setdefault((*_repo_key(repository), branch), from_revision)
+        self._branch_keys[idempotency_key] = head
+        return head
+
+
+@dataclass
+class _ChangeRequestRecord:
+    """Provider-side state of one change request opened by the fake."""
+
+    repository: RepositoryRef
+    number: int
+    change_id: str
+    head_sha: str
+    status: ChangeRequestStatus = ChangeRequestStatus.OPEN
+    comments: list[str] = field(default_factory=list)
+    comment_keys: set[str] = field(default_factory=set)
+
+
+class FakeMergeRequests(MergeRequestPort):
+    """In-memory ``MergeRequestPort`` (one fake provider for GitHub PR / GitLab MR).
+
+    - ``open`` is idempotent by ``idempotency_key``: a replay returns the same
+      change request and no duplicate is created. Deduplication by
+      ``(repository, change_id)`` — the FR-011 lookup — is ``find_existing``.
+    - ``merge`` verifies ``expected_sha`` against the head recorded at open
+      time; on mismatch it raises ``HeadMismatchError`` and changes nothing. A
+      replay is a no-op: the change request is already merged.
+    - ``add_comment`` is idempotent by ``idempotency_key``: a replay appends
+      nothing.
+    """
+
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, str, int], _ChangeRequestRecord] = {}
+        self._by_change: dict[tuple[str, str, str], tuple[str, str, int]] = {}
+        self._open_keys: dict[str, tuple[str, str, int]] = {}
+        self._numbers: dict[tuple[str, str], int] = {}
+
+    async def open(self, request: OpenChangeRequest, *, idempotency_key: str) -> ChangeRequestRef:
+        replayed = self._open_keys.get(idempotency_key)
+        if replayed is not None:
+            return self._ref(self._records[replayed])
+        repo_key = _repo_key(request.repository)
+        number = self._numbers.get(repo_key, 0) + 1
+        self._numbers[repo_key] = number
+        record_key = (*repo_key, number)
+        record = _ChangeRequestRecord(
+            repository=request.repository,
+            number=number,
+            change_id=request.change_id,
+            head_sha=request.head_sha,
+        )
+        self._records[record_key] = record
+        self._by_change[(*repo_key, request.change_id)] = record_key
+        self._open_keys[idempotency_key] = record_key
+        return self._ref(record)
+
+    async def find_existing(
+        self, repository: RepositoryRef, change_id: str, /
+    ) -> ChangeRequestRef | None:
+        record_key = self._by_change.get((*_repo_key(repository), change_id))
+        return None if record_key is None else self._ref(self._records[record_key])
+
+    async def add_comment(self, cr: ChangeRequestRef, body: str, *, idempotency_key: str) -> None:
+        record = self._record(cr)
+        if idempotency_key in record.comment_keys:
+            return
+        record.comment_keys.add(idempotency_key)
+        record.comments.append(body)
+
+    async def merge(self, cr: ChangeRequestRef, *, expected_sha: str, idempotency_key: str) -> None:
+        record = self._record(cr)
+        if record.head_sha != expected_sha:
+            raise HeadMismatchError(
+                f"head of {cr.repository.slug}#{cr.number} is {record.head_sha},"
+                f" expected {expected_sha}"
+            )
+        if record.status is ChangeRequestStatus.MERGED:
+            return
+        record.status = ChangeRequestStatus.MERGED
+
+    def comments_of(self, cr: ChangeRequestRef) -> tuple[str, ...]:
+        """Read view of recorded comments (not part of the port)."""
+        return tuple(self._record(cr).comments)
+
+    def _record(self, cr: ChangeRequestRef) -> _ChangeRequestRecord:
+        try:
+            return self._records[(*_repo_key(cr.repository), cr.number)]
+        except KeyError:
+            raise KeyError(f"unknown change request {cr.repository.slug!r}#{cr.number}") from None
+
+    def _ref(self, record: _ChangeRequestRecord) -> ChangeRequestRef:
+        return ChangeRequestRef(
+            repository=record.repository,
+            number=record.number,
+            url=f"https://scm.fake/{record.repository.slug}/cr/{record.number}",
+            status=record.status,
+        )
+
+
+class FakePipelines(PipelinePort):
+    """In-memory ``PipelinePort`` with a deterministic default state.
+
+    Unknown refs report ``queued`` with no URL; a real provider reports the
+    observed pipeline state for the requested ref.
+    """
+
+    async def status(self, repository: RepositoryRef, ref: str, /) -> PipelineStatus:
+        return PipelineStatus(ref=ref, status="queued", url=None)
