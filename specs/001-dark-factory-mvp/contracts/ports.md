@@ -157,9 +157,31 @@ class SDDPort(Protocol):
 
 `OpenSpecAdapter` — основной, `SpecKitAdapter` — импорт legacy (ADR-017 §8). Контракт артефактов — [`openspec-change.md`](./openspec-change.md).
 
+## KnowledgePort
+
+```python
+@runtime_checkable
+class KnowledgePort(Protocol):
+    async def collect(self, request: ContextRequest, /) -> ContextBundle: ...
+```
+
+Сбор источников контекста в `ContextBundle` с версиями и provenance (план T-012, FR-001). Вход — `ContextRequest(change_id, run_id)`; сам `ContextBundle` — domain-тип из `dark_factory.context.bundle`, ре-экспортируемый через `dark_factory.ports` вместе с `build_bundle`. Источник — `ContextSource(kind, location, revision, content_hash, retrieved_at)`: `kind` — `SourceKind` (`repo`, `spec`, `constitution`, `adr`, `engineering_pack`; один `spec` закрывает `specs/` до T-020 и `openspec/` после — их различает `location`), `revision` — закреплённая версия (git sha), `content_hash` — sha256 содержимого, `retrieved_at` — летучий штамп, в hash не входит. `bundle_hash` — sha256 канонической сериализации кортежей `(kind, location, revision, content_hash)`, отсортированных детерминированно: одинаковые входы → одинаковый bundle (воспроизводимость, DoD T-012). Поиск/traversal источников придут с реальными провайдерами (YAGNI); в P0 реализация — in-memory фейк.
+
+## ExecutionPort
+
+```python
+@runtime_checkable
+class ExecutionPort(Protocol):
+    async def prepare_workspace(self, request: WorkspaceRequest, /, *, idempotency_key: str) -> WorkspaceHandle: ...
+    async def run_command(self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str) -> ExecutionResult: ...
+    async def collect_evidence(self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str) -> EvidenceFile: ...
+```
+
+Изолированный worktree от закреплённой ревизии, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; повтор `prepare_workspace` с тем же `idempotency_key` возвращает тот же handle и не создаёт второй workspace (FR-017). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. В P0 реализация — in-memory фейк.
+
 ## Порты, вводимые позже (не авансом)
 
-- `KnowledgePort`, `ExecutionPort` — T-012.
+- `KnowledgePort`, `ExecutionPort` — T-012 (формализованы выше как контракты; реализация — фейки P0).
 - `CIPort` — T-030 (формализован выше как контракт, реализация — там).
 - `SDDPort` — T-020.
 

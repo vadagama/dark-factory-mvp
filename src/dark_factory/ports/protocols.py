@@ -15,6 +15,7 @@ from dark_factory.changes.enums import Gate, RunStatus
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import Usage
+from dark_factory.context.bundle import ContextBundle
 from dark_factory.ports.agents import AgentResult, TaskEnvelope
 from dark_factory.ports.common import (
     ArtifactSpec,
@@ -22,6 +23,13 @@ from dark_factory.ports.common import (
     OpenChangeRequest,
     PipelineStatus,
     Span,
+)
+from dark_factory.ports.context import (
+    ContextRequest,
+    EvidenceFile,
+    ExecutionResult,
+    WorkspaceHandle,
+    WorkspaceRequest,
 )
 from dark_factory.ports.events import DomainEvent
 from dark_factory.ports.reconciliation import ReconcileDesired, ReconcileObserved, ReconcileResult
@@ -129,3 +137,29 @@ class EventPublisherPort(Protocol):
     """Outbox event publishing; producers never touch outbox tables (ADR-016 p.7)."""
 
     async def publish(self, event: DomainEvent, /) -> None: ...
+
+
+@runtime_checkable
+class KnowledgePort(Protocol):
+    """Context sources of a change → versioned ContextBundle (plan T-012, FR-001).
+
+    Minimal by design: search and traversal arrive with the real source
+    providers, not before (YAGNI).
+    """
+
+    async def collect(self, request: ContextRequest, /) -> ContextBundle: ...
+
+
+@runtime_checkable
+class ExecutionPort(Protocol):
+    """Isolated workspaces, command execution and evidence collection (plan T-012)."""
+
+    async def prepare_workspace(
+        self, request: WorkspaceRequest, /, *, idempotency_key: str
+    ) -> WorkspaceHandle: ...
+    async def run_command(
+        self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str
+    ) -> ExecutionResult: ...
+    async def collect_evidence(
+        self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str
+    ) -> EvidenceFile: ...

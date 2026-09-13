@@ -19,6 +19,14 @@ from dark_factory.changes.enums import (
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import Usage
+from dark_factory.context.bundle import (
+    CONTEXT_SCHEMA_VERSION,
+    ContextBundle,
+    ContextSchemaVersion,
+    ContextSource,
+    SourceKind,
+    build_bundle,
+)
 from dark_factory.ports.agents import (
     AGENTS_SCHEMA_VERSION,
     AgentResult,
@@ -32,12 +40,21 @@ from dark_factory.ports.common import (
     PipelineStatus,
     Span,
 )
+from dark_factory.ports.context import (
+    ContextRequest,
+    EvidenceFile,
+    ExecutionResult,
+    WorkspaceHandle,
+    WorkspaceRequest,
+)
 from dark_factory.ports.errors import HeadMismatchError, PortError, RunNotFoundError
 from dark_factory.ports.events import DomainEvent, EventType
 from dark_factory.ports.protocols import (
     ArtifactStorePort,
     EventPublisherPort,
+    ExecutionPort,
     HarnessPort,
+    KnowledgePort,
     MergeRequestPort,
     PipelinePort,
     ReconciliationService,
@@ -50,6 +67,7 @@ from dark_factory.ports.reconciliation import ReconcileDesired, ReconcileObserve
 
 __all__ = [
     "AGENTS_SCHEMA_VERSION",
+    "CONTEXT_SCHEMA_VERSION",
     "AgentResult",
     "AgentSchemaVersion",
     "ArtifactRef",
@@ -59,13 +77,21 @@ __all__ = [
     "ChangeRequestRef",
     "ChangeRequestStatus",
     "ChangeSource",
+    "ContextBundle",
+    "ContextRequest",
+    "ContextSchemaVersion",
+    "ContextSource",
     "DomainEvent",
     "EventPublisherPort",
     "EventType",
+    "EvidenceFile",
+    "ExecutionPort",
+    "ExecutionResult",
     "Gate",
     "HarnessPort",
     "HeadMismatchError",
     "HealthStatus",
+    "KnowledgePort",
     "MergeRequestPort",
     "OpenChangeRequest",
     "PipelinePort",
@@ -82,6 +108,7 @@ __all__ = [
     "Role",
     "RunNotFoundError",
     "RunStatus",
+    "SourceKind",
     "Span",
     "Stage",
     "TaskEnvelope",
@@ -89,4 +116,7 @@ __all__ = [
     "TrackerPort",
     "Usage",
     "WorkflowEnginePort",
+    "WorkspaceHandle",
+    "WorkspaceRequest",
+    "build_bundle",
 ]

@@ -16,7 +16,9 @@ import pytest
 from dark_factory.adapters.fakes import (
     FakeArtifactStore,
     FakeEventPublisher,
+    FakeExecution,
     FakeHarness,
+    FakeKnowledge,
     FakeMergeRequests,
     FakePipelines,
     FakeReconciliationService,
@@ -32,8 +34,10 @@ from dark_factory.ports import (
     ChangeSource,
     DomainEvent,
     EventPublisherPort,
+    ExecutionPort,
     Gate,
     HarnessPort,
+    KnowledgePort,
     MergeRequestPort,
     PipelinePort,
     Provider,
@@ -42,11 +46,14 @@ from dark_factory.ports import (
     RepositoryRef,
     RiskClass,
     RunStatus,
+    SourceKind,
     Span,
     TelemetryPort,
     TrackerPort,
     Usage,
     WorkflowEnginePort,
+    WorkspaceHandle,
+    WorkspaceRequest,
 )
 
 PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
@@ -123,6 +130,54 @@ def requested_approvals(tracker: FakeTracker) -> Callable[[str], tuple[Gate, ...
 @pytest.fixture
 def harness_port() -> HarnessPort:
     return FakeHarness()
+
+
+@pytest.fixture
+def knowledge() -> FakeKnowledge:
+    return FakeKnowledge()
+
+
+@pytest.fixture
+def knowledge_port(knowledge: FakeKnowledge) -> KnowledgePort:
+    return knowledge
+
+
+@pytest.fixture
+def seeded_knowledge_port(knowledge: FakeKnowledge) -> KnowledgePort:
+    """Knowledge seeded with one pinned repo source and one unpinned ADR."""
+    knowledge.seed(SourceKind.REPO, "src/dark_factory", "abc123", "factory source")
+    knowledge.seed(SourceKind.ADR, "docs/adr/ADR-001.md", None, "decision record")
+    return knowledge
+
+
+@pytest.fixture
+def execution() -> FakeExecution:
+    return FakeExecution()
+
+
+@pytest.fixture
+def execution_port(execution: FakeExecution) -> ExecutionPort:
+    return execution
+
+
+@pytest.fixture
+def failing_execution(execution: FakeExecution) -> ExecutionPort:
+    """Execution port whose ``pytest`` command fails deterministically."""
+    execution.seed_failure(("pytest", "tests/"))
+    return execution
+
+
+@pytest.fixture
+def evidence_workspace(execution: FakeExecution) -> WorkspaceHandle:
+    """A prepared workspace with one seeded evidence file."""
+    handle = asyncio.run(
+        execution.prepare_workspace(
+            WorkspaceRequest(repository=PRODUCT, revision="abc123", change_id="chg-001"),
+            idempotency_key="ws-evidence",
+        )
+    )
+    execution.seed_file(handle, "reports/pytest-report.xml", b"<testsuite tests='3'/>")
+    return handle
 
 
 @pytest.fixture
