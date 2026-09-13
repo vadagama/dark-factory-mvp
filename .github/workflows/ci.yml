@@ -53,3 +53,68 @@ jobs:
 
       - name: Pytest
         run: uv run pytest
+
+  factory-us1-parity:
+    name: US1 walking skeleton (doctor + stage run)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Factory doctor
+        run: |
+          set +e
+          uv run factory doctor --json > doctor.json
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "factory doctor exited with code $code" >&2
+            cat doctor.json >&2
+            exit "$code"
+          fi
+          uv run python - <<'PY'
+          import json
+
+          report = json.load(open("doctor.json"))
+          summary = report["summary"]
+          assert summary["error"] == 0, summary
+          assert summary["status"] in {"ok", "warn"}, summary
+          print(f"doctor ok: status={summary['status']} error={summary['error']}")
+          PY
+
+      - name: Factory stage run (US1 scenario 2 parity)
+        run: |
+          set +e
+          uv run factory stage run --change ./fixtures/chg_smoke.yaml --stage construction --json --non-interactive > stage_result.json
+          code=$?
+          set -e
+          # waiting (10) is a contract outcome, not an error (cli.md): the result is
+          # persisted before the external wait and the job ends without blocking a runner.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 10 ]; then
+            echo "factory stage run exited with code $code" >&2
+            cat stage_result.json >&2
+            exit "$code"
+          fi
+          uv run python - <<'PY'
+          import json
+
+          result = json.load(open("stage_result.json"))
+          assert result["schema_version"] == 1, result
+          assert result["status"] in {"waiting", "succeeded"}, result
+          assert result["change_id"] == "chg_smoke", result
+          assert isinstance(result["next_action"]["type"], str), result
+          assert result["next_action"]["type"], result
+          print(
+              f"stage run ok: status={result['status']}"
+              f" change_id={result['change_id']}"
+              f" next_action={result['next_action']['type']}"
+          )
+          PY
