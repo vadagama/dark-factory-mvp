@@ -104,8 +104,8 @@
 
 ### 1.5. Finding / GateResult / Decision
 
-`Finding`: `id`, `origin` (`agent \| human \| ci`), `role?`, `severity` (`blocker \| major \| minor \| info`), `category?`, `file?`, `line?`, `reviewed_sha?`, `required_action?`, `status` (`open \| resolved \| waived \| obsolete`), `evidence_ids`.
-Человеческие замечания MR входят как данные (`origin=human`), не влияют на права/гейты (FR-007).
+`Finding`: `id`, `origin` (`agent \| human \| ci`), `role?`, `severity` (`blocker \| major \| minor \| info`), `category?`, `file?`, `line?`, `reviewed_sha?`, `required_action?`, `status` (`open \| resolved \| waived \| obsolete`), `confidence?` (0.0–1.0, самооценка уверенности источника; не влияет на блокирующий вес — его задаёт severity+status, T-013), `evidence_ids`.
+Человеческие замечания MR входят как данные (`origin=human`, severity `info`), не влияют на права/гейты (FR-007): блокирует только явное решение человека в flow approvals (ADR-018).
 
 `GateResult`: `gate` (7 гейтов MVP), `status` (`pending \| passed \| failed \| skipped`), `sha?`, `summary?`, `evidence_ids`. Гейт оценивается против итогового SHA.
 

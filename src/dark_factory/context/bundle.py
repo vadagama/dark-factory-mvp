@@ -29,7 +29,9 @@ class SourceKind(StrEnum):
     """Category of a context source (plan T-012).
 
     One ``SPEC`` kind covers ``specs/`` before T-020 and ``openspec/`` after:
-    the ``location`` distinguishes the two layouts.
+    the ``location`` distinguishes the two layouts. ``EVIDENCE`` covers
+    collected acceptance evidence (T-013); its ``location`` is the artifact
+    path/URI and its ``content_hash`` is computed by the collector.
     """
 
     REPO = "repo"
@@ -37,6 +39,7 @@ class SourceKind(StrEnum):
     CONSTITUTION = "constitution"
     ADR = "adr"
     ENGINEERING_PACK = "engineering_pack"
+    EVIDENCE = "evidence"
 
 
 class ContextSource(BaseModel):
