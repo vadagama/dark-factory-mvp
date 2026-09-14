@@ -1,0 +1,25 @@
+# Local profile (T031 / T-042): single-node Docker Desktop on a MacBook 24GB
+# (ADR-010). Resources are spelled out explicitly and stay inside the T029
+# quota envelope (requests 1 CPU/2Gi, limits 2 CPU/4Gi for ns `factory`).
+# The Ingress is enabled for `factory.localhost`, but the bootstrap does NOT
+# ship an nginx controller — without one the Ingress object is inert and the
+# access path is `kubectl port-forward` (see NOTES.txt and README.md).
+
+image:
+  tag: "bootstrap"
+
+api:
+  replicas: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: factory.localhost

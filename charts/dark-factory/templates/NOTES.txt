@@ -1,0 +1,17 @@
+Dark Factory API (release {{ .Release.Name }}) отрендерен{{ if .Values.ingress.enabled }} с Ingress{{ end }}.
+
+⚠️  Образ-плейсхолдер: chart ссылается на {{ .Values.image.repository }}:{{ .Values.image.tag }}.
+Реальный immutable-образ появится в T033 — до того поды будут в ImagePullBackOff, если тега нет в registry.
+
+1. Секрет с DATABASE_URL создаётся ВНЕ GIT (паттерн deploy/events, T028):
+   kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.database.existingSecret }} \
+     --from-literal=DATABASE_URL='postgresql+psycopg://factory:<пароль>@factory-postgres:5432/factory'
+
+2. Доступ через port-forward (штатный путь для локального контура):
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "dark-factory.fullname" . }} {{ .Values.api.port }}:{{ .Values.api.port }}
+   затем откройте http://127.0.0.1:{{ .Values.api.port }}/docs
+{{- if .Values.ingress.enabled }}
+
+3. Ingress {{ .Values.ingress.host }} (className {{ .Values.ingress.className }}) включён, но контроллера
+   в bootstrap нет: без него объект инертен, доступ — только через port-forward (см. п.2).
+{{- end }}
