@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     func,
     text,
@@ -29,8 +30,19 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dark_factory.changes.enums import Provider, Route, RunStatus, StageStatus
+from dark_factory.changes.enums import (
+    ChangeSource,
+    DecisionOutcome,
+    DecisionSource,
+    Gate,
+    Provider,
+    RiskClass,
+    Route,
+    RunStatus,
+    StageStatus,
+)
 from dark_factory.changes.enums import Stage as StageEnum
+from dark_factory.changes.run import _RESULT_STATUSES
 from dark_factory.orchestration.state.base import Base
 from dark_factory.orchestration.state.enums import DeliveryStatus, EffectStatus
 
@@ -51,6 +63,14 @@ STAGE_VALUES: Final = _values(StageEnum)
 STAGE_STATUS_VALUES: Final = _values(StageStatus)
 EFFECT_STATUS_VALUES: Final = _values(EffectStatus)
 DELIVERY_STATUS_VALUES: Final = _values(DeliveryStatus)
+CHANGE_SOURCE_VALUES: Final = _values(ChangeSource)
+RISK_CLASS_VALUES: Final = _values(RiskClass)
+GATE_VALUES: Final = _values(Gate)
+DECISION_OUTCOME_VALUES: Final = _values(DecisionOutcome)
+DECISION_SOURCE_VALUES: Final = _values(DecisionSource)
+RESULT_STATUS_VALUES: Final = ", ".join(
+    f"'{member.value}'" for member in StageStatus if member in _RESULT_STATUSES
+)
 
 
 class Execution(Base):
@@ -261,6 +281,129 @@ class UsageRecord(Base):
     )
 
 
+class Change(Base):
+    """Intake record of a change (FR-001, FR-017, ADR-009 p.7).
+
+    ``payload`` carries the full Change document; ``product`` is denormalized
+    for querying. ``external_ref`` is the tracker dedup key: at most one change
+    per external reference (partial unique index).
+    """
+
+    __tablename__ = "change"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    title: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(32))
+    external_ref: Mapped[str | None] = mapped_column(String(512))
+    risk_class: Mapped[str] = mapped_column(String(8))
+    product: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    state_revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"source IN ({CHANGE_SOURCE_VALUES})", name="source_allowed"),
+        CheckConstraint(f"risk_class IN ({RISK_CLASS_VALUES})", name="risk_class_allowed"),
+        CheckConstraint("state_revision >= 1", name="state_revision_positive"),
+        Index(
+            "uq_change_external_ref",
+            "external_ref",
+            unique=True,
+            postgresql_where=text("external_ref IS NOT NULL"),
+        ),
+    )
+
+
+class Decision(Base):
+    """Approval decision over a change, version-bound to ``commit_sha`` (ADR-009 p.7).
+
+    ``role`` holds the API role of the caller (``operator``/``service``); it is
+    not an agent role (ADR-007), so no CHECK constraint narrows it.
+    """
+
+    __tablename__ = "decision"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    change_id: Mapped[str] = mapped_column(ForeignKey("change.id", ondelete="CASCADE"), index=True)
+    gate: Mapped[str] = mapped_column(String(32))
+    outcome: Mapped[str] = mapped_column(String(16))
+    decided_by: Mapped[str] = mapped_column(String(16))
+    role: Mapped[str | None] = mapped_column(String(32))
+    commit_sha: Mapped[str | None] = mapped_column(String(128))
+    comment: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    evidence_ids: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+
+    __table_args__ = (
+        CheckConstraint(f"gate IN ({GATE_VALUES})", name="gate_allowed"),
+        CheckConstraint(f"outcome IN ({DECISION_OUTCOME_VALUES})", name="outcome_allowed"),
+        CheckConstraint(f"decided_by IN ({DECISION_SOURCE_VALUES})", name="decided_by_allowed"),
+        Index(
+            "uq_decision_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
+
+
+class StageResult(Base):
+    """Durable store of one immutable StageResult document (ADR-006 p.4).
+
+    The primary key is the ``attempt_id`` (ADR-006 p.3), so recording the same
+    attempt twice is a no-op and earlier attempts are never overwritten (FR-014).
+    """
+
+    __tablename__ = "stage_result"
+
+    id: Mapped[str] = mapped_column(String(768), primary_key=True)
+    operation_key: Mapped[str] = mapped_column(String(512), index=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    change_id: Mapped[str] = mapped_column(String(128), index=True)
+    stage: Mapped[str] = mapped_column(String(32))
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    input_revision: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16))
+    produced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+    __table_args__ = (
+        CheckConstraint(f"stage IN ({STAGE_VALUES})", name="stage_allowed"),
+        CheckConstraint(f"status IN ({RESULT_STATUS_VALUES})", name="status_allowed"),
+        CheckConstraint("attempt_number >= 1", name="attempt_number_positive"),
+    )
+
+
+class AuditLogEntry(Base):
+    """Audit record of one mutating API operation (ADR-009 p.7).
+
+    Never carries secrets: ``details`` holds non-sensitive context only.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, server_default=func.now()
+    )
+    actor: Mapped[str] = mapped_column(String(128))
+    role: Mapped[str | None] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(64))
+    resource_type: Mapped[str] = mapped_column(String(32))
+    resource_id: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    outcome: Mapped[str] = mapped_column(String(16))
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
 ALL_MODELS: Final[tuple[type[Base], ...]] = (
     Execution,
     Stage,
@@ -270,4 +413,8 @@ ALL_MODELS: Final[tuple[type[Base], ...]] = (
     EventDelivery,
     EffectLedgerEntry,
     UsageRecord,
+    Change,
+    Decision,
+    StageResult,
+    AuditLogEntry,
 )
