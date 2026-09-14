@@ -1,0 +1,161 @@
+# Reusable factory stage job (T025, docs T-031): one job = one Flow stage
+# (hld-mvp 8). The job runs `factory stage run` for exactly one stage and
+# publishes the StageResult, NextAction and usage as outputs plus an evidence
+# artifact (stage_result.json and factory-evidence/ with the input snapshot
+# and run_record.json).
+#
+# Isolation (MVP): the stage runs on a GitHub-hosted ephemeral runner — one
+# job = one disposable VM. T030 (docs T-041, US5) will swap `runs-on` to
+# self-hosted ephemeral Kubernetes pods; the steps below do not change.
+#
+# Exit codes of `factory stage run` (contract cli.md):
+#   0  succeeded     - job continues: the stage completed
+#   10 waiting       - job continues: NOT an error; the StageResult is
+#                      persisted before the external wait (ADR-006 p.8) and
+#                      continuation is a new stage run
+#   20 blocked       - job fails: a limit/gate needs a human decision
+#   1  failed        - job fails: execution error
+#   2  invalid input - job fails: the stage did not start
+# `dark_factory.cli.ci_job` re-validates the persisted StageResult, renders
+# the job outputs and repeats the blocked/failed classification.
+name: Factory stage
+
+on:
+  workflow_call:
+    inputs:
+      change:
+        description: Path to the change snapshot (FR-001).
+        required: true
+        type: string
+      stage:
+        description: Flow stage (specification|planning|construction|review_verification|release).
+        required: true
+        type: string
+      route:
+        description: Flow route (quick|standard, ADR-005); other values are rejected by the CLI.
+        required: false
+        type: string
+      input-revision:
+        description: Input revision of the stage; derived from the snapshot when omitted.
+        required: false
+        type: string
+      run-id:
+        description: Existing run id; a new run is created when omitted.
+        required: false
+        type: string
+      python-version:
+        description: Python version for uv.
+        required: false
+        type: string
+        default: "3.12"
+      artifact-retention-days:
+        description: Retention of the stage evidence artifact (days).
+        required: false
+        type: number
+        default: 30
+    outputs:
+      status:
+        description: StageResult.status (succeeded|waiting|blocked|failed).
+        value: ${{ jobs.stage.outputs.status }}
+      next_action:
+        description: StageResult.next_action.type.
+        value: ${{ jobs.stage.outputs.next_action }}
+      run_id:
+        description: StageResult.run_id.
+        value: ${{ jobs.stage.outputs.run_id }}
+      change_id:
+        description: StageResult.change_id.
+        value: ${{ jobs.stage.outputs.change_id }}
+      usage_total_tokens:
+        description: StageResult usage tokens (empty when the stage reported none).
+        value: ${{ jobs.stage.outputs.usage_total_tokens }}
+      usage_cost:
+        description: StageResult usage cost (empty when the stage reported none).
+        value: ${{ jobs.stage.outputs.usage_cost }}
+
+# FR-023: the agent job carries no merge/deploy credentials and declares no
+# secrets — merging is a trusted-finalizer concern (T-032), not a stage job.
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    name: Stage ${{ inputs.stage }}
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+      next_action: ${{ steps.result.outputs.next_action }}
+      run_id: ${{ steps.result.outputs.run_id }}
+      change_id: ${{ steps.result.outputs.change_id }}
+      usage_total_tokens: ${{ steps.result.outputs.usage_total_tokens }}
+      usage_cost: ${{ steps.result.outputs.usage_cost }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # FR-009/SC-004: the stage runs on the final SHA of the change,
+          # never on a stale ref.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ inputs['python-version'] }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Factory doctor
+        # doctor exits 2 on environment/config errors and fails the step.
+        run: uv run factory doctor --json
+
+      - name: Factory stage run
+        env:
+          FACTORY_CHANGE: ${{ inputs.change }}
+          FACTORY_STAGE: ${{ inputs.stage }}
+          FACTORY_ROUTE: ${{ inputs.route }}
+          FACTORY_INPUT_REVISION: ${{ inputs['input-revision'] }}
+          FACTORY_RUN_ID: ${{ inputs['run-id'] }}
+        run: |
+          args=(stage run
+            --change "$FACTORY_CHANGE"
+            --stage "$FACTORY_STAGE"
+            --json
+            --non-interactive
+            --evidence-dir factory-evidence)
+          if [ -n "$FACTORY_ROUTE" ]; then
+            args+=(--route "$FACTORY_ROUTE")
+          fi
+          if [ -n "$FACTORY_INPUT_REVISION" ]; then
+            args+=(--input-revision "$FACTORY_INPUT_REVISION")
+          fi
+          if [ -n "$FACTORY_RUN_ID" ]; then
+            args+=(--run-id "$FACTORY_RUN_ID")
+          fi
+          set +e
+          uv run factory "${args[@]}" > stage_result.json
+          code=$?
+          set -e
+          # waiting (10) is a contract outcome, not an error (cli.md): the
+          # result is persisted before the external wait and the job ends
+          # without blocking a runner (ADR-006 p.8).
+          if [ "$code" -ne 0 ] && [ "$code" -ne 10 ]; then
+            echo "factory stage run exited with code $code" >&2
+            cat stage_result.json >&2
+            exit "$code"
+          fi
+
+      - name: Validate StageResult and render job outputs
+        id: result
+        run: uv run python -m dark_factory.cli.ci_job stage_result.json --outputs-file "$GITHUB_OUTPUT"
+
+      - name: Upload stage evidence
+        if: always() # blocked/failed evidence reaches the artifacts for diagnosis
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-stage-${{ inputs.stage }}-${{ inputs['run-id'] || github.run_id }}-evidence
+          path: |
+            stage_result.json
+            factory-evidence/
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          if-no-files-found: error
