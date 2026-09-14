@@ -2,6 +2,11 @@
 # scripts/negative-egress-test.sh (the manifest has no namespace field).
 # - https-probe (curl image): allowed external HTTPS 443 must work; plain
 #   HTTP 80 and TCP 25 must fail (curl exit 28 = timed out = dropped by policy).
+#   The 443 criterion is "any completed HTTP exchange" (rc = 0): the status
+#   code belongs to the target, not to the network (api.github.com answers
+#   403 to unauthenticated curls from some networks — still proof of egress).
+#   Both targets are on example.com so the 443-vs-80 comparison isolates the
+#   port as the only variable; the GitHub code is reported informationally.
 # - local-probe (postgres image): DNS must resolve; in `factory` the
 #   PostgreSQL service must be reachable (intra-namespace allow), elsewhere SKIP.
 apiVersion: v1
@@ -23,16 +28,19 @@ spec:
       args:
         - |
           set -u
-          code=$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' https://api.github.com/ 2>/dev/null)
+          code=$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' https://example.com/ 2>/dev/null)
           rc=$?
-          if [ "$rc" -eq 0 ] && [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then https443=PASS; else https443=FAIL; fi
+          # Any completed HTTP exchange (rc = 0) proves the egress path works;
+          # the HTTP status is a property of the target, not of the network.
+          if [ "$rc" -eq 0 ]; then https443=PASS; else https443=FAIL; fi
           curl -sS -o /dev/null --max-time 8 http://example.com/ >/dev/null 2>&1
           rc=$?
           if [ "$rc" -eq 0 ]; then http80=FAIL; else http80=PASS; fi
           curl -sS -o /dev/null --max-time 8 telnet://example.com:25 </dev/null >/dev/null 2>&1
           rc=$?
           if [ "$rc" -eq 28 ]; then port25=PASS; else port25=FAIL; fi
-          echo "EGRESS_RESULT https443=$https443 http80_blocked=$http80 port25_blocked=$port25"
+          ghcode=$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' https://api.github.com/ 2>/dev/null)
+          echo "EGRESS_RESULT https443=$https443 http80_blocked=$http80 port25_blocked=$port25 https_code=${code:-none} github_code=${ghcode:-none}"
     - name: local-probe
       image: postgres:16.4
       imagePullPolicy: IfNotPresent
