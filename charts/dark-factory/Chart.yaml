@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dark-factory
+description: API (и позже Console) «тёмной фабрики» в namespace factory. PostgreSQL фабрики не устанавливает — использует bootstrap-овский Service factory-postgres (T029); секреты создаются вне git.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

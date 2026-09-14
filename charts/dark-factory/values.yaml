@@ -1,0 +1,90 @@
+# Default values for the dark-factory chart (T031 / docs plan T-042).
+# Local profile overrides live in values-local.yaml (Docker Desktop, ADR-010).
+
+image:
+  repository: ghcr.io/vadagama/dark-factory
+  # PLACEHOLDER tag: the real immutable image is built in T033 and delivered
+  # through this chart (T-042). Until that image exists in the registry, pods
+  # with this tag stay in ImagePullBackOff.
+  tag: "bootstrap"
+  pullPolicy: IfNotPresent
+
+api:
+  replicas: 1
+  port: 8000
+  # Recreate: the ResourceQuota of ns `factory` (T029) fits exactly one API
+  # pod of this size next to PostgreSQL — a RollingUpdate overlap of two pods
+  # would be rejected by the quota.
+  strategy: Recreate
+
+database:
+  # Full DATABASE_URL in a single key (pattern of deploy/events T028).
+  # The secret is created OUTSIDE git, e.g.:
+  #   kubectl -n factory create secret generic factory-api-database \
+  #     --from-literal=DATABASE_URL='postgresql+psycopg://factory:<password>@factory-postgres:5432/factory'
+  existingSecret: factory-api-database
+  secretKey: DATABASE_URL
+
+auth:
+  # Optional secret with DARK_FACTORY_API_TOKENS (JSON list of tokens,
+  # ADR-009 §7). Empty name means "no secret": the API then answers mutating
+  # requests with fail-closed while GET endpoints stay readable — the local
+  # norm for the factory namespace.
+  existingSecret: ""
+  secretKey: DARK_FACTORY_API_TOKENS
+
+migrations:
+  # Pre-install/pre-upgrade hook Job running the schema migrations.
+  # Requires the image to ship alembic and migrations/ (T033 requirement).
+  enabled: true
+  command:
+    - alembic
+    - upgrade
+    - head
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+ingress:
+  enabled: false
+  className: nginx
+  host: factory.localhost
+  annotations: {}
+
+resources:
+  # Fits the T029 envelope: requests 100m/128Mi + PostgreSQL 250m/256Mi
+  # <= 1 CPU/2Gi; limits 500m/512Mi + PostgreSQL 1 CPU/1Gi <= 2 CPU/4Gi.
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  liveness:
+    # Process liveness: FastAPI serves /openapi.json without touching the
+    # database, so the pod is not restarted on a state-store outage.
+    path: /openapi.json
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    # Traffic readiness: 200 only while the state store answers
+    # (GET /api/v1/runs returns 500 on a database failure).
+    path: /api/v1/runs
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+serviceAccount:
+  # Reuse the bootstrap SA (deploy/bootstrap/manifests/serviceaccounts.yaml)
+  # — no second source of truth. The chart creates a SA only if create=true.
+  create: false
+  name: factory-api
