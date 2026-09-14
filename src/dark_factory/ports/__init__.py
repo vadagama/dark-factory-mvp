@@ -27,6 +27,8 @@ from dark_factory.context.bundle import (
     SourceKind,
     build_bundle,
 )
+from dark_factory.context.sdd.errors import BaselineMismatchError, ChangeNotFoundError
+from dark_factory.context.sdd.normalized import ChangeSet, RequirementsSnapshot
 from dark_factory.ports.agents import (
     AGENTS_SCHEMA_VERSION,
     AgentResult,
@@ -59,6 +61,7 @@ from dark_factory.ports.protocols import (
     PipelinePort,
     ReconciliationService,
     RepositoryPort,
+    SDDPort,
     TelemetryPort,
     TrackerPort,
     WorkflowEnginePort,
@@ -73,9 +76,12 @@ __all__ = [
     "ArtifactRef",
     "ArtifactSpec",
     "ArtifactStorePort",
+    "BaselineMismatchError",
     "Change",
+    "ChangeNotFoundError",
     "ChangeRequestRef",
     "ChangeRequestStatus",
+    "ChangeSet",
     "ChangeSource",
     "ContextBundle",
     "ContextRequest",
@@ -104,10 +110,12 @@ __all__ = [
     "ReconciliationService",
     "RepositoryPort",
     "RepositoryRef",
+    "RequirementsSnapshot",
     "RiskClass",
     "Role",
     "RunNotFoundError",
     "RunStatus",
+    "SDDPort",
     "SourceKind",
     "Span",
     "Stage",

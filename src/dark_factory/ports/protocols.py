@@ -16,6 +16,7 @@ from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryR
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import Usage
 from dark_factory.context.bundle import ContextBundle
+from dark_factory.context.sdd.normalized import ChangeSet, RequirementsSnapshot
 from dark_factory.ports.agents import AgentResult, TaskEnvelope
 from dark_factory.ports.common import (
     ArtifactSpec,
@@ -163,3 +164,19 @@ class ExecutionPort(Protocol):
     async def collect_evidence(
         self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str
     ) -> EvidenceFile: ...
+
+
+@runtime_checkable
+class SDDPort(Protocol):
+    """Native SDD Core: ChangeSet lifecycle over a product baseline (ADR-020 p.8).
+
+    Signatures per ``specs/001-dark-factory-mvp/contracts/ports.md``.
+    Adapters (``NativeChangeSetAdapter``, ``SpecKitAdapter``,
+    ``OpenSpecAdapter``) implement this structurally from
+    ``dark_factory.context.sdd`` and do not import ``dark_factory.ports`` —
+    the runtime-checkable protocol validates them without that import.
+    """
+
+    async def create_change(self, change: ChangeSet, /) -> str: ...
+    async def read_requirements(self, change_id: str, /) -> RequirementsSnapshot: ...
+    async def apply_delta(self, change_id: str, /, *, expected_revision: str) -> str: ...
