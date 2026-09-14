@@ -1,16 +1,20 @@
 """Change domain model: entities, statuses, idempotency keys, run records (T-003)."""
 
 from dark_factory.changes.enums import (
+    BoundaryArea,
     ChangeRequestStatus,
     ChangeSource,
+    DecisionClass,
     DecisionOutcome,
     DecisionSource,
+    EscalationRule,
     EvidenceType,
     FindingOrigin,
     FindingSeverity,
     FindingStatus,
     Gate,
     GateStatus,
+    HumanParticipation,
     Provider,
     RiskClass,
     Role,
@@ -20,7 +24,14 @@ from dark_factory.changes.enums import (
     StageStatus,
     StopOutcome,
 )
+from dark_factory.changes.escalations import EscalationViolation
 from dark_factory.changes.findings import Decision, Finding, GateResult
+from dark_factory.changes.implementation_contract import (
+    AcceptanceCriterion,
+    ContractApproval,
+    ContractBudget,
+    ImplementationContract,
+)
 from dark_factory.changes.keys import attempt_id, effect_key, operation_key
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
@@ -63,16 +74,23 @@ __all__ = [
     "SCHEMA_VERSION",
     "STAGE_STATUS_TRANSITIONS",
     "STAGE_TERMINAL_STATUSES",
+    "AcceptanceCriterion",
     "ArtifactRef",
+    "BoundaryArea",
     "BudgetSnapshot",
     "Change",
     "ChangeRequestRef",
     "ChangeRequestStatus",
     "ChangeRun",
     "ChangeSource",
+    "ContractApproval",
+    "ContractBudget",
     "Decision",
+    "DecisionClass",
     "DecisionOutcome",
     "DecisionSource",
+    "EscalationRule",
+    "EscalationViolation",
     "Evidence",
     "EvidenceType",
     "ExecuteStageAction",
@@ -83,6 +101,8 @@ __all__ = [
     "Gate",
     "GateResult",
     "GateStatus",
+    "HumanParticipation",
+    "ImplementationContract",
     "InvalidStatusTransition",
     "MergeAction",
     "NextAction",

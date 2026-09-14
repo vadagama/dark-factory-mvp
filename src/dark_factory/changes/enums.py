@@ -32,6 +32,15 @@ class RiskClass(StrEnum):
     R4 = "R4"
 
 
+class BoundaryArea(StrEnum):
+    """Protected architecture boundary of a change (ADR-018 p.5)."""
+
+    PUBLIC_API = "public_api"
+    DATA_SCHEMA = "data_schema"
+    IAM = "iam"
+    ARCHITECTURE_BOUNDARY = "architecture_boundary"
+
+
 class Role(StrEnum):
     """Agent role catalog (ADR-007)."""
 
@@ -149,6 +158,22 @@ class DecisionSource(StrEnum):
     AGENT = "agent"
 
 
+class DecisionClass(StrEnum):
+    """Class of an architectural decision (ADR-018 p.6)."""
+
+    KNOWN_PATH = "known_path"
+    BOUNDED_CHOICE = "bounded_choice"
+    NEW_PATH = "new_path"
+
+
+class HumanParticipation(StrEnum):
+    """Human participation mode of a lifecycle phase (ADR-018 p.1)."""
+
+    IN_THE_LOOP = "human_in_the_loop"
+    ON_THE_LOOP = "human_on_the_loop"
+    OFF_THE_LOOP = "human_off_the_loop"
+
+
 class ChangeSource(StrEnum):
     """Intake source of a change."""
 
@@ -188,3 +213,23 @@ class StopOutcome(StrEnum):
     BLOCKED = "blocked"
     FAILED = "failed"
     CANCELED = "canceled"
+
+
+class EscalationRule(StrEnum):
+    """Machine-checkable escalation condition of autonomous implementation (ADR-018 p.5, T-016).
+
+    ``implementation_contract_unapproved`` is the T-016 precondition gate: an
+    unapproved contract never enters implementation. The rest are the ADR-018
+    p.5 conditions; ``risk_raised_to_r2`` stays a manual assessment until T-080.
+    """
+
+    IMPLEMENTATION_CONTRACT_UNAPPROVED = "implementation_contract_unapproved"
+    REQUIREMENTS_DEFICIENT = "requirements_deficient"
+    SCOPE_EXIT = "scope_exit"
+    BOUNDARY_CHANGE = "boundary_change"
+    NEW_ADR_PROPOSAL = "new_adr_proposal"
+    RISK_RAISED_TO_R2 = "risk_raised_to_r2"
+    UNRECOVERABLE_GATE_FAILURE = "unrecoverable_gate_failure"
+    AUTONOMY_BUDGET_EXHAUSTED = "autonomy_budget_exhausted"
+    UI_UNVERIFIABLE = "ui_unverifiable"
+    IRREVERSIBLE_OPERATION = "irreversible_operation"

@@ -24,7 +24,9 @@ from dark_factory.changes.enums import (
     Stage,
     StageStatus,
 )
+from dark_factory.changes.escalations import EscalationViolation
 from dark_factory.changes.findings import Finding, GateResult
+from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import NextAction
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.usage import BudgetSnapshot, Usage
@@ -184,6 +186,10 @@ class ChangeRun(BaseModel):
     ``provider`` is fixed at run start and never changes during the run
     (exclusive execution, ADR-019 p.5). ``state_revision`` is the optimistic
     concurrency guard (ADR-006 p.4).
+
+    ``implementation_contract`` is the approved Implementation Contract
+    (ADR-018 p.3): the runner copies it from the change when creating the run.
+    A run without an approved contract does not enter construction (T-016).
     """
 
     id: str = Field(min_length=1)
@@ -194,6 +200,7 @@ class ChangeRun(BaseModel):
     state_revision: int = Field(default=1, ge=1)
     stages: list[StageRun] = []
     budget: BudgetSnapshot = Field(default_factory=BudgetSnapshot)
+    implementation_contract: ImplementationContract | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     finished_at: datetime | None = None
@@ -216,6 +223,10 @@ class StageResult(BaseModel):
 
     ``status`` must be a result status, and the result is persisted before any
     external wait (ADR-006 p.8).
+
+    ``escalations`` lists machine-detected escalation conditions for this
+    attempt (ADR-018 p.5): the flow stops autonomous progress while any are
+    declared.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -232,6 +243,7 @@ class StageResult(BaseModel):
     evidence: list[Evidence] = []
     gate_results: list[GateResult] = []
     findings: list[Finding] = []
+    escalations: list[EscalationViolation] = []
     usage: Usage | None = None
     produced_at: datetime = Field(default_factory=_now)
 

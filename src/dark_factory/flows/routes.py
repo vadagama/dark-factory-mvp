@@ -10,7 +10,7 @@ engine are unaffected.
 from dataclasses import dataclass
 from typing import Final
 
-from dark_factory.changes.enums import Route, Stage
+from dark_factory.changes.enums import Gate, Route, Stage
 
 STAGE_SEQUENCE: Final[tuple[Stage, ...]] = (
     Stage.SPECIFICATION,
@@ -19,6 +19,14 @@ STAGE_SEQUENCE: Final[tuple[Stage, ...]] = (
     Stage.REVIEW_VERIFICATION,
     Stage.RELEASE,
 )
+
+# Stages where the flow waits for an explicit human decision (ADR-018 p.1):
+# specification covers requirement/UX/architecture discovery approval, review
+# carries the human-confirmed merge (ADR-011 p.2). Deploy to dev after merge
+# is human-off-the-loop, prod is manual post-MVP (T-091). Human gates do not
+# depend on the route (contracts/cli.md: quick skips UI/extended gates, not
+# human ones).
+HUMAN_GATES: Final[frozenset[Gate]] = frozenset({Gate.SPECIFICATION, Gate.REVIEW})
 
 
 @dataclass(frozen=True)
@@ -32,6 +40,11 @@ class RouteProfile:
     def initial_stage(self) -> Stage:
         """Stage a run starts from on this route."""
         return self.stages[0]
+
+    @property
+    def human_gates(self) -> frozenset[Gate]:
+        """Gates requiring an explicit human decision on this route (ADR-018 p.1)."""
+        return HUMAN_GATES
 
     def next_stage(self, stage: Stage) -> Stage | None:
         """Immediate successor of ``stage`` on this route, if any."""

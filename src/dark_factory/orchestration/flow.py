@@ -18,7 +18,8 @@ Guarantees are layered (ADR-005 p.2):
   (see ``tests/test_flow_transitions.py``).
 
 Rework and budget limits live in ``dark_factory.rules.limits``, gate policy in
-``dark_factory.rules.gates``, route topology in ``dark_factory.flows.routes``.
+``dark_factory.rules.gates``, route topology in ``dark_factory.flows.routes``,
+escalation policy (T-016, ADR-018 p.5) in ``dark_factory.orchestration.policy``.
 Stop conditions deterministically end in ``Blocked`` (FR-008, ADR-018 p.5).
 Stage-internal execution (TaskGraph, pydantic-graph) is T-015 and deliberately
 out of scope here.
@@ -52,6 +53,11 @@ from dark_factory.changes.run import (
 )
 from dark_factory.changes.usage import BudgetSnapshot, Usage
 from dark_factory.flows.routes import route_profile
+from dark_factory.orchestration.policy.escalation import (
+    autonomy_budget_violation,
+    contract_entry_violation,
+    escalation_stop_reason,
+)
 from dark_factory.rules.gates import unsatisfied_gates
 from dark_factory.rules.limits import continuation_violations, rework_violation
 
@@ -235,6 +241,8 @@ def _handle_action(
                     f"{shown}, got {next_stage.value}"
                 )
             reason = _block_reason(run, result.stage, result.gate_results, now)
+            if reason is None:
+                reason = _escalation_reason(run, result, target=next_stage)
             if reason is not None:
                 return _stop(stage_run, run, reason)
             _advance(run, stage_run, next_stage)
@@ -255,6 +263,13 @@ def _handle_action(
             run.apply_status(RunStatus.WAITING)
             return _decision(stage_run, run, result.next_action, None)
         case ReworkAction(round=requested_round):
+            # Declared escalations and the autonomy budget veto a rework round
+            # without burning one: an escalation is not a rework iteration.
+            reason = escalation_stop_reason(result.escalations)
+            if reason is None:
+                reason = _autonomy_budget_reason(run)
+            if reason is not None:
+                return _stop(stage_run, run, reason)
             violation = rework_violation(budget, requested_round=requested_round)
             if violation is not None:
                 return _stop(stage_run, run, violation.reason)
@@ -275,12 +290,16 @@ def _handle_action(
                     f"no stage follows {result.stage.value} on route {run.route.value}"
                 )
             reason = _block_reason(run, result.stage, result.gate_results, now)
+            if reason is None:
+                reason = escalation_stop_reason(result.escalations)
             if reason is not None:
                 return _stop(stage_run, run, reason)
             _advance(run, stage_run, target)
             return _decision(stage_run, run, result.next_action, target)
         case ReleaseAction():
             reason = _block_reason(run, result.stage, result.gate_results, now)
+            if reason is None:
+                reason = escalation_stop_reason(result.escalations)
             if reason is not None:
                 return _stop(stage_run, run, reason)
             violations = completion_violations(
@@ -342,6 +361,33 @@ def _block_reason(
     if violations:
         return "; ".join(violation.reason for violation in violations)
     return None
+
+
+def _escalation_reason(run: ChangeRun, result: StageResult, *, target: Stage) -> str | None:
+    """Escalation-policy reason blocking an autonomous stage advance, if any.
+
+    Declared escalations always stop the advance. Entering construction
+    additionally requires an approved Implementation Contract (T-016 DoD):
+    rework only re-enters construction for runs that already passed this
+    gate. Otherwise the contract's autonomy budget bounds the stage attempts
+    (an iteration is one ``StageRun`` occurrence).
+    """
+    declared = escalation_stop_reason(result.escalations)
+    if declared is not None:
+        return declared
+    if target is Stage.CONSTRUCTION:
+        violation = contract_entry_violation(run.implementation_contract)
+        if violation is not None:
+            return violation.reason
+    return _autonomy_budget_reason(run)
+
+
+def _autonomy_budget_reason(run: ChangeRun) -> str | None:
+    """Reason for exhausting the contract's autonomy budget, if any."""
+    violation = autonomy_budget_violation(
+        run.implementation_contract, iterations_used=len(run.stages)
+    )
+    return violation.reason if violation is not None else None
 
 
 def _accumulate_usage(budget: BudgetSnapshot, usage: Usage | None) -> None:
