@@ -1,0 +1,26 @@
+schema: dark-factory.dev/change/v1
+id: chg:example-product:2026:0001
+title: Example change
+slug: example-change
+product: example-product
+kind: product-feature
+risk_class: R1
+status: draft
+baseline:
+  revision: "0000000000000000000000000000000000000000000000000000000000000000"
+workflow:
+  profile: product-feature
+  version: "1.0"
+owners:
+  product: team-example
+  technical: team-example
+targets:
+  - repository: example-product
+    role: implementation
+artifacts:
+  intent: intent.md
+  spec: spec/delta.yaml
+  design: design/overview.md
+  tasks: tasks/graph.yaml
+  verification: verification/plan.yaml
+  evidence: evidence/index.yaml

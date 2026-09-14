@@ -1,0 +1,9 @@
+schema: dark-factory.dev/task-graph/v1
+tasks:
+  - id: TASK-001
+    title: Implement checkout timeout
+    repository: example-product
+    type: implementation
+    satisfies:
+      - req:example-product:checkout:timeout
+    depends_on: []
