@@ -1,0 +1,147 @@
+# Self-hosted GitHub Actions runner (T030, ADR-019 p.3/7, ADR-006 p.1).
+#
+# Model: ONE ephemeral runner pod per workflow job. The entrypoint mints a
+# fresh runner registration token via the GitHub App (Secret
+# `factory-github-app`, created outside git), registers with `--ephemeral` and
+# execs run.sh; after exactly one job the runner deregisters itself and the
+# container exits. The Deployment (strategy: Recreate, concurrency=1 per
+# ADR-010) restarts the pod, the next start mints a fresh token (registration
+# tokens are valid for one hour, but the pod always mints its own right before
+# registering) and the cycle repeats. The runner pod contains no job payload:
+# its only duties are the Actions queue connection and creating/observing the
+# ephemeral agent Jobs in `factory-runs` (see manifests/rbac.yaml).
+#
+# Why not actions-runner-controller (ARC gha-runner-scale-set): ARC places the
+# listener and the work pods in ONE namespace, which cannot express the
+# mandated split "runners in `ci`, agent pods only in `factory-runs`"
+# (docs T-041). A plain Deployment with ephemeral runners is the smallest
+# moving part set (no CRDs, no controller) that satisfies the split.
+#
+# Security posture of the runner pod (the trusted tier; the hardened tier is
+# the agent job pods in `factory-runs`):
+#   - non-root uid/gid 1001 (the upstream image default), runAsNonRoot;
+#   - no privileged, no capabilities, seccomp RuntimeDefault;
+#   - automountServiceAccountToken: false at POD level. The Kubernetes API
+#     credentials are provided by an explicit projected serviceAccountToken
+#     (kubelet rotates it) — the token is bounded by manifests/rbac.yaml;
+#   - readOnlyRootFilesystem is deliberately NOT set for the runner container:
+#     the upstream runner keeps its registration state and job workspace inside
+#     its install directory (/home/runner) and there is no supported way to
+#     split them; the filesystem is still ephemeral per pod, and the sensitive
+#     tier (agent job pods) is read-only. Justified in deploy/ci/README.md;
+#   - the GitHub App secret is mounted envFrom with optional: true so a missing
+#     secret degrades into a clear, retrying entrypoint error instead of a
+#     CreateContainerConfigError.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-runner
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: factory-runner
+    app.kubernetes.io/managed-by: ci
+spec:
+  # One job at a time (ADR-010: concurrency=1). Recreate guarantees the old
+  # runner is gone before a fresh ephemeral runner registers.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: factory-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: dark-factory
+        app.kubernetes.io/name: factory-runner
+        app.kubernetes.io/managed-by: ci
+    spec:
+      serviceAccountName: factory-ci
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          # ghcr.io/actions/actions-runner v2.327.1, multi-arch index digest
+          # (verified linux/arm64 + linux/amd64; sha-256 pinned, never a tag).
+          image: ghcr.io/actions/actions-runner@sha256:551dc313e6b6ef1ca7b9594d8090a7a6cc7aeb663f1079ba2fec07e9158f3259
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/mnt/scripts/entrypoint.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # Repository the runner is registered against (public URL; change
+            # per environment).
+            - name: GITHUB_CONFIG_URL
+              value: https://github.com/vadagama/dark-factory-mvp
+            # Labels used by workflows: runs-on: [self-hosted, factory].
+            - name: RUNNER_LABELS
+              value: factory,k8s
+            # Kubernetes API endpoint for run-agent-job.sh (in-cluster).
+            - name: KUBE_API_SERVER
+              value: https://kubernetes.default.svc
+            - name: KUBE_CA_FILE
+              value: /mnt/kube-ca/ca.crt
+            - name: KUBE_TOKEN_FILE
+              value: /mnt/sa-token/token
+            # Namespace where agent Jobs are created (RBAC allows only this).
+            - name: FACTORY_JOB_NAMESPACE
+              value: factory-runs
+          envFrom:
+            # GitHub App credentials (DARK_FACTORY_GITHUB_APP_ID,
+            # DARK_FACTORY_GITHUB_INSTALLATION_ID,
+            # DARK_FACTORY_GITHUB_APP_PRIVATE_KEY). Created OUTSIDE git —
+            # see deploy/ci/README.md. optional: true keeps the pod startable
+            # without the secret; the entrypoint then exits with a clear
+            # message until the secret exists.
+            - secretRef:
+                name: factory-github-app
+                optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /mnt/scripts
+              readOnly: true
+            - name: sa-token
+              mountPath: /mnt/sa-token
+              readOnly: true
+            - name: kube-ca
+              mountPath: /mnt/kube-ca
+              readOnly: true
+            - name: work
+              mountPath: /home/runner/_work
+      volumes:
+        - name: scripts
+          configMap:
+            name: factory-runner-scripts
+        # Explicit bound token for the pod's own SA (factory-ci). The kubelet
+        # rotates projected tokens while the pod runs; the token's power is
+        # bounded by the factory-runs Role (manifests/rbac.yaml).
+        - name: sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+        # kube-root-ca.crt is auto-created by the controller-manager in every
+        # namespace and holds the cluster CA the API server presents.
+        - name: kube-ca
+          configMap:
+            name: kube-root-ca.crt
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi

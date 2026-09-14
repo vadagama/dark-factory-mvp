@@ -1,0 +1,130 @@
+# Verification probe for agent job pods (T030). Created by deploy/ci/verify.sh
+# with the SAME securityContext as manifests/agent-job-template.yaml (the two
+# blocks are kept in sync manually — see the sync note in both files), but with
+# a busybox command that asserts the T030 DoD from INSIDE the hardened pod:
+#
+#   uid_65532          the pod runs non-root (uid 65532, runAsNonRoot)
+#   rootfs_readonly    the container root filesystem is read-only
+#   tmp_writable       positive control: the tmp emptyDir IS writable
+#   no_sa_token        no service-account token is mounted (automount: false)
+#   env_clean          no credential-like environment variables
+#   dns                DNS still resolves (bootstrap allow-dns is additive)
+#   api_blocked        TCP 443 to the Kubernetes API (name and ClusterIP)
+#                      is dropped by the narrowed egress policy
+#   external_https     public HTTPS (github.com:443) is reachable
+#   http80_blocked     plain HTTP (port 80) is dropped
+#
+# The job is created by verify.sh AS the runner service account
+# (`--as=system:serviceaccount:ci:factory-ci`), which doubles as the live RBAC
+# test for the cross-namespace RoleBinding. TTL is shortened to 60s so the
+# TTL-cleanup DoD is observable in minutes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Quoted so an all-digits substituted name stays a YAML string (see
+  # agent-job-template.yaml for the same rationale).
+  name: "__JOB_NAME__"
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: factory-agent-probe
+    app.kubernetes.io/managed-by: ci
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: __DEADLINE_SECONDS__
+  ttlSecondsAfterFinished: __TTL_SECONDS__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: dark-factory
+        app.kubernetes.io/name: factory-agent
+        app.kubernetes.io/managed-by: ci
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      serviceAccountName: factory-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          # busybox:1.37, multi-arch index digest (docker.io/library/busybox).
+          image: busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              res() { printf 'PROBE_RESULT %s=%s\n' "$1" "$2"; }
+              fail=0
+              if [ "$(id -u)" = "65532" ]; then res uid_65532 PASS; else res uid_65532 FAIL; fail=1; fi
+              if touch /.__probe_wtest 2>/dev/null; then
+                rm -f /.__probe_wtest
+                res rootfs_readonly FAIL; fail=1
+              else
+                res rootfs_readonly PASS
+              fi
+              if touch /tmp/.__probe_wtest 2>/dev/null; then
+                rm -f /tmp/.__probe_wtest
+                res tmp_writable PASS
+              else
+                res tmp_writable FAIL; fail=1
+              fi
+              if [ -e /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+                res no_sa_token FAIL; fail=1
+              else
+                res no_sa_token PASS
+              fi
+              if printenv | grep -qiE 'token|secret|password|credential'; then
+                res env_clean FAIL; fail=1
+              else
+                res env_clean PASS
+              fi
+              if nslookup kubernetes.default.svc >/dev/null 2>&1; then
+                res dns PASS
+              else
+                res dns FAIL; fail=1
+              fi
+              if nc -z -w 5 kubernetes.default.svc 443 >/dev/null 2>&1; then
+                res api_blocked FAIL; fail=1
+              else
+                res api_blocked PASS
+              fi
+              if nc -z -w 5 __KUBERNETES_CLUSTER_IP__ 443 >/dev/null 2>&1; then
+                res api_ip_blocked FAIL; fail=1
+              else
+                res api_ip_blocked PASS
+              fi
+              if wget -q -T 20 -O /dev/null https://github.com/robots.txt 2>/dev/null; then
+                res external_https PASS
+              else
+                res external_https FAIL; fail=1
+              fi
+              if wget -q -T 5 -O /dev/null http://github.com/robots.txt 2>/dev/null; then
+                res http80_blocked FAIL; fail=1
+              else
+                res http80_blocked PASS
+              fi
+              exit "$fail"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

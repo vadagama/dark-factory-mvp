@@ -1,0 +1,53 @@
+# RBAC for the CI runner tier (T030, ADR-006/ADR-010/ADR-019).
+#
+# The GitHub Actions runner pods live in namespace `ci` and run as service
+# account `factory-ci` (created by the bootstrap, T029). Their ONLY cluster
+# duty is to create and observe ephemeral agent Jobs in `factory-runs`
+# (ADR-006: one ephemeral job pod per stage). The Role is namespace-scoped to
+# `factory-runs`; the RoleBinding references the runner SA across namespaces
+# (allowed by RBAC for ServiceAccount subjects), so the runner tier cannot
+# touch control-plane namespaces (`ci`, `factory`, `argocd`, `apps-dev`).
+#
+# No pods/exec and no secrets access: the runner never runs commands inside
+# job pods and never reads cluster secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-agent-jobs
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: ci
+rules:
+  # Agent stage jobs: create and observe; delete is an explicit cleanup path
+  # (normal cleanup is TTL-driven, see agent-job-template.yaml).
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Read pod status (exit codes, phase) and logs to return the StageResult.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-agent-jobs
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-agent-jobs
+subjects:
+  # Cross-namespace binding: the runner tier (`ci`) manages agent jobs in
+  # `factory-runs` only. Job pods themselves run as `factory-agent`, which has
+  # no RBAC at all (bootstrap T029) and no mounted token.
+  - kind: ServiceAccount
+    name: factory-ci
+    namespace: ci
