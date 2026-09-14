@@ -1,0 +1,146 @@
+# Ephemeral agent job template (T030, ADR-006): one Kubernetes Job per Flow
+# stage, created ONLY in namespace `factory-runs` by the runner tier (`ci`).
+#
+# Rendered by deploy/ci/scripts/run-agent-job.sh via the __PLACEHOLDER__
+# substitutions below; do not apply this file directly.
+#
+# Security posture (the core T030 requirement):
+#   - non-root (uid/gid 65532, runAsNonRoot) — matches the T028 convention;
+#   - readOnlyRootFilesystem, no privileged, no docker socket, no hostPath,
+#     capabilities drop ALL, seccomp RuntimeDefault;
+#   - automountServiceAccountToken: false on the POD (belt) with the
+#     token-less SA `factory-agent` (braces, T029) — the job pod has NO
+#     Kubernetes credentials at all;
+#   - NO GitHub credentials: no merge/deploy tokens, no secrets/envFrom. The
+#     MVP pilot repository is cloned anonymously over HTTPS (public repo);
+#     private repositories need a scoped short-lived read-only token — T031;
+#   - resource requests/limits within the factory-runs quota (T029);
+#   - activeDeadlineSeconds + ttlSecondsAfterFinished + backoffLimit: 0
+#     (retry belongs to the flow, ADR-006 p.7/12) — the pod is created and
+#     deleted by TTL (T030 DoD).
+# Keep the securityContext block in sync with manifests/agent-job-probe.yaml.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # String placeholders are quoted: an all-digits substituted value (e.g. a
+  # numeric SHA or run id) must stay a YAML string, the API rejects numbers
+  # for env/label/name fields (int fields below stay unquoted on purpose).
+  name: "__JOB_NAME__"
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: factory-agent
+    app.kubernetes.io/managed-by: ci
+    dark-factory.io/run-id: "__RUN_ID__"
+    dark-factory.io/stage: "__STAGE__"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: __DEADLINE_SECONDS__
+  ttlSecondsAfterFinished: __TTL_SECONDS__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: dark-factory
+        app.kubernetes.io/name: factory-agent
+        dark-factory.io/run-id: "__RUN_ID__"
+        dark-factory.io/stage: "__STAGE__"
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      serviceAccountName: factory-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          # Placeholder until T033 builds and publishes the factory image with
+          # an immutable digest (docs T-044). Replace the digest (never a tag)
+          # before the first live run; see deploy/ci/README.md.
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          env:
+            - name: FACTORY_REPO_URL
+              value: "__REPO_URL__"
+            - name: FACTORY_GIT_SHA
+              value: "__GIT_SHA__"
+            - name: FACTORY_CHANGE
+              value: "__CHANGE_PATH__"
+            - name: FACTORY_STAGE
+              value: "__STAGE__"
+            - name: FACTORY_ROUTE
+              value: "__ROUTE__"
+            - name: FACTORY_INPUT_REVISION
+              value: "__INPUT_REVISION__"
+            - name: FACTORY_RUN_ID
+              value: "__RUN_ID__"
+          workingDir: /workspace
+          # Exit-code contract of `factory stage run` (cli.md, mirrored by
+          # .github/workflows/factory-stage.yml): 0 succeeded, 10 waiting
+          # (not an error), 20 blocked, 1 failed, 2 invalid input. The raw
+          # exit code is preserved on the container so the runner tier maps
+          # it (waiting must NOT fail the workflow).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              REPO_DIR=/workspace/repo
+              git clone --quiet "$FACTORY_REPO_URL" "$REPO_DIR"
+              cd "$REPO_DIR"
+              git fetch --quiet --depth 1 origin "$FACTORY_GIT_SHA"
+              git checkout --quiet --detach "$FACTORY_GIT_SHA"
+              set -- stage run \
+                --change "$FACTORY_CHANGE" \
+                --stage "$FACTORY_STAGE" \
+                --json \
+                --non-interactive \
+                --evidence-dir factory-evidence
+              if [ -n "$FACTORY_ROUTE" ]; then
+                set -- "$@" --route "$FACTORY_ROUTE"
+              fi
+              if [ -n "$FACTORY_INPUT_REVISION" ]; then
+                set -- "$@" --input-revision "$FACTORY_INPUT_REVISION"
+              fi
+              if [ -n "$FACTORY_RUN_ID" ]; then
+                set -- "$@" --run-id "$FACTORY_RUN_ID"
+              fi
+              set +e
+              factory "$@" > stage_result.json
+              code=$?
+              set -eu
+              cat stage_result.json >&2
+              if [ "$code" -ne 0 ] && [ "$code" -ne 10 ]; then
+                echo "factory stage run exited with code $code" >&2
+                exit "$code"
+              fi
+              # The runner tier extracts the StageResult between these markers
+              # from `pods/log` (pods/exec is intentionally not granted).
+              echo "__FACTORY_STAGE_RESULT_BEGIN__"
+              cat stage_result.json
+              echo "__FACTORY_STAGE_RESULT_END__"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: workspace
+          emptyDir:
+            sizeLimit: 2Gi

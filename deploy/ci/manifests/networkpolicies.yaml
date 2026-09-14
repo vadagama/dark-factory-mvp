@@ -1,0 +1,56 @@
+# T030: narrows the bootstrap baseline egress in `factory-runs` (T029) so that
+# agent job pods can reach PUBLIC HTTPS endpoints only (GitHub, LLM APIs).
+#
+# This policy intentionally reuses the bootstrap object name `allow-egress-https`
+# in namespace `factory-runs`: `kubectl apply` REPLACES the broad 0.0.0.0/0
+# rule installed by deploy/bootstrap/manifests/networkpolicies.yaml. NetworkPolicies
+# are additive (union of allows), so a separate new policy could not remove the
+# broad allow — the object must be replaced by name.
+#
+# What the except list denies to agent pods (and why):
+#   10.0.0.0/8      pod/service CIDRs of the cluster: the Kubernetes API
+#                   (kubernetes.default.svc -> 10.96.0.1), pods and services of
+#                   control-plane namespaces (argocd, factory, ci, apps-dev),
+#                   kube-dns ClusterIP (DNS is still allowed via the bootstrap
+#                   allow-dns policy, which selects kube-dns PODS on port 53).
+#   172.16.0.0/12   RFC1918 private space — no in-cluster or LAN infrastructure.
+#   192.168.0.0/16  RFC1918, including the Docker Desktop host subnet
+#                   (192.168.65.0/24) where the host-network kube-apiserver
+#                   listens on 6443 — blocked regardless of whether the CNI
+#                   evaluates policies pre- or post-DNAT.
+#   169.254.0.0/16  link-local (cloud metadata services).
+#
+# Result: an agent job pod cannot reach the Kubernetes API (and has no token —
+# automountServiceAccountToken: false) and cannot pivot into control-plane
+# namespaces; it can only talk to DNS (bootstrap allow-dns), its own namespace
+# (bootstrap allow-intra-ns) and public HTTPS (below).
+# IPv6: the local Docker Desktop cluster is IPv4-only; dual-stack hardening is
+# out of MVP scope (see deploy/ci/README.md, "Ограничения").
+#
+# NOTE: re-running deploy/bootstrap/bootstrap.sh re-applies the broad rule —
+# re-run deploy/ci/install.sh afterwards to re-narrow. deploy/ci/teardown.sh
+# restores the bootstrap state.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-https
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: ci
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
