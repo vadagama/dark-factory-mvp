@@ -10,6 +10,7 @@ bindings will back them through provider APIs.
 
 import asyncio
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,10 @@ from dark_factory.adapters.fakes import (
     FakeWorkflowEngine,
 )
 from dark_factory.changes.run import Change
+from dark_factory.context.sdd.baseline import current_revision
+from dark_factory.context.sdd.native import NativeChangeSetAdapter
+from dark_factory.context.sdd.openspec import OpenSpecAdapter
+from dark_factory.context.sdd.speckit import SpecKitAdapter
 from dark_factory.ports import (
     ArtifactStorePort,
     ChangeRequestRef,
@@ -46,6 +51,7 @@ from dark_factory.ports import (
     RepositoryRef,
     RiskClass,
     RunStatus,
+    SDDPort,
     SourceKind,
     Span,
     TelemetryPort,
@@ -55,6 +61,7 @@ from dark_factory.ports import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
+from tests.sdd_factories import seed_baseline
 
 PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
 
@@ -243,3 +250,28 @@ def event_publisher_port(publisher: FakeEventPublisher) -> EventPublisherPort:
 @pytest.fixture
 def recorded_events(publisher: FakeEventPublisher) -> Callable[[], tuple[DomainEvent, ...]]:
     return publisher.recorded_events
+
+
+@pytest.fixture
+def sdd_factory_root(tmp_path: Path) -> Path:
+    """A seeded ``.factory/`` Product Baseline for the SDD contract suite."""
+    root = tmp_path / ".factory"
+    seed_baseline(root)
+    return root
+
+
+@pytest.fixture
+def sdd_revision(sdd_factory_root: Path) -> str:
+    """Current baseline revision of the seeded factory root."""
+    return current_revision(sdd_factory_root)
+
+
+@pytest.fixture(params=["native", "speckit", "openspec"])
+def sdd_port(sdd_factory_root: Path, tmp_path: Path, request: pytest.FixtureRequest) -> SDDPort:
+    """SDDPort bound to every adapter over one shared factory root (ADR-020 p.8)."""
+    native = NativeChangeSetAdapter(sdd_factory_root)
+    if request.param == "speckit":
+        return SpecKitAdapter(native, tmp_path / "specs")
+    if request.param == "openspec":
+        return OpenSpecAdapter(native, tmp_path / "openspec")
+    return native
