@@ -3,19 +3,21 @@
 ``factory`` is the entry point of a factory stage (ADR-006 p.1): the same core
 release runs locally and in CI (FR-022), so no always-on service is needed.
 This module owns the command tree (``stage run``/``stage resume``,
-``run status``, ``reconcile``, ``outbox dispatch``, ``doctor``), option
-validation and exit codes. Exit codes (contract cli.md): 0 success,
-10 waiting, 20 blocked, 1 execution error, 2 invalid input/configuration;
-argparse rejects invalid input with exit code 2, matching the contract.
+``run status``, ``reconcile``, ``outbox dispatch``/``outbox replay``/
+``outbox skip``, ``doctor``), option validation and exit codes. Exit codes
+(contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution error,
+2 invalid input/configuration; argparse rejects invalid input with exit code
+2, matching the contract.
 
 Handlers are dispatched from here. ``doctor`` (T008) is implemented in
 ``dark_factory.cli.doctor``, ``stage run`` (T009, with run-record
-persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage`` and
+persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``,
 ``reconcile`` (T-063, one idempotent Reconciler pass) in
-``dark_factory.cli.reconcile``; the remaining handlers arrive in later tasks
-(``stage resume`` and ``run status`` with the durable state-store wiring;
-outbox dispatch T028) and report ``not_implemented`` with exit code 2 until
-then.
+``dark_factory.cli.reconcile`` and the outbox commands (T028, delivery of
+outbox events per ADR-016) in ``dark_factory.cli.outbox``; the remaining
+handlers (``stage resume`` and ``run status`` with the durable state-store
+wiring) arrive in later tasks and report ``not_implemented`` with exit code
+2 until then.
 """
 
 import argparse
@@ -85,9 +87,35 @@ class ReconcileArgs:
 
 @dataclass(frozen=True, slots=True)
 class OutboxDispatchArgs:
-    """Arguments of ``factory outbox dispatch`` (contract cli.md)."""
+    """Arguments of ``factory outbox dispatch`` (contract cli.md, T028).
+
+    ``once`` is accepted for compatibility with the contract's ``[--once]``
+    option, but the command always performs exactly one dispatch pass — the
+    schedule is owned by the CronJob, not by a CLI loop.
+    """
 
     once: bool
+    json_output: bool
+    limit: int | None
+    cleanup: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxReplayArgs:
+    """Arguments of ``factory outbox replay`` (T028, ADR-016 p.5 manual replay)."""
+
+    event_id: str
+    consumer: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxSkipArgs:
+    """Arguments of ``factory outbox skip`` (T028, ADR-016 p.6 operator skip)."""
+
+    event_id: str
+    consumer: str
+    json_output: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +126,14 @@ class DoctorArgs:
 
 
 CommandArgs = (
-    StageRunArgs | StageResumeArgs | RunStatusArgs | ReconcileArgs | OutboxDispatchArgs | DoctorArgs
+    StageRunArgs
+    | StageResumeArgs
+    | RunStatusArgs
+    | ReconcileArgs
+    | OutboxDispatchArgs
+    | OutboxReplayArgs
+    | OutboxSkipArgs
+    | DoctorArgs
 )
 
 
@@ -176,11 +211,46 @@ def build_parser() -> argparse.ArgumentParser:
 
     outbox = commands.add_parser("outbox", help="Event delivery (ADR-016).")
     outbox_commands = outbox.add_subparsers(required=True, metavar="command")
-    outbox_dispatch = outbox_commands.add_parser("dispatch", help="Deliver pending outbox events.")
+    outbox_dispatch = outbox_commands.add_parser(
+        "dispatch", help="Run one Outbox Dispatcher delivery pass (T028)."
+    )
     outbox_dispatch.add_argument(
-        "--once", action="store_true", help="Perform a single delivery pass instead of looping."
+        "--once",
+        action="store_true",
+        help="Accepted for contract cli.md compatibility; the pass is always single.",
+    )
+    outbox_dispatch.add_argument(
+        "--json", action="store_true", help="Emit the dispatch report as JSON."
+    )
+    outbox_dispatch.add_argument(
+        "--limit", type=int, help="Maximum deliveries reserved in this pass."
+    )
+    outbox_dispatch.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Also delete past-retention events with all deliveries terminal (ADR-016 p.9).",
     )
     outbox_dispatch.set_defaults(command="outbox_dispatch")
+
+    outbox_replay = outbox_commands.add_parser(
+        "replay", help="Reset dead/failed deliveries of one event to pending (ADR-016 p.5)."
+    )
+    outbox_replay.add_argument("--event-id", required=True, help="Id of the event to replay.")
+    outbox_replay.add_argument(
+        "--consumer", help="Limit the replay to one consumer; default: all of them."
+    )
+    outbox_replay.add_argument(
+        "--json", action="store_true", help="Emit the replay result as JSON."
+    )
+    outbox_replay.set_defaults(command="outbox_replay")
+
+    outbox_skip = outbox_commands.add_parser(
+        "skip", help="Waive one delivery by operator decision (ADR-016 p.6)."
+    )
+    outbox_skip.add_argument("--event-id", required=True, help="Id of the event to skip.")
+    outbox_skip.add_argument("--consumer", required=True, help="Consumer whose delivery is waived.")
+    outbox_skip.add_argument("--json", action="store_true", help="Emit the skip result as JSON.")
+    outbox_skip.set_defaults(command="outbox_skip")
 
     doctor = commands.add_parser("doctor", help="Check the environment and configuration.")
     doctor.add_argument("--json", action="store_true", help="Emit the doctor report as JSON.")
@@ -195,6 +265,14 @@ def _option_str(data: Mapping[str, object], option: str) -> str | None:
     if value is None or isinstance(value, str):
         return value
     raise AssertionError(f"option --{option.replace('_', '-')} must be a string")
+
+
+def _option_int(data: Mapping[str, object], option: str) -> int | None:
+    """Read an integer option from the parsed namespace (argparse guarantees the type)."""
+    value = data.get(option)
+    if value is None or isinstance(value, int):
+        return value
+    raise AssertionError(f"option --{option.replace('_', '-')} must be an integer")
 
 
 def _required_str(data: Mapping[str, object], option: str) -> str:
@@ -241,7 +319,24 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
         case "reconcile":
             return ReconcileArgs(json_output=_flag(data, "json"))
         case "outbox_dispatch":
-            return OutboxDispatchArgs(once=_flag(data, "once"))
+            return OutboxDispatchArgs(
+                once=_flag(data, "once"),
+                json_output=_flag(data, "json"),
+                limit=_option_int(data, "limit"),
+                cleanup=_flag(data, "cleanup"),
+            )
+        case "outbox_replay":
+            return OutboxReplayArgs(
+                event_id=_required_str(data, "event_id"),
+                consumer=_option_str(data, "consumer"),
+                json_output=_flag(data, "json"),
+            )
+        case "outbox_skip":
+            return OutboxSkipArgs(
+                event_id=_required_str(data, "event_id"),
+                consumer=_required_str(data, "consumer"),
+                json_output=_flag(data, "json"),
+            )
         case "doctor":
             return DoctorArgs(json_output=_flag(data, "json"))
         case _:
@@ -295,7 +390,23 @@ def _reconcile(args: ReconcileArgs) -> int:
 
 
 def _dispatch_outbox(args: OutboxDispatchArgs) -> int:
-    return _not_implemented("outbox dispatch", "T028", json_output=False)
+    # Imported here: cli.outbox imports the args dataclasses and the exit codes
+    # from this module, so a module-level import would be circular.
+    from dark_factory.cli import outbox
+
+    return outbox.run_dispatch_command(args)
+
+
+def _replay_outbox(args: OutboxReplayArgs) -> int:
+    from dark_factory.cli import outbox
+
+    return outbox.run_replay_command(args)
+
+
+def _skip_outbox(args: OutboxSkipArgs) -> int:
+    from dark_factory.cli import outbox
+
+    return outbox.run_skip_command(args)
 
 
 def _doctor(args: DoctorArgs) -> int:
@@ -317,6 +428,10 @@ def dispatch(command: CommandArgs) -> int:
             return _reconcile(command)
         case OutboxDispatchArgs():
             return _dispatch_outbox(command)
+        case OutboxReplayArgs():
+            return _replay_outbox(command)
+        case OutboxSkipArgs():
+            return _skip_outbox(command)
         case DoctorArgs():
             return _doctor(command)
         case _:
