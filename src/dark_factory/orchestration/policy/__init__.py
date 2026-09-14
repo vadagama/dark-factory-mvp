@@ -1,10 +1,12 @@
-"""Escalation and participation policy of autonomous implementation (T-016, ADR-018).
+"""Escalation, participation and merge policy of autonomous implementation
+(T-016, ADR-018; merge: T-026, ADR-011 p.2).
 
 Deterministic, pure-domain policy checks consulted by the flow: the
 Implementation Contract gate, the machine-checkable escalation conditions
 (ADR-018 p.5), the Known/Bounded/New path classifier (p.6), the risk-class
-monotonicity (ADR-011 p.5) and the phase participation table (p.1). No
-harness/LLM calls and no database access.
+monotonicity (ADR-011 p.5), the phase participation table (p.1) and the
+merge policy (T-026, ADR-011 p.2). No harness/LLM calls and no database
+access.
 """
 
 from dark_factory.orchestration.policy.decision_class import (
@@ -28,6 +30,15 @@ from dark_factory.orchestration.policy.escalation import (
     scope_exit_violation,
     ui_verification_violation,
 )
+from dark_factory.orchestration.policy.merge import (
+    DEFAULT_MERGE_POLICY,
+    MergeDecision,
+    MergeDecisionKind,
+    MergeExecutor,
+    MergePolicy,
+    MergeRequestContext,
+    evaluate_merge,
+)
 from dark_factory.orchestration.policy.participation import (
     PHASE_PARTICIPATION,
     STAGE_PARTICIPATION,
@@ -44,6 +55,7 @@ from dark_factory.orchestration.policy.risk import (
 )
 
 __all__ = [
+    "DEFAULT_MERGE_POLICY",
     "PHASE_PARTICIPATION",
     "R2_THRESHOLD",
     "RISK_ASSESSMENT_MANUAL",
@@ -53,6 +65,11 @@ __all__ = [
     "DecisionClassPolicyError",
     "DecisionFacts",
     "DecisionVerdict",
+    "MergeDecision",
+    "MergeDecisionKind",
+    "MergeExecutor",
+    "MergePolicy",
+    "MergeRequestContext",
     "PhaseName",
     "RiskClassPolicyError",
     "adr_proposal_violation",
@@ -61,6 +78,7 @@ __all__ = [
     "classify_decision",
     "contract_entry_violation",
     "escalation_stop_reason",
+    "evaluate_merge",
     "gate_failure_violation",
     "irreversible_operation_violation",
     "is_r2_or_higher",

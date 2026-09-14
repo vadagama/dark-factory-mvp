@@ -19,14 +19,16 @@ Guarantees are layered (ADR-005 p.2):
 
 Rework and budget limits live in ``dark_factory.rules.limits``, gate policy in
 ``dark_factory.rules.gates``, route topology in ``dark_factory.flows.routes``,
-escalation policy (T-016, ADR-018 p.5) in ``dark_factory.orchestration.policy``.
-Stop conditions deterministically end in ``Blocked`` (FR-008, ADR-018 p.5).
+escalation policy (T-016, ADR-018 p.5) in ``dark_factory.orchestration.policy``
+and merge policy (T-026, ADR-011 p.2) in
+``dark_factory.orchestration.policy.merge``. Stop conditions deterministically
+end in ``Blocked`` (FR-008, ADR-018 p.5).
 Stage-internal execution (TaskGraph, pydantic-graph) is T-015 and deliberately
 out of scope here.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, Literal, assert_never
 
@@ -57,6 +59,13 @@ from dark_factory.orchestration.policy.escalation import (
     autonomy_budget_violation,
     contract_entry_violation,
     escalation_stop_reason,
+)
+from dark_factory.orchestration.policy.merge import (
+    DEFAULT_MERGE_POLICY,
+    MergeDecision,
+    MergePolicy,
+    MergeRequestContext,
+    evaluate_merge,
 )
 from dark_factory.rules.gates import unsatisfied_gates
 from dark_factory.rules.limits import continuation_violations, rework_violation
@@ -118,6 +127,15 @@ _STOP_STATUS: Final[dict[StopOutcome, tuple[StageStatus, RunStatus]]] = {
     StopOutcome.CANCELED: (StageStatus.CANCELED, RunStatus.CANCELED),
 }
 
+MERGE_POLICY: Final[MergePolicy] = DEFAULT_MERGE_POLICY
+"""Merge policy consulted by the ``MergeAction`` handler (T-026).
+
+MVP default: manual mode — every merge waits for a version-bound human
+approval (ADR-011 p.2); auto-merge by the trusted finalizer requires the
+policy to list the risk class explicitly (FR-010) and stays disabled until
+T-085 wires deployment configuration here.
+"""
+
 
 class InvalidFlowTransition(ValueError):
     """A (stage, NextAction) pair outside ``FLOW_TRANSITIONS`` was requested."""
@@ -132,9 +150,9 @@ class FlowDecision:
     """Outcome of applying one ``StageResult`` to the flow.
 
     ``action`` is the effective action: the requested one when honored, or a
-    synthesized ``StopAction`` when a limit, gate or completion invariant
-    blocked the transition. ``next_stage`` is the stage to execute next, if
-    the flow advances.
+    synthesized action (``StopAction`` for a blocked transition, or
+    ``WaitForInputAction`` when the merge policy defers the merge to a human,
+    T-026). ``next_stage`` is the stage to execute next, if the flow advances.
     """
 
     stage: Stage
@@ -182,6 +200,7 @@ def apply_result(
     *,
     history: Sequence[StageResult] = (),
     now: datetime | None = None,
+    merge_context: MergeRequestContext | None = None,
 ) -> FlowDecision:
     """Apply one stage result to the run: the single flow transition point.
 
@@ -194,6 +213,14 @@ def apply_result(
     used to check the completion invariants (ADR-009 p.9) when the flow
     reaches a successful terminal state. ``now`` overrides the wall clock for
     the deadline limit (determinism in tests and reconciliation replays).
+
+    ``merge_context`` carries the merge facts (executor, risk class, SHAs,
+    human approvals) the ``MergeAction`` handler needs to consult the merge
+    policy (T-026). The flow anchors ``route``, ``stage`` and
+    ``gate_results`` of the context to the run and the result — the caller
+    contributes only executor, risk class, SHAs and approvals. Without a
+    context the merge parks the run in Waiting: absent merge facts mean
+    manual mode, the machine never merges on missing data (FR-010).
 
     Persisting the run and the result before an external wait is the caller's
     duty (ADR-006 p.8); double application is prevented upstream by the
@@ -218,7 +245,7 @@ def apply_result(
     stage_run = _ensure_stage_run(run, result)
     if run.status is not RunStatus.RUNNING:
         run.apply_status(RunStatus.RUNNING)
-    return _handle_action(run, stage_run, result, history, reference_now)
+    return _handle_action(run, stage_run, result, history, reference_now, merge_context)
 
 
 def _handle_action(
@@ -227,6 +254,7 @@ def _handle_action(
     result: StageResult,
     history: Sequence[StageResult],
     now: datetime,
+    merge_context: MergeRequestContext | None,
 ) -> FlowDecision:
     """Apply the effects of one honored-or-blocked action; exhaustively checked."""
     budget = run.budget
@@ -289,11 +317,23 @@ def _handle_action(
                 raise FlowStateError(
                     f"no stage follows {result.stage.value} on route {run.route.value}"
                 )
+            # Stage gates (SHA-blind) and escalations block first: their stop
+            # reasons are preserved for existing callers. The merge policy then
+            # adds the merge-specific preconditions on the final SHA (T-026).
             reason = _block_reason(run, result.stage, result.gate_results, now)
             if reason is None:
                 reason = escalation_stop_reason(result.escalations)
             if reason is not None:
                 return _stop(stage_run, run, reason)
+            decision = _merge_policy_decision(run, result, merge_context)
+            if decision.kind == "blocked":
+                return _stop(stage_run, run, decision.reason or "merge blocked by merge policy")
+            if decision.kind == "manual_merge_required":
+                return _wait_for_human_merge(stage_run, run, decision.reason)
+            # human_merge_authorized / finalizer_merge_allowed: the merge is
+            # authorized; the flow advances and the runner executes the merge
+            # with the trusted-finalizer credential set — agent pods carry none
+            # (FR-023; the human merge is observed on the provider, ADR-011 p.2).
             _advance(run, stage_run, target)
             return _decision(stage_run, run, result.next_action, target)
         case ReleaseAction():
@@ -317,6 +357,47 @@ def _handle_action(
             return _decision(stage_run, run, result.next_action, None)
         case _:
             assert_never(result.next_action)
+
+
+def _merge_policy_decision(
+    run: ChangeRun,
+    result: StageResult,
+    merge_context: MergeRequestContext | None,
+) -> MergeDecision:
+    """Consult the merge policy for one ``MergeAction`` result (T-026).
+
+    The context is anchored to the run: route, stage and the attempt's gate
+    results are authoritative — the caller cannot widen or shrink the gate
+    set by shaping its context. Without a context the policy is not consulted
+    at all: absent merge facts mean manual mode (FR-010) — the run waits for
+    the human merge instead of advancing on missing data.
+    """
+    if merge_context is None:
+        return MergeDecision(
+            kind="manual_merge_required",
+            reason="no merge context was provided with the merge result (FR-010: manual mode)",
+        )
+    anchored = replace(
+        merge_context,
+        route=run.route,
+        stage=result.stage,
+        gate_results=result.gate_results,
+    )
+    return evaluate_merge(anchored, policy=MERGE_POLICY)
+
+
+def _wait_for_human_merge(stage_run: StageRun, run: ChangeRun, reason: str | None) -> FlowDecision:
+    """Park the run in Waiting for the human merge (ADR-011 p.2, T-026).
+
+    Same mechanics as a ``WaitForInput`` result: the StageResult is persisted
+    before the job ends (ADR-006 p.8) and the flow resumes when a human merge
+    authorization bound to the final SHA is recorded.
+    """
+    detail = reason or "the merge policy requires the human merge"
+    action = WaitForInputAction(reason=f"waiting for human merge (ADR-011 p.2): {detail}")
+    stage_run.apply_status(StageStatus.WAITING)
+    run.apply_status(RunStatus.WAITING)
+    return _decision(stage_run, run, action, None)
 
 
 def _decision(
