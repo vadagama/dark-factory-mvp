@@ -1,0 +1,5 @@
+baseline_revision: "0000000000000000000000000000000000000000000000000000000000000000"
+operations:
+  - operation: add
+    target: req:example-product:checkout:timeout
+    artifact: requirements/REQ-001-checkout-timeout.md

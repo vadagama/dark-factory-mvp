@@ -79,6 +79,7 @@ SDD-слой для фич. Каноническая модель — **Native S
 │   ├── hld.md                 # актуальная архитектура; связывает все ADR
 │   ├── sdd-native-core.md     # каноническая модель SDD: Native SDD Core (ADR-020)
 │   └── vision-*.md, plan.md   # создаются скиллом product
+├── packs/                     # шаблоны для продуктовых репозиториев: Product Baseline + ChangeSet (ADR-020; T-022)
 ├── .factory/                  # Native SDD Core (ADR-020): product baseline + changes; создаётся в T-020
 ├── specs/                     # артефакты фич Spec Kit bootstrap-фазы (до T-020)
 └── src/                       # код фабрики (модульный монолит на Python, ADR-002)

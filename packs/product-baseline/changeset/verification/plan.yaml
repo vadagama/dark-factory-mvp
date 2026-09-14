@@ -1,0 +1,6 @@
+schema: dark-factory.dev/verification-plan/v1
+requirements:
+  - requirement: req:example-product:checkout:timeout
+    checks:
+      - type: unit-test
+      - type: acceptance-scenario

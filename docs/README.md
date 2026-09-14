@@ -26,6 +26,7 @@
 | `.agents/skills/` | Локальные скиллы: `dark-factory` (оркестратор), `speckit-*` (SDD bootstrap-фазы, ADR-001) |
 | `.specify/` | Spec Kit bootstrap-фазы: шаблоны, скрипты, `memory/constitution.md` (ADR-001) |
 | `specs/` | Артефакты фич Spec Kit bootstrap-фазы; после перехода на Native SDD Core — historical bootstrap evidence |
+| `packs/` | Шаблоны Product Baseline и ChangeSet для продуктовых репозиториев (ADR-020) |
 
 ## Правила ведения
 
