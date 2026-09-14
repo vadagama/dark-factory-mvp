@@ -1,0 +1,403 @@
+# Baseline NetworkPolicy for the dark factory local environment (T029, ADR-010).
+#
+# Model: default deny (all ingress + egress) in every platform namespace, with
+# explicit allows below:
+#   - allow-dns          CoreDNS (kube-system, UDP/TCP 53) — required to resolve
+#                        any name, including cluster-internal services.
+#   - allow-intra-ns     pod-to-pod inside the same namespace: factory API ->
+#                        factory PostgreSQL, backup CronJob -> PostgreSQL,
+#                        restore-test -> PostgreSQL, agent job coordination.
+#   - allow-egress-https outbound TCP 443 only for namespaces that must reach
+#                        external services: GitHub API (reconciler / GitHub App /
+#                        CI queue), LLM APIs (agent jobs), git/Helm repos
+#                        (Argo CD). Kept broad (0.0.0.0/0) for the MVP; T030
+#                        narrows it to explicit endpoints.
+#   - apps-dev has intentionally NO external egress in the baseline: deployed
+#     apps must declare their own policies (T030/T031+).
+# Blocked by design: plain HTTP 80, SMTP 25 and everything else not allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: apps-dev
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS: CoreDNS pods in kube-system (label k8s-app=kube-dns), UDP and TCP 53
+# (TCP is needed for large/truncated responses).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: apps-dev
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Intra-namespace traffic: a bare podSelector peer selects all pods of the
+# policy's own namespace, in both directions.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-ns
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-ns
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-ns
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-ns
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-ns
+  namespace: apps-dev
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+---
+# External HTTPS egress (TCP 443): GitHub API (factory reconciler / GitHub App),
+# LLM APIs and GitHub (agent jobs in factory-runs), GitHub Actions queue and
+# registries (ci), git/Helm repositories (argocd). apps-dev gets none by default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-https
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-https
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-https
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-https
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

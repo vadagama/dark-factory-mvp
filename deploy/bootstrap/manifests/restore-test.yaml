@@ -1,0 +1,87 @@
+# One-shot restore test pod (T029): restores the latest `factory` dump into a
+# temporary database, compares table sets and row counts against the source,
+# then drops the temporary database (also on failure, via trap).
+# Created and cleaned up by scripts/restore-test.sh. The result is reported
+# as RESTORE_TEST markers on stdout; it is SKIP when no dumps exist yet and
+# PASS with tables=0 while the source database has no user tables (fresh
+# bootstrap, before the T-006 migrations).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restore-test-runner
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: restore-test
+    app.kubernetes.io/component: test
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  restartPolicy: Never
+  containers:
+    - name: restore-test
+      image: postgres:16.4
+      imagePullPolicy: IfNotPresent
+      envFrom:
+        - secretRef:
+            name: factory-postgres-credentials
+      command: ["/usr/bin/bash", "-c"]
+      args:
+        - |
+          set -u
+          log() { echo "RESTORE_TEST $*"; }
+          rdb=""
+          cleanup() {
+            if [ -n "$rdb" ]; then
+              PGPASSWORD="$POSTGRES_PASSWORD" psql -h factory-postgres -U postgres -d postgres -c "DROP DATABASE IF EXISTS $rdb" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          latest=$(ls -1 /backups/factory/*.dump 2>/dev/null | sort | tail -n 1)
+          if [ -z "$latest" ]; then
+            log "result=SKIP reason=no_backup_dumps_found"
+            exit 0
+          fi
+          log "using_dump=$(basename "$latest")"
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          rdb="restore_test_$(date +%s)"
+          psql -h factory-postgres -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $rdb" >/dev/null
+          pg_restore -h factory-postgres -U postgres -d "$rdb" --no-owner --role=postgres --exit-on-error "$latest" >/dev/null
+          src=$(psql -h factory-postgres -U postgres -d factory -Atc "SELECT schemaname||'.'||tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY 1")
+          dst=$(psql -h factory-postgres -U postgres -d "$rdb" -Atc "SELECT schemaname||'.'||tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY 1")
+          if [ "$src" != "$dst" ]; then
+            log "result=FAIL reason=table_set_mismatch"
+            exit 1
+          fi
+          n=$(printf '%s\n' "$src" | awk 'NF' | wc -l | tr -d ' ')
+          if [ "$n" -eq 0 ]; then
+            log "result=PASS tables=0 note=source_has_no_user_tables_bootstrap_state"
+            exit 0
+          fi
+          mismatch=0
+          for t in $src; do
+            s=$(psql -h factory-postgres -U postgres -d factory -Atc "SELECT count(*) FROM \"$t\"")
+            d=$(psql -h factory-postgres -U postgres -d "$rdb" -Atc "SELECT count(*) FROM \"$t\"")
+            if [ "$s" != "$d" ]; then
+              log "row_count_mismatch table=$t source=$s restored=$d"
+              mismatch=1
+            fi
+          done
+          if [ "$mismatch" -ne 0 ]; then
+            log "result=FAIL reason=row_count_mismatch"
+            exit 1
+          fi
+          log "result=PASS tables=$n"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+        - name: backups
+          mountPath: /backups
+          readOnly: true
+  volumes:
+    - name: backups
+      persistentVolumeClaim:
+        claimName: factory-postgres-backups

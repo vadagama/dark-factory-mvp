@@ -1,0 +1,206 @@
+# Resource quotas and limit ranges for the platform namespaces (T029, ADR-010).
+# Profile: single-node Docker Desktop with 10-12GB for the whole VM and
+# concurrency=1. Limit sums (~12.5Gi total) are ceilings per namespace; the
+# actual peak with concurrency=1 stays well below (verified by
+# scripts/capacity-smoke.sh).
+# LimitRange defaults are required: a ResourceQuota that constrains limits
+# rejects pods without explicit resources, so defaults keep untyped pods usable.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: factory-quota
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 2Gi
+    limits.cpu: "2"
+    limits.memory: 4Gi
+    pods: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: factory-defaults
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+      min:
+        cpu: 25m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: factory-runs-quota
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  hard:
+    requests.cpu: 750m
+    requests.memory: 1500Mi
+    limits.cpu: 1500m
+    limits.memory: 3Gi
+    pods: "10"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: factory-runs-defaults
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+      min:
+        cpu: 25m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ci-quota
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  hard:
+    requests.cpu: 500m
+    requests.memory: 1Gi
+    limits.cpu: "1"
+    limits.memory: 2Gi
+    pods: "10"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: ci-defaults
+  namespace: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+      min:
+        cpu: 25m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: apps-dev-quota
+  namespace: apps-dev
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  hard:
+    requests.cpu: 500m
+    requests.memory: 1Gi
+    limits.cpu: "1"
+    limits.memory: 2Gi
+    pods: "10"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: apps-dev-defaults
+  namespace: apps-dev
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+      min:
+        cpu: 25m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: argocd-quota
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  hard:
+    requests.cpu: 400m
+    requests.memory: 800Mi
+    limits.cpu: 750m
+    limits.memory: 1500Mi
+    pods: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: argocd-defaults
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 250m
+        memory: 256Mi
+      max:
+        cpu: "1"
+        memory: 1Gi
+      min:
+        cpu: 25m
+        memory: 32Mi
