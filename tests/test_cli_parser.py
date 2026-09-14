@@ -12,6 +12,8 @@ from dark_factory.changes.enums import Route, Stage
 from dark_factory.cli.main import (
     DoctorArgs,
     OutboxDispatchArgs,
+    OutboxReplayArgs,
+    OutboxSkipArgs,
     ReconcileArgs,
     ResumeNextAction,
     RunStatusArgs,
@@ -119,8 +121,33 @@ def test_reconcile_and_doctor_parse_options() -> None:
 
 
 def test_outbox_dispatch_parses_options() -> None:
-    assert parse_command(["outbox", "dispatch"]) == OutboxDispatchArgs(once=False)
-    assert parse_command(["outbox", "dispatch", "--once"]) == OutboxDispatchArgs(once=True)
+    assert parse_command(["outbox", "dispatch"]) == OutboxDispatchArgs(
+        once=False, json_output=False, limit=None, cleanup=False
+    )
+    assert parse_command(["outbox", "dispatch", "--once"]) == OutboxDispatchArgs(
+        once=True, json_output=False, limit=None, cleanup=False
+    )
+    assert parse_command(
+        ["outbox", "dispatch", "--once", "--json", "--limit", "25", "--cleanup"]
+    ) == OutboxDispatchArgs(once=True, json_output=True, limit=25, cleanup=True)
+
+
+def test_outbox_replay_parses_options() -> None:
+    assert parse_command(["outbox", "replay", "--event-id", "evt-1"]) == OutboxReplayArgs(
+        event_id="evt-1", consumer=None, json_output=False
+    )
+    assert parse_command(
+        ["outbox", "replay", "--event-id", "evt-1", "--consumer", "tracker", "--json"]
+    ) == OutboxReplayArgs(event_id="evt-1", consumer="tracker", json_output=True)
+
+
+def test_outbox_skip_parses_options() -> None:
+    assert parse_command(
+        ["outbox", "skip", "--event-id", "evt-1", "--consumer", "tracker"]
+    ) == OutboxSkipArgs(event_id="evt-1", consumer="tracker", json_output=False)
+    assert parse_command(
+        ["outbox", "skip", "--event-id", "evt-1", "--consumer", "tracker", "--json"]
+    ) == OutboxSkipArgs(event_id="evt-1", consumer="tracker", json_output=True)
 
 
 @pytest.mark.parametrize(
@@ -135,6 +162,10 @@ def test_outbox_dispatch_parses_options() -> None:
         ["stage", "resume"],
         ["stage", "resume", "--run-id", "run_01H"],
         ["run", "status"],
+        ["outbox", "replay"],
+        ["outbox", "replay", "--consumer", "tracker"],
+        ["outbox", "skip"],
+        ["outbox", "skip", "--event-id", "evt-1"],
     ],
 )
 def test_missing_required_argument_exits_with_code_2(argv: list[str]) -> None:
@@ -169,6 +200,8 @@ def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
         ["reconcile", "--help"],
         ["outbox", "--help"],
         ["outbox", "dispatch", "--help"],
+        ["outbox", "replay", "--help"],
+        ["outbox", "skip", "--help"],
         ["doctor", "--help"],
     ],
 )
@@ -186,8 +219,6 @@ STUB_INVOCATIONS = [
         "the durable state-store wiring",
     ),
     (["run", "status", "--run-id", "run_01H"], "run status", "the durable state-store wiring"),
-    (["outbox", "dispatch"], "outbox dispatch", "T028"),
-    (["outbox", "dispatch", "--once"], "outbox dispatch", "T028"),
 ]
 
 
