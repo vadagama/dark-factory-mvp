@@ -50,7 +50,13 @@ class GateResult(BaseModel):
 
 
 class Decision(BaseModel):
-    """Approval/decision recorded in run records (ADR-006 p.2, ADR-018)."""
+    """Approval/decision recorded in run records (ADR-006 p.2, ADR-018).
+
+    ``commit_sha`` binds the decision to a revision (version-bound approval,
+    ADR-009 p.7, FR-011): a decision authorizes exactly the SHA it was
+    recorded for — a new head SHA invalidates it. ``None`` means unbound,
+    which never authorizes a merge at a specific SHA.
+    """
 
     id: str = Field(min_length=1)
     gate: Gate
@@ -58,5 +64,6 @@ class Decision(BaseModel):
     decided_by: DecisionSource
     role: Role | None = None
     decided_at: datetime
+    commit_sha: str | None = None
     comment: str | None = None
     evidence_ids: list[str] = []

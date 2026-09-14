@@ -19,6 +19,7 @@ from dark_factory.changes.enums import (
     Gate,
     GateStatus,
     Provider,
+    RiskClass,
     Route,
     Stage,
     StageStatus,
@@ -48,8 +49,9 @@ from dark_factory.orchestration.flow import (
     apply_result,
     expected_result_status,
 )
+from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.rules.gates import required_gates
-from tests.changes_factories import make_run
+from tests.changes_factories import make_merge_approval, make_run
 
 UNION_DISCRIMINATORS: frozenset[str] = frozenset(
     model.model_fields["type"].default for model in get_args(get_args(NextAction)[0])
@@ -79,6 +81,20 @@ def _change_request() -> ChangeRequestRef:
         repository=RepositoryRef(provider=Provider.GITHUB, slug="small/pilot"),
         number=12,
         status=ChangeRequestStatus.OPEN,
+    )
+
+
+def _authorized_merge_context() -> MergeRequestContext:
+    """Merge facts that satisfy the policy for the in-table merge pair (T-026):
+    human executor with a SHA-bound approval over green gates (ADR-011 p.2)."""
+    return MergeRequestContext(
+        executor="human",
+        risk_class=RiskClass.R1,
+        route=Route.STANDARD,
+        stage=Stage.REVIEW_VERIFICATION,
+        expected_sha="731ac91",
+        head_sha="731ac91",
+        human_approvals=[make_merge_approval("731ac91")],
     )
 
 
@@ -157,13 +173,18 @@ def test_every_stage_action_pair_is_table_governed(
     """Full traversal of state x NextAction: out-of-table pairs cannot be applied."""
     run = make_run(route=Route.STANDARD)
     result = _happy_result(stage, action_type, Route.STANDARD)
-    if action_type in allowed_actions(stage):
-        decision = apply_result(run, result)
-        assert decision.action.type == action_type
-        assert run.status == decision.run_status
-    else:
+    if action_type not in allowed_actions(stage):
         with pytest.raises(InvalidFlowTransition):
             apply_result(run, result)
+        return
+    if action_type == "merge":
+        # The merge policy requires a SHA-bound human approval (T-026, FR-010);
+        # out-of-table merge pairs above are rejected before the policy runs.
+        decision = apply_result(run, result, merge_context=_authorized_merge_context())
+    else:
+        decision = apply_result(run, result)
+    assert decision.action.type == action_type
+    assert run.status == decision.run_status
 
 
 def _successors(stage: Stage, action_type: NextActionType, route: Route) -> set[Stage]:

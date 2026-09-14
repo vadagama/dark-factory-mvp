@@ -14,6 +14,7 @@ from dark_factory.changes.enums import (
     Gate,
     GateStatus,
     Provider,
+    RiskClass,
     Route,
     RunStatus,
     Stage,
@@ -26,6 +27,7 @@ from dark_factory.changes.run import ChangeRun, StageResult
 from dark_factory.context.bundle import SourceKind
 from dark_factory.flows.routes import STAGE_SEQUENCE
 from dark_factory.orchestration.flow import apply_result, expected_result_status
+from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.quality.acceptance import (
     DiffMaterial,
     EvidenceMaterial,
@@ -37,7 +39,7 @@ from dark_factory.quality.acceptance import (
     human_comment_findings,
 )
 from dark_factory.rules.gates import required_gates
-from tests.changes_factories import make_finding, make_run
+from tests.changes_factories import make_finding, make_merge_approval, make_run
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 SHA = "731ac91"
@@ -302,6 +304,20 @@ def _merge_result(review: GateResult) -> StageResult:
     )
 
 
+def _merge_context() -> MergeRequestContext:
+    """Merge facts that pass the policy: human executor with a SHA-bound
+    approval over green gates (T-026, FR-010; ADR-009 p.7)."""
+    return MergeRequestContext(
+        executor="human",
+        risk_class=RiskClass.R1,
+        route=Route.STANDARD,
+        stage=Stage.REVIEW_VERIFICATION,
+        expected_sha=SHA,
+        head_sha=SHA,
+        human_approvals=[make_merge_approval(SHA)],
+    )
+
+
 def test_blocking_finding_stops_merge() -> None:
     run = make_run(route=Route.STANDARD)
     _advance_to(run, Stage.REVIEW_VERIFICATION)
@@ -320,7 +336,7 @@ def test_merge_proceeds_when_review_gate_passes() -> None:
     _advance_to(run, Stage.REVIEW_VERIFICATION)
     minor = make_finding("f-minor", severity=FindingSeverity.MINOR)
     review = evaluate_review_gate([minor], sha=SHA)
-    decision = apply_result(run, _merge_result(review))
+    decision = apply_result(run, _merge_result(review), merge_context=_merge_context())
     assert run.status is RunStatus.RUNNING
     assert decision.next_stage is Stage.RELEASE
 
@@ -330,6 +346,6 @@ def test_human_comments_do_not_stop_merge() -> None:
     _advance_to(run, Stage.REVIEW_VERIFICATION)
     comments = [MrComment(comment_id="c-1", body="a remark to consider", file="src/app.py")]
     review = evaluate_review_gate(human_comment_findings(comments, reviewed_sha=SHA), sha=SHA)
-    decision = apply_result(run, _merge_result(review))
+    decision = apply_result(run, _merge_result(review), merge_context=_merge_context())
     assert run.status is RunStatus.RUNNING
     assert decision.next_stage is Stage.RELEASE

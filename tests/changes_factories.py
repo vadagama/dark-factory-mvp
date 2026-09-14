@@ -160,6 +160,20 @@ def make_decision() -> Decision:
     )
 
 
+def make_merge_approval(sha: str = "731ac91") -> Decision:
+    """Human approval of the merge gate, bound to a SHA (version-bound, ADR-009 p.7)."""
+    return Decision(
+        id="dec-merge-1",
+        gate=Gate.REVIEW,
+        outcome=DecisionOutcome.APPROVED,
+        decided_by=DecisionSource.HUMAN,
+        role=Role.QUALITY,
+        decided_at=NOW,
+        commit_sha=sha,
+        comment="approved for merge",
+    )
+
+
 def make_stage_result(
     next_action: NextAction | None = None,
     *,

@@ -1,5 +1,6 @@
 """Behavior of the flow engine across all NextAction variants, limits and gates (T-004)."""
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -15,6 +16,7 @@ from dark_factory.changes.enums import (
     Gate,
     GateStatus,
     Provider,
+    RiskClass,
     Role,
     Route,
     RunStatus,
@@ -22,7 +24,7 @@ from dark_factory.changes.enums import (
     StageStatus,
     StopOutcome,
 )
-from dark_factory.changes.findings import Finding, GateResult
+from dark_factory.changes.findings import Decision, Finding, GateResult
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
@@ -44,8 +46,9 @@ from dark_factory.orchestration.flow import (
     apply_result,
     expected_result_status,
 )
+from dark_factory.orchestration.policy.merge import MergeExecutor, MergeRequestContext
 from dark_factory.rules.gates import required_gates
-from tests.changes_factories import make_run
+from tests.changes_factories import make_merge_approval, make_run
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 
@@ -106,6 +109,24 @@ def _advance_to(run: ChangeRun, target: Stage) -> None:
         )
 
 
+def _merge_context(
+    *,
+    executor: MergeExecutor = "human",
+    head_sha: str | None = "731ac91",
+    approvals: Sequence[Decision] | None = None,
+) -> MergeRequestContext:
+    """Merge facts for the review-stage merge: SHA-bound human approval by default."""
+    return MergeRequestContext(
+        executor=executor,
+        risk_class=RiskClass.R1,
+        route=Route.STANDARD,
+        stage=Stage.REVIEW_VERIFICATION,
+        expected_sha="731ac91",
+        head_sha=head_sha,
+        human_approvals=[make_merge_approval("731ac91")] if approvals is None else approvals,
+    )
+
+
 def test_full_standard_route_reaches_success() -> None:
     run = make_run(route=Route.STANDARD)
     steps: list[tuple[Stage, NextAction]] = [
@@ -116,9 +137,11 @@ def test_full_standard_route_reaches_success() -> None:
         (Stage.RELEASE, ReleaseAction()),
     ]
     for stage, action in steps:
-        decision = apply_result(
-            run, _result(stage, action, gates=_passing_gates(stage, Route.STANDARD))
-        )
+        result = _result(stage, action, gates=_passing_gates(stage, Route.STANDARD))
+        if isinstance(action, MergeAction):
+            decision = apply_result(run, result, merge_context=_merge_context())
+        else:
+            decision = apply_result(run, result)
         assert decision.action == action
     assert run.status == RunStatus.SUCCEEDED
     assert run.finished_at is not None
@@ -393,12 +416,147 @@ def test_merge_advances_to_release_stage() -> None:
             MergeAction(change_request=_change_request()),
             gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
         ),
+        merge_context=_merge_context(),
     )
     assert decision.next_stage == Stage.RELEASE
     assert decision.stage_status == StageStatus.SUCCEEDED
     assert run.status == RunStatus.RUNNING
     assert run.stages[-1].stage == Stage.RELEASE
     assert run.stages[-1].status == StageStatus.PENDING
+
+
+def test_merge_without_approval_waits_for_the_human_merge() -> None:
+    """DoD T-032: merge without a human approval does not advance the run (ADR-011 p.2)."""
+    run = make_run(route=Route.STANDARD)
+    decision = apply_result(
+        run,
+        _result(
+            Stage.REVIEW_VERIFICATION,
+            MergeAction(change_request=_change_request()),
+            gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
+        ),
+        merge_context=_merge_context(approvals=[]),
+    )
+    action = decision.action
+    assert isinstance(action, WaitForInputAction)
+    assert "waiting for human merge (ADR-011 p.2)" in action.reason
+    assert decision.run_status == RunStatus.WAITING
+    assert decision.stage_status == StageStatus.WAITING
+    assert decision.next_stage is None
+    assert run.status == RunStatus.WAITING
+
+
+def test_merge_without_merge_context_waits_by_default() -> None:
+    """Absent merge facts mean manual mode: the machine never merges (FR-010)."""
+    run = make_run(route=Route.STANDARD)
+    decision = apply_result(
+        run,
+        _result(
+            Stage.REVIEW_VERIFICATION,
+            MergeAction(change_request=_change_request()),
+            gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
+        ),
+    )
+    assert isinstance(decision.action, WaitForInputAction)
+    assert decision.run_status == RunStatus.WAITING
+
+
+def test_approval_on_an_old_sha_does_not_authorize_the_merge() -> None:
+    """A new SHA invalidates version-bound approvals (ADR-009 p.7, FR-011)."""
+    run = make_run(route=Route.STANDARD)
+    decision = apply_result(
+        run,
+        _result(
+            Stage.REVIEW_VERIFICATION,
+            MergeAction(change_request=_change_request()),
+            gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
+        ),
+        merge_context=_merge_context(approvals=[make_merge_approval("aaa111")]),
+    )
+    assert isinstance(decision.action, WaitForInputAction)
+    assert decision.run_status == RunStatus.WAITING
+
+
+def test_merge_waits_then_advances_once_the_human_approval_is_bound() -> None:
+    run = make_run(route=Route.STANDARD)
+    merge_result = _result(
+        Stage.REVIEW_VERIFICATION,
+        MergeAction(change_request=_change_request()),
+        gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
+    )
+    waiting = apply_result(run, merge_result, merge_context=_merge_context(approvals=[]))
+    assert waiting.run_status == RunStatus.WAITING
+
+    decision = apply_result(run, merge_result, merge_context=_merge_context())
+    assert decision.action == merge_result.next_action
+    assert decision.next_stage == Stage.RELEASE
+    assert run.status == RunStatus.RUNNING
+    review_runs = [s for s in run.stages if s.stage == Stage.REVIEW_VERIFICATION]
+    assert review_runs[-1].status == StageStatus.SUCCEEDED
+
+
+def test_merge_with_sha_mismatch_is_blocked() -> None:
+    """FR-011: the expected SHA changed — the merge operation stops."""
+    run = make_run(route=Route.STANDARD)
+    decision = apply_result(
+        run,
+        _result(
+            Stage.REVIEW_VERIFICATION,
+            MergeAction(change_request=_change_request()),
+            gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
+        ),
+        merge_context=_merge_context(head_sha="bbb222"),
+    )
+    assert decision.action.type == "stop"
+    stop = decision.action
+    assert isinstance(stop, StopAction)
+    assert "FR-011" in stop.reason
+    assert decision.run_status == RunStatus.BLOCKED
+    assert decision.stage_status == StageStatus.BLOCKED
+
+
+def test_merge_by_agent_executor_is_blocked() -> None:
+    """FR-004/FR-023: agent jobs have no merge authority."""
+    run = make_run(route=Route.STANDARD)
+    decision = apply_result(
+        run,
+        _result(
+            Stage.REVIEW_VERIFICATION,
+            MergeAction(change_request=_change_request()),
+            gates=_passing_gates(Stage.REVIEW_VERIFICATION, Route.STANDARD),
+        ),
+        merge_context=_merge_context(executor="agent"),
+    )
+    assert decision.action.type == "stop"
+    stop = decision.action
+    assert isinstance(stop, StopAction)
+    assert "agent" in stop.reason
+    assert decision.run_status == RunStatus.BLOCKED
+
+
+def test_stale_gate_results_block_the_merge() -> None:
+    """Gates must be evaluated at the final SHA (T-032, ADR-009 p.7)."""
+    run = make_run(route=Route.STANDARD)
+    stale_gates = [
+        GateResult(gate=gate, status=GateStatus.PASSED, sha="older456")
+        for gate in sorted(
+            required_gates(Route.STANDARD, Stage.REVIEW_VERIFICATION), key=lambda g: g.value
+        )
+    ]
+    decision = apply_result(
+        run,
+        _result(
+            Stage.REVIEW_VERIFICATION,
+            MergeAction(change_request=_change_request()),
+            gates=stale_gates,
+        ),
+        merge_context=_merge_context(),
+    )
+    assert decision.action.type == "stop"
+    stop = decision.action
+    assert isinstance(stop, StopAction)
+    assert "final SHA" in stop.reason
+    assert run.status == RunStatus.BLOCKED
 
 
 def test_release_success_requires_available_required_evidence() -> None:
