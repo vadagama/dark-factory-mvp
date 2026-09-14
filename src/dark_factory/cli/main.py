@@ -9,11 +9,13 @@ validation and exit codes. Exit codes (contract cli.md): 0 success,
 argparse rejects invalid input with exit code 2, matching the contract.
 
 Handlers are dispatched from here. ``doctor`` (T008) is implemented in
-``dark_factory.cli.doctor`` and ``stage run`` (T009, with run-record
-persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``; the
-remaining handlers arrive in later tasks (``stage resume`` and ``run status``
-with the durable state-store wiring; reconcile T027; outbox dispatch T028)
-and report ``not_implemented`` with exit code 2 until then.
+``dark_factory.cli.doctor``, ``stage run`` (T009, with run-record
+persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage`` and
+``reconcile`` (T-063, one idempotent Reconciler pass) in
+``dark_factory.cli.reconcile``; the remaining handlers arrive in later tasks
+(``stage resume`` and ``run status`` with the durable state-store wiring;
+outbox dispatch T028) and report ``not_implemented`` with exit code 2 until
+then.
 """
 
 import argparse
@@ -285,7 +287,11 @@ def _show_run_status(args: RunStatusArgs) -> int:
 
 
 def _reconcile(args: ReconcileArgs) -> int:
-    return _not_implemented("reconcile", "T027", json_output=args.json_output)
+    # Imported here: cli.reconcile imports ReconcileArgs and the exit codes
+    # from this module, so a module-level import would be circular.
+    from dark_factory.cli import reconcile
+
+    return reconcile.run_reconcile_command(args)
 
 
 def _dispatch_outbox(args: OutboxDispatchArgs) -> int:
