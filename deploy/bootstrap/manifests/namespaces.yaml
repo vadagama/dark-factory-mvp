@@ -1,0 +1,45 @@
+# Platform namespaces for the dark factory local environment (T029, ADR-010).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: gitops
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/component: factory-core
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: ci
+    app.kubernetes.io/component: ci-runners
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: factory-runs
+    app.kubernetes.io/component: agent-jobs
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apps-dev
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: apps-dev
+    app.kubernetes.io/component: deployed-apps

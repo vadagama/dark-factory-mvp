@@ -1,0 +1,85 @@
+# Nightly logical backup of the factory and plane databases (T029).
+# Custom-format (-Fc) dumps to the backups PVC, 7-day retention, RPO 24h.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: factory-postgres-backup-script
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: postgres-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: bootstrap
+data:
+  backup.sh: |
+    #!/usr/bin/env bash
+    # Dumps both databases in PostgreSQL custom format and prunes dumps
+    # older than 7 days. Credentials come from the secret (envFrom).
+    set -euo pipefail
+    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    base="/backups"
+    mkdir -p "$base/factory" "$base/plane"
+    PGPASSWORD="$FACTORY_DB_PASSWORD" pg_dump -h factory-postgres -U factory -d factory -Fc -f "$base/factory/$timestamp.dump"
+    PGPASSWORD="$PLANE_DB_PASSWORD" pg_dump -h factory-postgres -U plane -d plane -Fc -f "$base/plane/$timestamp.dump"
+    find "$base" -type f -name '*.dump' -mtime +7 -print -delete
+    echo "backup completed at $timestamp"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: factory-postgres-backup
+  namespace: factory
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: postgres-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  schedule: "30 2 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: dark-factory
+            app.kubernetes.io/name: postgres-backup
+            app.kubernetes.io/component: backup
+            app.kubernetes.io/managed-by: bootstrap
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: postgres:16.4
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/bin/bash", "/usr/local/bin/backup.sh"]
+              envFrom:
+                - secretRef:
+                    name: factory-postgres-credentials
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: script
+                  mountPath: /usr/local/bin/backup.sh
+                  subPath: backup.sh
+                  readOnly: true
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: factory-postgres-backups
+            - name: script
+              configMap:
+                name: factory-postgres-backup-script
+                defaultMode: 0755

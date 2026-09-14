@@ -1,0 +1,63 @@
+# One e2e-like probe job for the capacity smoke (T029, ADR-010): measures
+# cgroup v2 memory peak and CPU usage of a container sized like a typical
+# agent job. Created and cleaned up by scripts/capacity-smoke.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: capacity-smoke-e2e
+  namespace: factory-runs
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: capacity-smoke-e2e
+    app.kubernetes.io/component: test
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: dark-factory
+        app.kubernetes.io/name: capacity-smoke-e2e
+        app.kubernetes.io/component: test
+        app.kubernetes.io/managed-by: bootstrap
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: probe
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              samples=20
+              read_cpu_usec() {
+                if [ -r /sys/fs/cgroup/cpu.stat ]; then
+                  awk '/^usage_usec/ {print $2}' /sys/fs/cgroup/cpu.stat
+                else
+                  awk '/^(user|system)/ {s += $2} END {print s * 10000}' /sys/fs/cgroup/cpuacct.stat 2>/dev/null || echo 0
+                fi
+              }
+              mem_peak=0
+              cpu0=$(read_cpu_usec)
+              i=0
+              while [ "$i" -lt "$samples" ]; do
+                cur=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || cat /sys/fs/cgroup/memory.usage_in_bytes 2>/dev/null || echo 0)
+                mem_peak=$(awk -v a="$cur" -v b="$mem_peak" 'BEGIN { print (a > b) ? a : b }')
+                sleep 1
+                i=$((i + 1))
+              done
+              cpu1=$(read_cpu_usec)
+              peak_kernel=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo "$mem_peak")
+              awk -v p="$mem_peak" -v pk="$peak_kernel" -v c0="$cpu0" -v c1="$cpu1" -v n="$samples" 'BEGIN {
+                cores = (c1 > c0) ? (c1 - c0) / n / 1000000 : 0
+                printf "CAPACITY_RESULT mem_peak_sampled_bytes=%d mem_peak_kernel_bytes=%d cpu_avg_cores=%.3f duration_s=%d\n", p, pk, cores, n
+              }'
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

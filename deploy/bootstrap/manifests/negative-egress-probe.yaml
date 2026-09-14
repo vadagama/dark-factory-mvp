@@ -1,0 +1,49 @@
+# Probe pod for the negative egress tests (T029). Applied per namespace by
+# scripts/negative-egress-test.sh (the manifest has no namespace field).
+# - https-probe (curl image): allowed external HTTPS 443 must work; plain
+#   HTTP 80 and TCP 25 must fail (curl exit 28 = timed out = dropped by policy).
+# - local-probe (postgres image): DNS must resolve; in `factory` the
+#   PostgreSQL service must be reachable (intra-namespace allow), elsewhere SKIP.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: negative-egress-probe
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/name: negative-egress-probe
+    app.kubernetes.io/component: test
+    app.kubernetes.io/managed-by: bootstrap
+spec:
+  restartPolicy: Never
+  containers:
+    - name: https-probe
+      image: curlimages/curl:8.11.1
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -u
+          code=$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' https://api.github.com/ 2>/dev/null)
+          rc=$?
+          if [ "$rc" -eq 0 ] && [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then https443=PASS; else https443=FAIL; fi
+          curl -sS -o /dev/null --max-time 8 http://example.com/ >/dev/null 2>&1
+          rc=$?
+          if [ "$rc" -eq 0 ]; then http80=FAIL; else http80=PASS; fi
+          curl -sS -o /dev/null --max-time 8 telnet://example.com:25 </dev/null >/dev/null 2>&1
+          rc=$?
+          if [ "$rc" -eq 28 ]; then port25=PASS; else port25=FAIL; fi
+          echo "EGRESS_RESULT https443=$https443 http80_blocked=$http80 port25_blocked=$port25"
+    - name: local-probe
+      image: postgres:16.4
+      imagePullPolicy: IfNotPresent
+      command: ["/usr/bin/bash", "-c"]
+      args:
+        - |
+          set -u
+          if getent hosts kubernetes.default.svc.cluster.local >/dev/null 2>&1; then dns=PASS; else dns=FAIL; fi
+          if getent hosts factory-postgres >/dev/null 2>&1; then
+            if pg_isready -h factory-postgres -p 5432 -t 5 >/dev/null 2>&1; then pg=PASS; else pg=FAIL; fi
+          else
+            pg=SKIP
+          fi
+          echo "EGRESS_RESULT dns=$dns postgres=$pg"
