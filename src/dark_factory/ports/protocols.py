@@ -12,6 +12,7 @@ from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from dark_factory.changes.enums import Gate, RunStatus
+from dark_factory.changes.findings import GateResult
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import Usage
@@ -24,6 +25,7 @@ from dark_factory.ports.common import (
     OpenChangeRequest,
     PipelineStatus,
     Span,
+    StageJobRequest,
 )
 from dark_factory.ports.context import (
     ContextRequest,
@@ -74,6 +76,15 @@ class PipelinePort(Protocol):
     """Observation of CI pipelines on a repository."""
 
     async def status(self, repository: RepositoryRef, ref: str, /) -> PipelineStatus: ...
+
+
+@runtime_checkable
+class CIPort(Protocol):
+    """CI job execution for stage gates (ADR-019 p.3): dispatch, gate result, artifacts."""
+
+    async def run_stage_job(self, request: StageJobRequest, *, idempotency_key: str) -> str: ...
+    async def gate_status(self, job_ref: str, /) -> GateResult: ...
+    async def artifacts(self, job_ref: str, /) -> list[ArtifactRef]: ...
 
 
 @runtime_checkable

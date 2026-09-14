@@ -2,20 +2,26 @@
 
 Every fixture hands an adapter to the tests through its port type, so the test
 modules never import ``dark_factory.adapters`` and the same suite runs against
-fake → GitHub → GitLab. The P0 bindings below are the in-memory fakes. The
-``*_journal`` fixtures expose recorded side effects that the ports themselves
-do not surface (comments, published statuses, spans, events); real adapter
-bindings will back them through provider APIs.
+fake → GitHub → GitLab. The source-control ports are parametrized over the
+in-memory fakes and the real GitHub adapter (T-024) driven by the in-memory
+GitHub API emulator (``github_api.py``) — no network, no real credentials.
+The ``*_journal`` fixtures expose recorded side effects that the ports
+themselves do not surface (comments, dispatches, published statuses, spans,
+events); fake bindings read their own state, the GitHub binding reads the
+emulator's (comment journals strip the adapter's invisible idempotency
+markers).
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
 from dark_factory.adapters.fakes import (
     FakeArtifactStore,
+    FakeCI,
     FakeEventPublisher,
     FakeExecution,
     FakeHarness,
@@ -28,15 +34,19 @@ from dark_factory.adapters.fakes import (
     FakeTracker,
     FakeWorkflowEngine,
 )
+from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, StaticTokenProvider
+from dark_factory.changes.enums import GateStatus
 from dark_factory.changes.run import Change
 from dark_factory.context.sdd.baseline import current_revision
 from dark_factory.context.sdd.native import NativeChangeSetAdapter
 from dark_factory.context.sdd.openspec import OpenSpecAdapter
 from dark_factory.context.sdd.speckit import SpecKitAdapter
 from dark_factory.ports import (
+    ArtifactRef,
     ArtifactStorePort,
     ChangeRequestRef,
     ChangeSource,
+    CIPort,
     DomainEvent,
     EventPublisherPort,
     ExecutionPort,
@@ -61,9 +71,32 @@ from dark_factory.ports import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
+from tests.contract.github_api import (
+    GITHUB_API_BASE_URL,
+    GITHUB_INSTALLATION_TOKEN,
+    GitHubApiEmulator,
+    parse_job_ref,
+    visible_comment,
+)
 from tests.sdd_factories import seed_baseline
 
 PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
+
+
+class _MergeRequestBinding(NamedTuple):
+    """MergeRequestPort plus the comment journal of the same binding."""
+
+    port: MergeRequestPort
+    journal: Callable[[ChangeRequestRef], tuple[str, ...]]
+
+
+class _CIBinding(NamedTuple):
+    """CIPort plus its dispatch journal and deterministic seeds."""
+
+    port: CIPort
+    journal: Callable[[], int]
+    seed_gate: Callable[..., None]
+    seed_artifacts: Callable[..., None]
 
 
 @pytest.fixture
@@ -73,7 +106,27 @@ def repository() -> RepositoryRef:
 
 
 @pytest.fixture
-def repository_port() -> RepositoryPort:
+def github_emulator() -> GitHubApiEmulator:
+    """A fresh in-memory GitHub API for one test."""
+    return GitHubApiEmulator(token=GITHUB_INSTALLATION_TOKEN)
+
+
+@pytest.fixture
+def github_adapter(github_emulator: GitHubApiEmulator) -> GitHubAdapter:
+    """The GitHub adapter bound to the emulator: no network, no real App key."""
+    return GitHubAdapter(
+        GitHubConfig(api_base_url=GITHUB_API_BASE_URL),
+        token_provider=StaticTokenProvider(GITHUB_INSTALLATION_TOKEN),
+        transport=github_emulator.transport(),
+    )
+
+
+@pytest.fixture(params=["fake", "github"])
+def repository_port(request: pytest.FixtureRequest) -> RepositoryPort:
+    """RepositoryPort bound to the fake and the GitHub adapter (ADR-019 p.6)."""
+    if request.param == "github":
+        adapter: GitHubAdapter = request.getfixturevalue("github_adapter")
+        return adapter.repository
     return FakeRepository()
 
 
@@ -82,21 +135,127 @@ def merge_requests() -> FakeMergeRequests:
     return FakeMergeRequests()
 
 
+@pytest.fixture(params=["fake", "github"])
+def merge_request_binding(
+    request: pytest.FixtureRequest, merge_requests: FakeMergeRequests
+) -> _MergeRequestBinding:
+    """MergeRequestPort and its comment journal, backed by the same adapter."""
+    if request.param == "github":
+        adapter: GitHubAdapter = request.getfixturevalue("github_adapter")
+        emulator: GitHubApiEmulator = request.getfixturevalue("github_emulator")
+        return _MergeRequestBinding(
+            port=adapter.pull_requests,
+            journal=_github_comment_journal(emulator),
+        )
+    return _MergeRequestBinding(port=merge_requests, journal=merge_requests.comments_of)
+
+
 @pytest.fixture
-def merge_request_port(merge_requests: FakeMergeRequests) -> MergeRequestPort:
-    return merge_requests
+def merge_request_port(merge_request_binding: _MergeRequestBinding) -> MergeRequestPort:
+    return merge_request_binding.port
 
 
 @pytest.fixture
 def comment_journal(
-    merge_requests: FakeMergeRequests,
+    merge_request_binding: _MergeRequestBinding,
 ) -> Callable[[ChangeRequestRef], tuple[str, ...]]:
-    return merge_requests.comments_of
+    return merge_request_binding.journal
+
+
+def _github_comment_journal(
+    emulator: GitHubApiEmulator,
+) -> Callable[[ChangeRequestRef], tuple[str, ...]]:
+    """Comments of a PR as the provider renders them (markers are invisible)."""
+
+    def journal(cr: ChangeRequestRef) -> tuple[str, ...]:
+        return tuple(visible_comment(body) for body in emulator.comments_of(cr.number))
+
+    return journal
+
+
+@pytest.fixture(params=["fake", "github"])
+def pipeline_port(request: pytest.FixtureRequest) -> PipelinePort:
+    """PipelinePort bound to the fake and the GitHub adapter (ADR-019 p.6)."""
+    if request.param == "github":
+        adapter: GitHubAdapter = request.getfixturevalue("github_adapter")
+        return adapter.pipelines
+    return FakePipelines()
+
+
+@pytest.fixture(params=["fake", "github"])
+def ci_binding(request: pytest.FixtureRequest) -> _CIBinding:
+    """CIPort with its dispatch journal and gate/artifact seeds, one adapter."""
+    if request.param == "github":
+        adapter: GitHubAdapter = request.getfixturevalue("github_adapter")
+        emulator: GitHubApiEmulator = request.getfixturevalue("github_emulator")
+        return _CIBinding(
+            port=adapter.ci,
+            journal=emulator.run_count,
+            seed_gate=_github_seed_gate(emulator),
+            seed_artifacts=_github_seed_artifacts(emulator),
+        )
+    fake = FakeCI()
+    return _CIBinding(
+        port=fake,
+        journal=fake.dispatch_count,
+        seed_gate=fake.seed_outcome,
+        seed_artifacts=fake.seed_artifacts,
+    )
 
 
 @pytest.fixture
-def pipeline_port() -> PipelinePort:
-    return FakePipelines()
+def ci_port(ci_binding: _CIBinding) -> CIPort:
+    return ci_binding.port
+
+
+@pytest.fixture
+def stage_job_journal(ci_binding: _CIBinding) -> Callable[[], int]:
+    """Number of dispatched stage jobs; a replay is counted only once."""
+    return ci_binding.journal
+
+
+@pytest.fixture
+def seed_gate(ci_binding: _CIBinding) -> Callable[..., None]:
+    """Fix the terminal gate outcome of a dispatched job."""
+    return ci_binding.seed_gate
+
+
+@pytest.fixture
+def seed_artifacts(ci_binding: _CIBinding) -> Callable[..., None]:
+    """Record the artifacts a dispatched job is expected to have produced."""
+    return ci_binding.seed_artifacts
+
+
+# GitHub's conclusion vocabulary, from the fixture-side GateStatus values;
+# pending is the default before seeding, so it has no conclusion.
+_CONCLUSIONS: Mapping[GateStatus, str] = {
+    GateStatus.PASSED: "success",
+    GateStatus.FAILED: "failure",
+    GateStatus.SKIPPED: "skipped",
+}
+
+
+def _github_seed_gate(emulator: GitHubApiEmulator) -> Callable[..., None]:
+    """Seed the stage-named check run the adapter reads the gate from."""
+
+    def seed(job_ref: str, *, status: GateStatus, summary: str | None = None) -> None:
+        _, stage, run_id = parse_job_ref(job_ref)
+        emulator.seed_check_run(
+            run_id,
+            name=f"dark-factory/{stage}",
+            conclusion=_CONCLUSIONS[status],
+            summary=summary,
+        )
+
+    return seed
+
+
+def _github_seed_artifacts(emulator: GitHubApiEmulator) -> Callable[..., None]:
+    def seed(job_ref: str, refs: Sequence[ArtifactRef]) -> None:
+        _, _, run_id = parse_job_ref(job_ref)
+        emulator.seed_artifacts(run_id, refs)
+
+    return seed
 
 
 @pytest.fixture
