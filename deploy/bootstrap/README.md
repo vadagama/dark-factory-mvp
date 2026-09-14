@@ -62,6 +62,8 @@
 
 ### Сетевые политики (deny-by-default)
 
+> **Ограничение Docker Desktop (проверено живым прогоном):** встроенный Kubernetes Docker Desktop не исполняет NetworkPolicy (CNI без поддержки политик). Baseline-политики применяются как данные и становятся эффективными в кластере с исполняющим CNI (DC-контур, T-091); в локальном контуре безопасность подов держится на остальных слоях (SA без токена и RBAC, non-root, отсутствие privileged, разделение namespace). Egress-тесты детектят неисполнение автоматически (см. ниже) и не падают из-за него.
+
 | Namespace | DNS 53 | intra-ns | egress 443 | внешний egress прочий |
 |---|---|---|---|---|
 | factory | ✓ | ✓ (вкл. доступ к postgres) | ✓ (GitHub API) | запрещён (80/25 и др.) |
@@ -96,7 +98,9 @@
 
 ## Негативные egress-тесты
 
-`scripts/negative-egress-test.sh [ns ...]` (по умолчанию `factory` и `factory-runs`): временный под с двумя контейнерами проверяет — DNS резолвится; `https://api.github.com` (443) доступен; HTTP 80 и TCP 25 **не** проходят (timeout = drop политикой); в `factory` доступен `factory-postgres:5432`. Расхождение ожиданий — ненулевой exit; поды удаляются после прогона.
+`scripts/negative-egress-test.sh [ns ...]` (по умолчанию `factory` и `factory-runs`): временный под с двумя контейнерами проверяет — DNS резолвится; `https://example.com` (443) доступен (критерий — любой завершённый HTTP-обмен: код ответа — свойство цели, а не сети; `api.github.com` при этом проверяется информационно — `github_code` в выводе); в `factory` доступен `factory-postgres:5432`. Расхождение ожиданий — ненулевой exit; поды удаляются после прогона.
+
+**Детект исполнения NetworkPolicy:** перед пробами скрипт создаёт throwaway-namespace с двумя одинаковыми канарейками, одна из которых выбрана deny-all-egress политикой. Если «запрещённая» канарейка всё равно достигает сети — политики кластером не исполняются, и блокирующие проверки (80/25) печатаются как `SKIPPED` с предупреждением вместо FAIL. Так тест честно разделяет «политика дырявая» (FAIL при работающем enforcement) и «CNI без enforcement» (SKIPPED + warn).
 
 ## Teardown
 
@@ -106,6 +110,7 @@
 
 - Одноузловой локальный кластер, HA нет; concurrency=1 (ADR-010).
 - `allow-egress-https` широкий — сужается в T030; роли для service accounts — T030; Argo CD и GitOps — T032.
+- **NetworkPolicy не исполняется в Docker Desktop** (см. заметку в разделе «Сетевые политики») — фикс детекта: fix/t-029-egress-probe; занесено в `docs/tech-dept.md` (TD-001).
 - **Живой прогон при создании не выполнялся**: Kubernetes в Docker Desktop был выключен (проверка оркестратором и скриптом); валидация статическая — `bash -n`, `shellcheck` (docker), `kubeconform -strict` (docker). Первый живой прогон: включить K8s → `./bootstrap.sh`.
 - StorageClass по умолчанию Docker Desktop (hostpath): PVC привязаны к узлу — норма для одноузлового MVP.
 - metrics-server при отсутствии переводит capacity smoke в режим без idle-замеров (warn, не fail).
