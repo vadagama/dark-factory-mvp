@@ -1,10 +1,13 @@
 """Common value types shared by the port contracts (contracts/ports.md)."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import TracebackType
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from dark_factory.changes.enums import Gate, Stage
 from dark_factory.changes.refs import RepositoryRef
 
 
@@ -47,6 +50,42 @@ class OpenChangeRequest(BaseModel):
     title: str = Field(min_length=1)
     description: str | None = None
     head_sha: str = Field(min_length=1)
+
+
+class StageJobRequest(BaseModel):
+    """Input of ``CIPort.run_stage_job``: one CI job for a factory stage.
+
+    ``ref`` is the branch or SHA the job runs against; the gate the job's
+    result evaluates is the stage's base gate (``stage_gate``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    repository: RepositoryRef
+    stage: str = Field(min_length=1)
+    ref: str = Field(min_length=1)
+
+
+_STAGE_GATES: Final[Mapping[str, Gate]] = {
+    Stage.SPECIFICATION.value: Gate.SPECIFICATION,
+    Stage.PLANNING.value: Gate.PLANNING,
+    Stage.CONSTRUCTION.value: Gate.CODE,
+    Stage.REVIEW_VERIFICATION.value: Gate.VERIFICATION,
+    Stage.RELEASE.value: Gate.RELEASE,
+}
+
+
+def stage_gate(stage: str) -> Gate:
+    """Base gate a stage's CI job evaluates (vision 3.9).
+
+    The base gate is the CI-evaluable representative of the stage;
+    ``dark_factory.rules.gates`` remains the owner of the full stage→gate
+    policy (routes add gates a CI job does not evaluate).
+    """
+    try:
+        return _STAGE_GATES[Stage(stage).value]
+    except ValueError:
+        raise ValueError(f"unknown stage {stage!r}") from None
 
 
 class ArtifactSpec(BaseModel):

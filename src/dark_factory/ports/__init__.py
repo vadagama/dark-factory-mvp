@@ -10,12 +10,14 @@ from dark_factory.changes.enums import (
     ChangeRequestStatus,
     ChangeSource,
     Gate,
+    GateStatus,
     Provider,
     RiskClass,
     Role,
     RunStatus,
     Stage,
 )
+from dark_factory.changes.findings import GateResult
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import Usage
@@ -41,6 +43,8 @@ from dark_factory.ports.common import (
     OpenChangeRequest,
     PipelineStatus,
     Span,
+    StageJobRequest,
+    stage_gate,
 )
 from dark_factory.ports.context import (
     ContextRequest,
@@ -53,6 +57,7 @@ from dark_factory.ports.errors import HeadMismatchError, PortError, RunNotFoundE
 from dark_factory.ports.events import DomainEvent, EventType
 from dark_factory.ports.protocols import (
     ArtifactStorePort,
+    CIPort,
     EventPublisherPort,
     ExecutionPort,
     HarnessPort,
@@ -77,6 +82,7 @@ __all__ = [
     "ArtifactSpec",
     "ArtifactStorePort",
     "BaselineMismatchError",
+    "CIPort",
     "Change",
     "ChangeNotFoundError",
     "ChangeRequestRef",
@@ -94,6 +100,8 @@ __all__ = [
     "ExecutionPort",
     "ExecutionResult",
     "Gate",
+    "GateResult",
+    "GateStatus",
     "HarnessPort",
     "HeadMismatchError",
     "HealthStatus",
@@ -119,6 +127,7 @@ __all__ = [
     "SourceKind",
     "Span",
     "Stage",
+    "StageJobRequest",
     "TaskEnvelope",
     "TelemetryPort",
     "TrackerPort",
@@ -127,4 +136,5 @@ __all__ = [
     "WorkspaceHandle",
     "WorkspaceRequest",
     "build_bundle",
+    "stage_gate",
 ]

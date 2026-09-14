@@ -10,10 +10,12 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.13",
+    "httpx2>=2.12",
     "psycopg[binary]>=3.2",
     "pydantic>=2.9",
     "pydantic-ai-slim[openai]>=2.43.0",
     "pydantic-graph>=2.43,<3",
+    "pyjwt[crypto]>=2.9",
     "pyyaml>=6.0.2",
     "sqlalchemy>=2.0",
 ]
