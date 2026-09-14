@@ -1,1 +1,1 @@
-"""Quality gates: deterministic checks on change outcomes."""
+"""Quality: deterministic gates and independent acceptance of change outcomes."""

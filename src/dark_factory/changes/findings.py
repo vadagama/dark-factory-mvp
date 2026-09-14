@@ -17,7 +17,13 @@ from dark_factory.changes.enums import (
 
 
 class Finding(BaseModel):
-    """Structured review finding: id, origin, severity, file/line, reviewed SHA, action, status."""
+    """Structured review finding: id, origin, severity, file/line, reviewed SHA, action, status.
+
+    ``confidence`` is the producer's self-assessed certainty (0.0-1.0); agent
+    findings carry it, human and CI findings may leave it unset. It documents
+    the judgment, it never changes the blocking weight — the gate weighs
+    severity and status (FR-006, T-013).
+    """
 
     id: str = Field(min_length=1)
     origin: FindingOrigin
@@ -29,6 +35,7 @@ class Finding(BaseModel):
     reviewed_sha: str | None = None
     required_action: str | None = None
     status: FindingStatus
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     evidence_ids: list[str] = []
 
 
