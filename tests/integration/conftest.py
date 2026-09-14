@@ -25,7 +25,8 @@ TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
 
 # Child tables first; RESTART IDENTITY keeps sequences stable between tests.
 _TABLES = (
-    "event_delivery, outbox, attempt, stage, usage, execution_leases, execution, effect_ledger"
+    "audit_log, decision, stage_result, event_delivery, outbox, attempt, stage, usage, "
+    "execution_leases, execution, effect_ledger, change"
 )
 
 

@@ -4,20 +4,21 @@
 release runs locally and in CI (FR-022), so no always-on service is needed.
 This module owns the command tree (``stage run``/``stage resume``,
 ``run status``, ``reconcile``, ``outbox dispatch``/``outbox replay``/
-``outbox skip``, ``doctor``), option validation and exit codes. Exit codes
-(contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution error,
-2 invalid input/configuration; argparse rejects invalid input with exit code
-2, matching the contract.
+``outbox skip``, ``doctor``, ``api serve``), option validation and exit codes.
+Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
+error, 2 invalid input/configuration; argparse rejects invalid input with
+exit code 2, matching the contract.
 
 Handlers are dispatched from here. ``doctor`` (T008) is implemented in
 ``dark_factory.cli.doctor``, ``stage run`` (T009, with run-record
 persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``,
 ``reconcile`` (T-063, one idempotent Reconciler pass) in
-``dark_factory.cli.reconcile`` and the outbox commands (T028, delivery of
-outbox events per ADR-016) in ``dark_factory.cli.outbox``; the remaining
-handlers (``stage resume`` and ``run status`` with the durable state-store
-wiring) arrive in later tasks and report ``not_implemented`` with exit code
-2 until then.
+``dark_factory.cli.reconcile``, the outbox commands (T028, delivery of
+outbox events per ADR-016) in ``dark_factory.cli.outbox`` and ``api serve``
+(T035, the REST API of contract api.md) in ``dark_factory.cli.api``; the
+remaining handlers (``stage resume`` and ``run status`` with the durable
+state-store wiring) arrive in later tasks and report ``not_implemented``
+with exit code 2 until then.
 """
 
 import argparse
@@ -125,6 +126,14 @@ class DoctorArgs:
     json_output: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ApiServeArgs:
+    """Arguments of ``factory api serve`` (T035, contract api.md)."""
+
+    host: str
+    port: int
+
+
 CommandArgs = (
     StageRunArgs
     | StageResumeArgs
@@ -134,6 +143,7 @@ CommandArgs = (
     | OutboxReplayArgs
     | OutboxSkipArgs
     | DoctorArgs
+    | ApiServeArgs
 )
 
 
@@ -256,6 +266,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--json", action="store_true", help="Emit the doctor report as JSON.")
     doctor.set_defaults(command="doctor")
 
+    api = commands.add_parser("api", help="Operate the factory REST API (contract api.md).")
+    api_commands = api.add_subparsers(required=True, metavar="command")
+    api_serve = api_commands.add_parser("serve", help="Serve the factory REST API locally (T035).")
+    api_serve.add_argument("--host", default="127.0.0.1", help="Bind address of the API server.")
+    api_serve.add_argument("--port", type=int, default=8000, help="TCP port of the API server.")
+    api_serve.set_defaults(command="api_serve")
+
     return parser
 
 
@@ -339,6 +356,11 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
             )
         case "doctor":
             return DoctorArgs(json_output=_flag(data, "json"))
+        case "api_serve":
+            port = _option_int(data, "port")
+            if port is None:
+                raise AssertionError("option --port is required")
+            return ApiServeArgs(host=_required_str(data, "host"), port=port)
         case _:
             raise AssertionError(f"unknown command: {data.get('command')!r}")
 
@@ -415,6 +437,14 @@ def _doctor(args: DoctorArgs) -> int:
     return EXIT_INVALID_INPUT if report.has_errors else EXIT_OK
 
 
+def _serve_api(args: ApiServeArgs) -> int:
+    # Imported here: cli.api imports ApiServeArgs and the exit codes from this
+    # module, so a module-level import would be circular.
+    from dark_factory.cli import api
+
+    return api.run_api_serve_command(args)
+
+
 def dispatch(command: CommandArgs) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree)."""
     match command:
@@ -434,6 +464,8 @@ def dispatch(command: CommandArgs) -> int:
             return _skip_outbox(command)
         case DoctorArgs():
             return _doctor(command)
+        case ApiServeArgs():
+            return _serve_api(command)
         case _:
             assert_never(command)
 

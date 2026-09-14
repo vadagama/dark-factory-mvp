@@ -10,6 +10,7 @@ import pytest
 
 from dark_factory.changes.enums import Route, Stage
 from dark_factory.cli.main import (
+    ApiServeArgs,
     DoctorArgs,
     OutboxDispatchArgs,
     OutboxReplayArgs,
@@ -120,6 +121,13 @@ def test_reconcile_and_doctor_parse_options() -> None:
     assert parse_command(["doctor"]) == DoctorArgs(json_output=False)
 
 
+def test_api_serve_parses_options() -> None:
+    assert parse_command(["api", "serve"]) == ApiServeArgs(host="127.0.0.1", port=8000)
+    assert parse_command(["api", "serve", "--host", "0.0.0.0", "--port", "9000"]) == ApiServeArgs(
+        host="0.0.0.0", port=9000
+    )
+
+
 def test_outbox_dispatch_parses_options() -> None:
     assert parse_command(["outbox", "dispatch"]) == OutboxDispatchArgs(
         once=False, json_output=False, limit=None, cleanup=False
@@ -157,6 +165,7 @@ def test_outbox_skip_parses_options() -> None:
         ["stage"],
         ["run"],
         ["outbox"],
+        ["api"],
         ["stage", "run", "--stage", "construction"],
         ["stage", "run", "--change", "c.yaml"],
         ["stage", "resume"],
