@@ -1,0 +1,25 @@
+# Desired state of the pilot workload in apps-dev (T032 fixture).
+#
+# The ONLY release variable is the immutable image digest below. Rules of this
+# repository apply (README.md): no `latest`, no floating tags — the digest is
+# replaced by the trusted finalizer (T033) or, until then, by a manual GitOps
+# MR; see examples/gitops-mr-digest-change.md for the exact shape.
+replicaCount: 1
+
+image:
+  repository: busybox
+  # Immutable digest (ADR-015 п.5). The placeholder is valid seed content:
+  # the first GitOps MR replaces it with the real digest of the built image.
+  digest: "sha256:__PILOT_IMAGE_DIGEST__"
+
+# Minimal footprint inside the apps-dev quota (T029: requests 500m/1Gi,
+# limits 1 CPU/2Gi) and the deny-by-default egress posture (no external
+# network access is needed to sleep).
+command: ["sleep", "infinity"]
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    cpu: 50m
+    memory: 32Mi

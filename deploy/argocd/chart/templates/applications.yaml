@@ -1,0 +1,60 @@
+{{/* Root Argo CD Applications for the dark factory MVP (T032). */}}
+{{/* Both are registered in the Argo CD namespace; `factory` deploys the */}}
+{{/* platform chart into the `factory` namespace, `apps-dev` is the app-of-apps */}}
+{{/* whose children come from the dark-factory-gitops repository (ADR-015). */}}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: factory
+  namespace: {{ .Values.argocdNamespace }}
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: dark-factory
+  annotations:
+    dark-factory.io/description: >-
+      Platform application: the factory API chart from this repository
+      (charts/dark-factory, T031), local profile values-local.yaml.
+spec:
+  project: {{ .Values.project }}
+  source:
+    repoURL: {{ .Values.factoryRepoURL }}
+    targetRevision: {{ .Values.factoryTargetRevision }}
+    path: {{ .Values.factoryPath }}
+    helm:
+      valueFiles:
+        - {{ .Values.factoryValueFile }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: factory
+  syncPolicy:
+    automated:
+      prune: {{ .Values.syncPolicy.automated.prune }}
+      selfHeal: {{ .Values.syncPolicy.automated.selfHeal }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apps-dev
+  namespace: {{ .Values.argocdNamespace }}
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: dark-factory
+  annotations:
+    dark-factory.io/description: >-
+      App-of-apps for the dev environment: children live in the
+      dark-factory-gitops repository (envs/dev) and deploy into apps-dev;
+      the GitOps MR flow (merge -> digest MR -> sync) lands here.
+spec:
+  project: {{ .Values.project }}
+  source:
+    repoURL: {{ .Values.gitopsRepoURL }}
+    targetRevision: {{ .Values.gitopsTargetRevision }}
+    path: {{ .Values.gitopsPath }}
+  destination:
+    server: https://kubernetes.default.svc
+    # The app-of-apps creates child Application CRs next to itself.
+    namespace: {{ .Values.argocdNamespace }}
+  syncPolicy:
+    automated:
+      prune: {{ .Values.syncPolicy.automated.prune }}
+      selfHeal: {{ .Values.syncPolicy.automated.selfHeal }}

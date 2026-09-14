@@ -1,0 +1,10 @@
+apiVersion: v2
+name: dark-factory-argocd-apps
+description: >-
+  Root Argo CD Applications for the dark factory MVP (T032): the `factory`
+  platform application (this repository, charts/dark-factory) and the `apps-dev`
+  app-of-apps (dark-factory-gitops repository, ADR-015). Local tooling chart —
+  never published; rendered and applied by deploy/argocd/install.sh.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

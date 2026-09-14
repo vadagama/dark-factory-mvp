@@ -1,0 +1,120 @@
+# Argo CD install values for the dark factory local environment (T032, ADR-010).
+#
+# Applied by deploy/argocd/install.sh with the chart version pinned there
+# (argo/argo-cd 10.9.1 = Argo CD 3.5.3, inspected 2026-09-14).
+#
+# The namespace `argocd` comes from the bootstrap (T029) with a ResourceQuota
+# (requests 400m/800Mi, limits 750m/1500Mi, pods 20) and a LimitRange. The
+# resource sums below are chosen to fit that quota including the transient
+# redis-secret-init hook job — see tests/test_deploy_argocd.py, which enforces
+# the arithmetic.
+configs:
+  params:
+    # The UI/API is accessed via `kubectl -n argocd port-forward` only (no
+    # ingress in the MVP): TLS termination at the local forward adds no
+    # security, so the server serves plaintext on 8080 inside the namespace.
+    server.insecure: true
+
+global:
+  # NetworkPolicy ownership stays with the bootstrap (T029): deny-by-default +
+  # allow-dns + allow-intra-ns + allow-egress-https already express exactly the
+  # traffic Argo CD needs (see deploy/argocd/README.md). Chart-generated
+  # policies would duplicate that ownership.
+  networkPolicy:
+    create: false
+
+  # Note: no global.additionalLabels here — the chart already labels every
+  # resource app.kubernetes.io/part-of=argocd, and overriding that key with
+  # `dark-factory` produces a duplicate YAML key (caught by kubeconform).
+  # verify.sh selects workloads by the chart's own part-of=argocd label.
+
+crds:
+  install: true
+  # Application CRDs survive `helm uninstall` (teardown keeps the namespace
+  # usable for a re-install); documented in deploy/argocd/README.md.
+  keep: true
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 200Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+  automountServiceAccountToken: true  # syncs via the Kubernetes API (core function)
+  serviceAccount:
+    automountServiceAccountToken: true
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 150m
+      memory: 256Mi
+  automountServiceAccountToken: true  # watches argocd-cm for repo/plugin settings
+  serviceAccount:
+    automountServiceAccountToken: true
+
+server:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
+  automountServiceAccountToken: true  # informers on argocd-cm/secret, API/UI backend
+  serviceAccount:
+    automountServiceAccountToken: true
+
+redis:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 50m
+      memory: 128Mi
+  # Redis caches rendered manifests only: no Kubernetes API access, no token.
+  automountServiceAccountToken: false
+  serviceAccount:
+    automountServiceAccountToken: false
+
+# ApplicationSet controller is unconditional in chart 10.x (Argo CD 3.x core
+# component); kept small and idle — the MVP uses plain Applications + app-of-apps.
+applicationSet:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 50m
+      memory: 128Mi
+  automountServiceAccountToken: true  # creates Application CRs
+  serviceAccount:
+    automountServiceAccountToken: true
+
+# Transient helm hook job (creates argocd-secret with the admin password and
+# the Redis auth key): small enough to admit next to the workloads above.
+redisSecretInit:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+# Disabled on purpose (MVP, quota headroom):
+# - dex: local admin authentication is enough; SSO/OIDC is post-MVP.
+# - notifications: no notification consumers exist in the MVP (YAGNI).
+dex:
+  enabled: false
+notifications:
+  enabled: false
+# commitServer is already disabled by the chart default; pinned here for clarity.
+commitServer:
+  enabled: false
