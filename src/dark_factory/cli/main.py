@@ -4,7 +4,8 @@
 release runs locally and in CI (FR-022), so no always-on service is needed.
 This module owns the command tree (``stage run``/``stage resume``,
 ``run status``, ``reconcile``, ``outbox dispatch``/``outbox replay``/
-``outbox skip``, ``doctor``, ``api serve``), option validation and exit codes.
+``outbox skip``, ``doctor``, ``api serve``, ``release verify``), option
+validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
 error, 2 invalid input/configuration; argparse rejects invalid input with
 exit code 2, matching the contract.
@@ -14,11 +15,12 @@ Handlers are dispatched from here. ``doctor`` (T008) is implemented in
 persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``,
 ``reconcile`` (T-063, one idempotent Reconciler pass) in
 ``dark_factory.cli.reconcile``, the outbox commands (T028, delivery of
-outbox events per ADR-016) in ``dark_factory.cli.outbox`` and ``api serve``
-(T035, the REST API of contract api.md) in ``dark_factory.cli.api``; the
-remaining handlers (``stage resume`` and ``run status`` with the durable
-state-store wiring) arrive in later tasks and report ``not_implemented``
-with exit code 2 until then.
+outbox events per ADR-016) in ``dark_factory.cli.outbox``, ``api serve``
+(T035, the REST API of contract api.md) in ``dark_factory.cli.api`` and
+``release verify`` (T034, smoke + release evidence, ADR-011 p.6) in
+``dark_factory.cli.release``; the remaining handlers (``stage resume`` and
+``run status`` with the durable state-store wiring) arrive in later tasks and
+report ``not_implemented`` with exit code 2 until then.
 """
 
 import argparse
@@ -134,6 +136,33 @@ class ApiServeArgs:
     port: int
 
 
+@dataclass(frozen=True, slots=True)
+class ReleaseVerifyArgs:
+    """Arguments of ``factory release verify`` (T034, US5, ADR-011 p.6).
+
+    The expected digest comes from ``expected_digest`` or from the T033
+    ``image-digest.json`` artifact (``digest_json``) — exactly one source;
+    the observed deployment state (``observed_digest``, ``argo_sync``,
+    ``argo_health``) is passed as values — the MVP has no live Argo client.
+    Evidence persistence (``evidence_dir``) requires the change snapshot
+    (``change``) it indexes.
+    """
+
+    expected_digest: str | None
+    digest_json: str | None
+    application: str | None
+    observed_digest: str | None
+    argo_sync: str | None
+    argo_health: str | None
+    smoke_url: str | None
+    smoke_digest_url: str | None
+    smoke_digest_header: str | None
+    evidence_dir: str | None
+    change: str | None
+    run_id: str | None
+    json_output: bool
+
+
 CommandArgs = (
     StageRunArgs
     | StageResumeArgs
@@ -144,6 +173,7 @@ CommandArgs = (
     | OutboxSkipArgs
     | DoctorArgs
     | ApiServeArgs
+    | ReleaseVerifyArgs
 )
 
 
@@ -273,6 +303,59 @@ def build_parser() -> argparse.ArgumentParser:
     api_serve.add_argument("--port", type=int, default=8000, help="TCP port of the API server.")
     api_serve.set_defaults(command="api_serve")
 
+    release = commands.add_parser(
+        "release", help="Release verification of a deployed change (US5, ADR-011 p.6)."
+    )
+    release_commands = release.add_subparsers(required=True, metavar="command")
+    release_verify = release_commands.add_parser(
+        "verify",
+        help="Verify a deployed release: digest immutability, Argo status, smoke (T034).",
+    )
+    release_verify.add_argument(
+        "--expected-digest",
+        help="Expected immutable image digest of the promoted build (FR-011).",
+    )
+    release_verify.add_argument(
+        "--digest-json",
+        help="Path of the T033 image-digest.json artifact; alternative to --expected-digest.",
+    )
+    release_verify.add_argument(
+        "--application", help="Target Argo Application (namespace/name) recorded in the evidence."
+    )
+    release_verify.add_argument(
+        "--observed-digest", help="Digest observed on the deployment (FR-011)."
+    )
+    release_verify.add_argument(
+        "--argo-sync", help="Raw sync status of the Argo Application (ADR-010)."
+    )
+    release_verify.add_argument(
+        "--argo-health", help="Raw health status of the Argo Application (ADR-010)."
+    )
+    release_verify.add_argument(
+        "--smoke-url", help="HTTP health-probe URL; any 2xx response passes (FR-013)."
+    )
+    release_verify.add_argument(
+        "--smoke-digest-url",
+        help="HTTP digest-probe URL checked for the expected digest; requires --smoke-url.",
+    )
+    release_verify.add_argument(
+        "--smoke-digest-header",
+        help="Response header carrying the digest; default: the response body.",
+    )
+    release_verify.add_argument(
+        "--evidence-dir", help="Directory for the run record; requires --change."
+    )
+    release_verify.add_argument(
+        "--change", help="Path of the change snapshot; requires --evidence-dir."
+    )
+    release_verify.add_argument(
+        "--run-id", help="Existing run id; a new run is created when omitted."
+    )
+    release_verify.add_argument(
+        "--json", action="store_true", help="Emit the release evidence as JSON on stdout."
+    )
+    release_verify.set_defaults(command="release_verify")
+
     return parser
 
 
@@ -361,6 +444,22 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
             if port is None:
                 raise AssertionError("option --port is required")
             return ApiServeArgs(host=_required_str(data, "host"), port=port)
+        case "release_verify":
+            return ReleaseVerifyArgs(
+                expected_digest=_option_str(data, "expected_digest"),
+                digest_json=_option_str(data, "digest_json"),
+                application=_option_str(data, "application"),
+                observed_digest=_option_str(data, "observed_digest"),
+                argo_sync=_option_str(data, "argo_sync"),
+                argo_health=_option_str(data, "argo_health"),
+                smoke_url=_option_str(data, "smoke_url"),
+                smoke_digest_url=_option_str(data, "smoke_digest_url"),
+                smoke_digest_header=_option_str(data, "smoke_digest_header"),
+                evidence_dir=_option_str(data, "evidence_dir"),
+                change=_option_str(data, "change"),
+                run_id=_option_str(data, "run_id"),
+                json_output=_flag(data, "json"),
+            )
         case _:
             raise AssertionError(f"unknown command: {data.get('command')!r}")
 
@@ -445,6 +544,14 @@ def _serve_api(args: ApiServeArgs) -> int:
     return api.run_api_serve_command(args)
 
 
+def _release_verify(args: ReleaseVerifyArgs) -> int:
+    # Imported here: cli.release imports ReleaseVerifyArgs and the exit codes
+    # from this module, so a module-level import would be circular.
+    from dark_factory.cli import release
+
+    return release.run_release_verify_command(args)
+
+
 def dispatch(command: CommandArgs) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree)."""
     match command:
@@ -466,6 +573,8 @@ def dispatch(command: CommandArgs) -> int:
             return _doctor(command)
         case ApiServeArgs():
             return _serve_api(command)
+        case ReleaseVerifyArgs():
+            return _release_verify(command)
         case _:
             assert_never(command)
 

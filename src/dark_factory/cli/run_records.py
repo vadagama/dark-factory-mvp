@@ -22,9 +22,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final
 
-from dark_factory.changes.enums import Route, RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import ReleaseStatus, Route, RunStatus, Stage, StageStatus
 from dark_factory.changes.run import SCHEMA_VERSION, Change, ChangeRun, StageResult, StageRun
-from dark_factory.changes.run_records import RunManifest, RunRecord, from_json, to_json
+from dark_factory.changes.run_records import (
+    ReleaseEvidence,
+    RunManifest,
+    RunRecord,
+    from_json,
+    to_json,
+)
 
 RUN_RECORD_EVIDENCE_NAME: Final[str] = "run_record.json"
 """Evidence file with the serialized RunRecord (ADR-015 p.4)."""
@@ -173,6 +179,54 @@ def build_run_record(
         run=run,
         stage_results=[result],
         decisions=[],
+    )
+
+
+def build_release_run_record(
+    *,
+    change: Change,
+    run_id: str,
+    evidence: ReleaseEvidence,
+    manifest: RunManifest,
+) -> RunRecord:
+    """Build the run record of a ``factory release verify`` run (T034, ADR-011 p.6).
+
+    The verification is the release stage of its own dedicated run: the run
+    and the release ``StageRun`` succeeded exactly when the decision is
+    ``released`` — a failed smoke never leaves the change Released, and the
+    failed run is the status the evidence is audited from. ``stage_results``
+    stays empty: StageResult contracts belong to the deterministic executor
+    (T-003/T-011); the verification produces the ``release`` evidence section
+    instead. Route is the standard one — the release verification is not a
+    quick-path activity.
+    """
+    released = evidence.decision is ReleaseStatus.RELEASED
+    final_status = StageStatus.SUCCEEDED if released else StageStatus.FAILED
+
+    run = ChangeRun(
+        id=run_id, change_id=change.id, route=Route.STANDARD, provider=change.product.provider
+    )
+    run.apply_status(RunStatus.RUNNING)
+
+    stage_run = StageRun(
+        id=f"{run.id}:{Stage.RELEASE.value}:1",
+        stage=Stage.RELEASE,
+        started_at=evidence.verified_at,
+    )
+    stage_run.apply_status(StageStatus.IN_PROGRESS)
+    stage_run.apply_status(final_status)
+    run.stages.append(stage_run)
+
+    run.apply_status(RunStatus.SUCCEEDED if released else RunStatus.FAILED)
+
+    return RunRecord(
+        schema_version=SCHEMA_VERSION,
+        manifest=manifest,
+        change=change,
+        run=run,
+        stage_results=[],
+        decisions=[],
+        release=evidence,
     )
 
 
