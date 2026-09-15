@@ -390,11 +390,11 @@
 - **Приоритет:** P1
 - **Сложность:** M
 - **Слой:** ports/Context
-- **Пакет / Компонент:** `adapters/telemetry_otlp`
+- **Пакет / Компонент:** `adapters/telemetry`
 - **Описание:** OTel-трейсы: change → run → stage → agent call → tool call → CI job → deployment; usage/cost атрибуты; экспорт в job logs/artifacts, внешний backend — опционально.
 - **Критерий готовности (DoD):** typecheck + lint + test; по trace восстанавливается полная цепочка запуска.
 - **Зависит от задач:** T-005
-- **Статус:** 🔴 Запланировано
+- **Статус:** ✅ Выполнено (2026-09-15): пакет `src/dark_factory/adapters/telemetry/` — `OtlpTelemetryAdapter` (`TelemetryPort`) поверх OpenTelemetry SDK (прямые зависимости `opentelemetry-api`/`opentelemetry-sdk` 1.44; ADR-009 п.2): `span()` открывает OTel-span как текущий и отдаёт вызывающему value-объект порта `Span` (провайдерские типы в core не просачиваются — OTel добавлен в denylist `test_import_boundaries.py`), корреляция `change → run → stage → agent → tool → CI job → deployment` держится на вложенности span'ов; `record_usage` пишет usage/cost короткоживущим span'ом `factory.usage` (ребёнок текущего span'а; атрибуты `usage.prompt_tokens/completion_tokens/total_tokens/cost`) и не теряет запись без активного span'а (ADR-009 п.3); `TelemetryConfig.from_env` (`DARK_FACTORY_TELEMETRY_SERVICE_NAME`/`_EXPORTER`/`_FILE`, fail-closed: неизвестный экспортёр и `file` без пути → `ValueError`), экспорт по умолчанию — job logs (`ConsoleSpanExporter`), опционально JSON-lines artifact (`JsonLinesSpanExporter`: append, детерминированный порядок ключей, parent-links); `SafeSpanExporter` — сбой sink'а деградирует телеметрию, но не роняет пайплайн, диагностика без payload/значений (ADR-009 п.8). Контрактная сюита `tests/contract/test_telemetry_port.py` не менялась и параметризована `fake | otlp` через binding в conftest (журналы выводятся из инъектированного `InMemorySpanExporter`). Валидация: ruff check + ruff format --check + mypy strict (236 файлов) — чисто; pytest 1088 passed + 51 skipped без БД. Независимая проверка (quality): гейты воспроизведены, contract-сюита действительно идёт против OTel-адаптера (6 passed: fake 3 + otlp 3), DoD-цепочка подтверждена адверсариально (ветвление tool-вызовов, изоляция двух независимых запусков, один `trace_id`). Ограничения: внешний OTLP-backend не подключён (TD-003), подключение адаптера к стадиям/Flow — следующая задача, cross-process propagation (W3C `traceparent` через границу CI-пода) не реализован, redaction атрибутов перед экспортом — TD-004
 
 ### T-061. Run records в dark-factory-runs
 

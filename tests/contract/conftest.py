@@ -6,21 +6,24 @@ fake → GitHub → GitLab. The source-control ports are parametrized over the
 in-memory fakes and the real GitHub adapter (T-024) driven by the in-memory
 GitHub API emulator (``github_api.py``) — no network, no real credentials; the
 tracker port is parametrized the same way over the fake and the Plane adapter
-(T-033) driven by ``plane_api.py``.
+(T-033) driven by ``plane_api.py``; the telemetry port is parametrized over the
+fake and the OTel adapter (T-060) driven by the SDK's in-memory exporter.
 The ``*_journal`` fixtures expose recorded side effects that the ports
 themselves do not surface (comments, dispatches, published statuses, spans,
 events); fake bindings read their own state, the GitHub binding reads the
 emulator's (comment journals strip the adapter's invisible idempotency
-markers).
+markers), and the OTel binding decodes the exporter it was built with.
 """
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from dark_factory.adapters.fakes import (
     FakeArtifactStore,
@@ -38,6 +41,12 @@ from dark_factory.adapters.fakes import (
     FakeWorkflowEngine,
 )
 from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, StaticTokenProvider
+from dark_factory.adapters.telemetry import (
+    USAGE_ATTRIBUTE_PREFIX,
+    USAGE_SPAN_NAME,
+    OtlpTelemetryAdapter,
+    TelemetryConfig,
+)
 from dark_factory.adapters.tracker import PlaneConfig, PlaneTrackerAdapter
 from dark_factory.changes.enums import GateStatus
 from dark_factory.changes.run import Change
@@ -122,6 +131,18 @@ class _TrackerBinding(NamedTuple):
     change: Change
     statuses: Callable[[str], tuple[str, ...]]
     approvals: Callable[[str], tuple[Gate, ...]]
+
+
+class _TelemetryBinding(NamedTuple):
+    """TelemetryPort plus the spans and usage records the same binding produced.
+
+    Telemetry has no separate journal: both views are derived from the exporter
+    the adapter was built with, so a binding reads what actually left the port.
+    """
+
+    port: TelemetryPort
+    spans: Callable[[], tuple[Span, ...]]
+    usage: Callable[[], tuple[tuple[Usage, dict[str, str]], ...]]
 
 
 def _tracked_change() -> Change:
@@ -424,26 +445,95 @@ def artifact_store_port() -> ArtifactStorePort:
     return FakeArtifactStore()
 
 
-@pytest.fixture
-def telemetry() -> FakeTelemetry:
-    return FakeTelemetry()
+@pytest.fixture(params=["fake", "otlp"])
+def telemetry_binding(request: pytest.FixtureRequest) -> _TelemetryBinding:
+    """TelemetryPort bound to the fake and the OTel adapter (T-060, ADR-009)."""
+    if request.param == "otlp":
+        return _otlp_telemetry_binding()
+    fake = FakeTelemetry()
+    return _TelemetryBinding(port=fake, spans=fake.recorded_spans, usage=fake.recorded_usage)
+
+
+def _otlp_telemetry_binding() -> _TelemetryBinding:
+    """The OTel adapter over an in-memory exporter that doubles as its journal."""
+    exporter = InMemorySpanExporter()
+    return _TelemetryBinding(
+        port=OtlpTelemetryAdapter(TelemetryConfig(), exporter=exporter),
+        spans=lambda: _exported_spans(exporter),
+        usage=lambda: _exported_usage(exporter),
+    )
+
+
+def _exported_spans(exporter: InMemorySpanExporter) -> tuple[Span, ...]:
+    """Finished spans as port values, in completion order and without usage spans."""
+    return tuple(
+        Span(
+            name=recorded.name,
+            attributes={
+                key: str(value)
+                for key, value in (recorded.attributes or {}).items()
+                if not key.startswith(USAGE_ATTRIBUTE_PREFIX)
+            },
+        )
+        for recorded in exporter.get_finished_spans()
+        if recorded.name != USAGE_SPAN_NAME
+    )
+
+
+def _exported_usage(exporter: InMemorySpanExporter) -> tuple[tuple[Usage, dict[str, str]], ...]:
+    """Usage spans decoded back into ``Usage`` plus the attributes of the call."""
+    records: list[tuple[Usage, dict[str, str]]] = []
+    for recorded in exporter.get_finished_spans():
+        if recorded.name != USAGE_SPAN_NAME:
+            continue
+        attributes: Mapping[str, object] = recorded.attributes or {}
+        records.append(
+            (
+                Usage(
+                    prompt_tokens=_int_attribute(attributes, "prompt_tokens"),
+                    completion_tokens=_int_attribute(attributes, "completion_tokens"),
+                    total_tokens=_optional_int_attribute(attributes, "total_tokens"),
+                    cost=_optional_decimal_attribute(attributes, "cost"),
+                ),
+                {
+                    key: str(value)
+                    for key, value in attributes.items()
+                    if not key.startswith(USAGE_ATTRIBUTE_PREFIX)
+                },
+            )
+        )
+    return tuple(records)
+
+
+def _int_attribute(attributes: Mapping[str, object], name: str) -> int:
+    return int(str(attributes[f"{USAGE_ATTRIBUTE_PREFIX}{name}"]))
+
+
+def _optional_int_attribute(attributes: Mapping[str, object], name: str) -> int | None:
+    value = attributes.get(f"{USAGE_ATTRIBUTE_PREFIX}{name}")
+    return None if value is None else int(str(value))
+
+
+def _optional_decimal_attribute(attributes: Mapping[str, object], name: str) -> Decimal | None:
+    value = attributes.get(f"{USAGE_ATTRIBUTE_PREFIX}{name}")
+    return None if value is None else Decimal(str(value))
 
 
 @pytest.fixture
-def telemetry_port(telemetry: FakeTelemetry) -> TelemetryPort:
-    return telemetry
+def telemetry_port(telemetry_binding: _TelemetryBinding) -> TelemetryPort:
+    return telemetry_binding.port
 
 
 @pytest.fixture
-def recorded_spans(telemetry: FakeTelemetry) -> Callable[[], tuple[Span, ...]]:
-    return telemetry.recorded_spans
+def recorded_spans(telemetry_binding: _TelemetryBinding) -> Callable[[], tuple[Span, ...]]:
+    return telemetry_binding.spans
 
 
 @pytest.fixture
 def recorded_usage(
-    telemetry: FakeTelemetry,
+    telemetry_binding: _TelemetryBinding,
 ) -> Callable[[], tuple[tuple[Usage, dict[str, str]], ...]]:
-    return telemetry.recorded_usage
+    return telemetry_binding.usage
 
 
 @pytest.fixture

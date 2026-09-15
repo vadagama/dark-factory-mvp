@@ -101,9 +101,12 @@ class ArtifactSpec(BaseModel):
 
 @dataclass
 class Span:
-    """Minimal telemetry span handle (T-060 replaces it with an OTel span).
+    """Minimal telemetry span handle: a plain value object owned by the port.
 
     Context-manager compatible so callers use ``with port.span(...) as span:``.
+    The OTLP adapter (T-060) yields this value while an OpenTelemetry span lives
+    underneath it, so the handle stays a provider-free record of the name and
+    attributes the caller passed.
     """
 
     name: str

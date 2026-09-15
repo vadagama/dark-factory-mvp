@@ -27,6 +27,7 @@ EXTERNAL_SDK_MODULES: Final[tuple[str, ...]] = (
     "gitlab",  # GitLab SDK (python-gitlab)
     "plane",  # Plane tracker SDK
     "kubernetes",  # Kubernetes client
+    "opentelemetry",  # OpenTelemetry SDK (T-060)
     "boto3",  # S3-compatible object storage
     "minio",  # MinIO object storage
 )
@@ -176,15 +177,16 @@ def test_rule_b_allows_ports_and_own_subpackages() -> None:
 def test_rule_c_flags_core_importing_external_sdks() -> None:
     source = (
         "import pydantic_ai\nfrom gitlab.v4.objects import ProjectMergeRequest\nimport githubkit\n"
+        "from opentelemetry.sdk.trace import TracerProvider\n"
     )
     violations = check_source("dark_factory.orchestration", "dark_factory.orchestration", source)
-    assert [v.rule for v in violations] == ["C", "C", "C"]
+    assert [v.rule for v in violations] == ["C", "C", "C", "C"]
 
 
 def test_rule_c_allows_adapters_and_core_infrastructure() -> None:
     # Only adapters may import external SDKs; infrastructure drivers that core
     # legitimately uses (sqlalchemy, psycopg, pydantic) are not on the denylist.
-    source = "import pydantic_ai\nfrom gitlab import Gitlab\n"
+    source = "import pydantic_ai\nfrom gitlab import Gitlab\nimport opentelemetry.sdk.trace\n"
     violations = check_source(
         "dark_factory.adapters.github", "dark_factory.adapters.github", source
     )
