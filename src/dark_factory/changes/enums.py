@@ -142,6 +142,20 @@ class GateStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class ReleaseStatus(StrEnum):
+    """Outcome of the release verification of a change (US5, T034, ADR-011 p.6).
+
+    ``released`` requires the unchanged expected digest (FR-011), a synced and
+    healthy Argo Application (ADR-010) and a passing smoke check (FR-013).
+    Anything else — including missing data — is ``release_failed``: the check
+    order is fail-closed, and a failure carries the rollback signal (revert
+    the GitOps commit, ADR-010/ADR-011 p.6).
+    """
+
+    RELEASED = "released"
+    RELEASE_FAILED = "release_failed"
+
+
 class DecisionOutcome(StrEnum):
     """Outcome of an approval decision."""
 

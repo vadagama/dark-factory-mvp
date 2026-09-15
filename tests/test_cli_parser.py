@@ -16,6 +16,7 @@ from dark_factory.cli.main import (
     OutboxReplayArgs,
     OutboxSkipArgs,
     ReconcileArgs,
+    ReleaseVerifyArgs,
     ResumeNextAction,
     RunStatusArgs,
     StageResumeArgs,
@@ -158,6 +159,91 @@ def test_outbox_skip_parses_options() -> None:
     ) == OutboxSkipArgs(event_id="evt-1", consumer="tracker", json_output=True)
 
 
+def test_release_verify_parses_all_options() -> None:
+    args = parse_command(
+        [
+            "release",
+            "verify",
+            "--expected-digest",
+            "sha256:abc",
+            "--application",
+            "apps-dev/pilot-dev",
+            "--observed-digest",
+            "sha256:abc",
+            "--argo-sync",
+            "Synced",
+            "--argo-health",
+            "Healthy",
+            "--smoke-url",
+            "http://t/healthz",
+            "--smoke-digest-url",
+            "http://t/version",
+            "--smoke-digest-header",
+            "X-Image-Digest",
+            "--evidence-dir",
+            "evidence/run_01H",
+            "--change",
+            "changes/chg_01H.yaml",
+            "--run-id",
+            "run_01H",
+            "--json",
+        ]
+    )
+    assert args == ReleaseVerifyArgs(
+        expected_digest="sha256:abc",
+        digest_json=None,
+        application="apps-dev/pilot-dev",
+        observed_digest="sha256:abc",
+        argo_sync="Synced",
+        argo_health="Healthy",
+        smoke_url="http://t/healthz",
+        smoke_digest_url="http://t/version",
+        smoke_digest_header="X-Image-Digest",
+        evidence_dir="evidence/run_01H",
+        change="changes/chg_01H.yaml",
+        run_id="run_01H",
+        json_output=True,
+    )
+
+
+def test_release_verify_parses_the_digest_json_alternative() -> None:
+    args = parse_command(["release", "verify", "--digest-json", "artifacts/image-digest.json"])
+    assert args == ReleaseVerifyArgs(
+        expected_digest=None,
+        digest_json="artifacts/image-digest.json",
+        application=None,
+        observed_digest=None,
+        argo_sync=None,
+        argo_health=None,
+        smoke_url=None,
+        smoke_digest_url=None,
+        smoke_digest_header=None,
+        evidence_dir=None,
+        change=None,
+        run_id=None,
+        json_output=False,
+    )
+
+
+def test_release_verify_defaults() -> None:
+    """Every option is optional at the parse level; the command validates the rest."""
+    assert parse_command(["release", "verify"]) == ReleaseVerifyArgs(
+        expected_digest=None,
+        digest_json=None,
+        application=None,
+        observed_digest=None,
+        argo_sync=None,
+        argo_health=None,
+        smoke_url=None,
+        smoke_digest_url=None,
+        smoke_digest_header=None,
+        evidence_dir=None,
+        change=None,
+        run_id=None,
+        json_output=False,
+    )
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -166,6 +252,7 @@ def test_outbox_skip_parses_options() -> None:
         ["run"],
         ["outbox"],
         ["api"],
+        ["release"],
         ["stage", "run", "--stage", "construction"],
         ["stage", "run", "--change", "c.yaml"],
         ["stage", "resume"],
@@ -212,6 +299,8 @@ def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
         ["outbox", "replay", "--help"],
         ["outbox", "skip", "--help"],
         ["doctor", "--help"],
+        ["release", "--help"],
+        ["release", "verify", "--help"],
     ],
 )
 def test_help_exits_with_code_0(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:

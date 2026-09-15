@@ -7,9 +7,12 @@ contract; serialization goes through JSON mode so ``Decimal`` and ``datetime``
 survive both JSON and YAML.
 """
 
+from datetime import datetime
+
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from dark_factory.changes.enums import ReleaseStatus
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
     SCHEMA_VERSION,
@@ -54,6 +57,42 @@ class RunManifest(BaseModel):
         return value
 
 
+class SmokeProbeEvidence(BaseModel):
+    """Result of one smoke probe inside the release evidence (T034, FR-013).
+
+    ``detail`` is a short diagnostic (HTTP status, exception class name); it
+    never carries the probe URL, response bodies or raw exception text
+    (ADR-009).
+    """
+
+    name: str = Field(min_length=1)
+    passed: bool
+    detail: str | None = None
+
+
+class ReleaseEvidence(BaseModel):
+    """Release section of a run record: digest, Argo status, smoke, decision (T034, ADR-011 p.6).
+
+    Added as an optional section (``RunRecord.release``): records written
+    before T034 parse unchanged (the field defaults to ``None``) and older
+    readers ignore the new key, so ``schema_version`` stays ``1`` — the
+    extension is additive and optional. ``argo_sync_status``/
+    ``argo_health_status`` store the raw observed values verbatim; the
+    canonical statuses live in ``quality.release`` and only feed the decision.
+    """
+
+    verified_at: datetime
+    decision: ReleaseStatus
+    reason: str | None = None
+    expected_digest: str | None = None
+    observed_digest: str | None = None
+    argo_sync_status: str | None = None
+    argo_health_status: str | None = None
+    application: str | None = None
+    smoke: tuple[SmokeProbeEvidence, ...] = ()
+    rollback_signal: str | None = None
+
+
 class RunRecord(BaseModel):
     """Compact evidence index of a run: manifest, change, run state, results, decisions."""
 
@@ -63,6 +102,9 @@ class RunRecord(BaseModel):
     run: ChangeRun
     stage_results: list[StageResult] = []
     decisions: list[Decision] = []
+    release: ReleaseEvidence | None = None
+    """Release verification section (T034, ADR-011 p.6); ``None`` for records
+    written before T034 and for non-release runs."""
 
     def completion_violations(self) -> list[str]:
         """Completion invariants (ADR-009 p.9) evaluated over this record."""
