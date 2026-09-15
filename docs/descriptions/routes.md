@@ -8,10 +8,11 @@
 
 Маршрут — это **топология межстадийного Flow**: упорядоченный список стадий, через которые проходит один запуск (`ChangeRun`). Модуль намеренно не решает, успешно ли прошла стадия, какие гейты обязательны и какое действие разрешено.
 
-Он отвечает только на два вопроса:
+Он отвечает только на три вопроса:
 
 1. с какой стадии начинается маршрут;
-2. какая стадия непосредственно следует за текущей.
+2. какая стадия непосредственно следует за текущей;
+3. какие гейты требуют явного человеческого решения (`HUMAN_GATES`, раздел 4).
 
 Это позволяет независимо изменять три аспекта Flow:
 
@@ -61,7 +62,7 @@ SPECIFICATION
 | Review / Verification | Review + Verification | Review + Verification |
 | Release | Release | Release |
 
-То есть `quick` не пропускает Construction или Review: он не требует только UI-гейт на Construction.
+То есть `quick` не пропускает Construction или Review: он не требует только UI-гейт на Construction. Человеческие гейты от маршрута не зависят (раздел 4).
 
 ## 3. `RouteProfile`
 
@@ -85,6 +86,10 @@ class RouteProfile:
 
 Важно: конструктор не проверяет, что `stages` непуст. Пользовательский `RouteProfile(stages=())` создастся, но обращение к `initial_stage` приведёт к `IndexError`. Встроенные профили этому случаю не подвержены.
 
+### `human_gates`
+
+Property, возвращающее `HUMAN_GATES` — frozenset гейтов, требующих явного человеческого решения (раздел 4). Свойство заявлено в API профиля, но в MVP возвращает один и тот же набор для любого маршрута.
+
 ### `next_stage(stage)`
 
 Алгоритм:
@@ -106,7 +111,37 @@ class RouteProfile:
 
 `None` имеет два значения: стадия отсутствует в профиле **или** является терминальной. Вызывающий код при необходимости должен различать эти ситуации по контексту.
 
-## 4. Реестр профилей
+## 4. Человеческие гейты — `HUMAN_GATES`
+
+```python
+HUMAN_GATES: Final[frozenset[Gate]] = frozenset({Gate.SPECIFICATION, Gate.REVIEW})
+```
+
+Стадии, на которых автономный Flow останавливается и ждёт явного человеческого решения (ADR-018 p.1):
+
+| Гейт | Стадия | Что подтверждает человек |
+|---|---|---|
+| `specification` | Specification | результат discovery: требования, UX, архитектура |
+| `review` | Review / Verification | merge подтверждается человеком (ADR-011 p.2) |
+
+Свойства:
+
+- human gates **не зависят от маршрута**: `quick` пропускает UI/расширенные гейты, но не человеческие (contracts/cli.md); `RouteProfile.human_gates` возвращает один frozenset для всех маршрутов;
+- Planning остаётся in-the-loop **через escalation-условия** (например, предложение нового ADR), а не через flow-гейт — поэтому `Gate.PLANNING` в `HUMAN_GATES` не входит;
+- deploy to dev после merge — human-off-the-loop (стадия Release), prod — ручной post-MVP (T-091).
+
+```mermaid
+flowchart LR
+    SPEC["Specification"] -->|"in the loop"| PLAN["Planning"]
+    PLAN -->|"in the loop\nчерез эскалации, не гейт"| BUILD["Construction"]
+    BUILD -->|"off the loop"| REVIEW["Review / Verification"]
+    REVIEW -->|"in the loop\nmerge подтверждает человек"| RELEASE["Release"]
+    RELEASE -->|"off the loop\ndeploy to dev"| DONE["Run succeeded"]
+```
+
+Потребитель — `orchestration/policy/participation.py`: он проецирует таблицу фаз ADR-018 p.1 (`PHASE_PARTICIPATION`) на пять стадий (`STAGE_PARTICIPATION`) и согласован с `HUMAN_GATES` контрактными тестами.
+
+## 5. Реестр профилей
 
 `ROUTE_PROFILES` создаётся при импорте модуля перебором всех элементов `Route`:
 
@@ -119,9 +154,9 @@ ROUTE_PROFILES = {
 
 Так текущий код гарантирует, что каждый объявленный `Route` получает профиль. `route_profile(route)` выполняет прямой lookup в этом словаре и возвращает существующий экземпляр без копирования.
 
-Аннотация `Final` запрещает переприсваивание имени для статического анализатора, но сам объект `ROUTE_PROFILES` остаётся обычным изменяемым `dict`. Код проекта рассматривает его как конфигурационную константу.
+Аннотация `Final` запрещает переприсваивание имени для статического анализатора, но сам объект `ROUTE_PROFILES` остаётся обычным изменяемым `dict`. Код проекта рассматривает его как конфигурационную константу. `HUMAN_GATES` — такая же `Final`-константа модуля, реэкспортируемая через `flows/__init__.py`.
 
-## 5. Как маршрут участвует в переходе
+## 6. Как маршрут участвует в переходе
 
 Одного профиля недостаточно, чтобы выполнить переход. `apply_result()` проверяет переход в несколько шагов:
 
@@ -162,7 +197,7 @@ Rework использует отдельную таблицу `REWORK_TARGET`:
 
 Запись Release → Release присутствует для полноты mapping, но `rework` не разрешён таблицей действий Release.
 
-## 6. Инварианты
+## 7. Инварианты
 
 Для встроенной конфигурации выполняются следующие инварианты:
 
@@ -172,9 +207,10 @@ Rework использует отдельную таблицу `REWORK_TARGET`:
 4. стадии последовательности уникальны;
 5. `execute_stage` может вести только к непосредственному successor;
 6. переход Review / Verification → Release проходит только через `merge`;
-7. разница `quick` и `standard` — только UI-гейт Construction.
+7. разница `quick` и `standard` — только UI-гейт Construction;
+8. `human_gates` одинаковы для всех маршрутов и равны `{Specification, Review}`.
 
-## 7. Граничные случаи
+## 8. Граничные случаи
 
 | Случай | Поведение |
 |---|---|
@@ -186,15 +222,25 @@ Rework использует отдельную таблицу `REWORK_TARGET`:
 | `ExecuteStageAction` указывает не successor | `InvalidFlowTransition` |
 | Обязательный гейт не пройден | Flow заменяет продвижение на `StopAction(blocked)` |
 
-## 8. Где искать проверки
+## 9. Где искать проверки
 
 - `tests/test_flows_routes.py` — полнота профилей, порядок стадий, terminal Release;
 - `tests/test_flow_transitions.py` — exhaustive-проверка всех пар `Stage × NextAction`;
 - `tests/test_flow_engine.py` — корректная целевая стадия, merge boundary и gate policy;
-- `tests/test_rules_gates.py` — различия `quick`/`standard`.
+- `tests/test_rules_gates.py` — различия `quick`/`standard`;
+- `tests/test_policy_participation.py` — `HUMAN_GATES`, их независимость от маршрута и согласованность со стадиями in-the-loop.
 
-## 9. Связанные решения
+## 10. Связь с другими модулями
+
+| Документ | Связь |
+|---|---|
+| [rules.md](rules.md) | Гейт-политика: какие гейты обязательны для пары route/stage |
+| [orchestration-flow-and-state.md](orchestration-flow-and-state.md) | `FLOW_TRANSITIONS`, `REWORK_TARGET` и алгоритм `apply_result()` |
+| [quality.md](quality.md) | Гейты качества и приёмка результата стадии |
+
+## 11. Связанные решения
 
 - [ADR-005](../adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) — лёгкий табличный FSM между стадиями;
-- [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge policy;
+- [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge policy и human-confirmed merge;
+- [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — участие человека и человеческие гейты;
 - [HLD §8](../hld.md#8-домен-изменения-и-change-flow) — сквозной Change Flow.
