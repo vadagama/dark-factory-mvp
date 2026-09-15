@@ -4,7 +4,9 @@ Every fixture hands an adapter to the tests through its port type, so the test
 modules never import ``dark_factory.adapters`` and the same suite runs against
 fake → GitHub → GitLab. The source-control ports are parametrized over the
 in-memory fakes and the real GitHub adapter (T-024) driven by the in-memory
-GitHub API emulator (``github_api.py``) — no network, no real credentials.
+GitHub API emulator (``github_api.py``) — no network, no real credentials; the
+tracker port is parametrized the same way over the fake and the Plane adapter
+(T-033) driven by ``plane_api.py``.
 The ``*_journal`` fixtures expose recorded side effects that the ports
 themselves do not surface (comments, dispatches, published statuses, spans,
 events); fake bindings read their own state, the GitHub binding reads the
@@ -14,6 +16,7 @@ markers).
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -35,6 +38,7 @@ from dark_factory.adapters.fakes import (
     FakeWorkflowEngine,
 )
 from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, StaticTokenProvider
+from dark_factory.adapters.tracker import PlaneConfig, PlaneTrackerAdapter
 from dark_factory.changes.enums import GateStatus
 from dark_factory.changes.run import Change
 from dark_factory.context.sdd.baseline import current_revision
@@ -78,6 +82,13 @@ from tests.contract.github_api import (
     parse_job_ref,
     visible_comment,
 )
+from tests.contract.plane_api import (
+    PLANE_API_BASE_URL,
+    PLANE_API_TOKEN,
+    PROJECT_ID,
+    WORKSPACE_SLUG,
+    PlaneApiEmulator,
+)
 from tests.sdd_factories import seed_baseline
 
 PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
@@ -97,6 +108,37 @@ class _CIBinding(NamedTuple):
     journal: Callable[[], int]
     seed_gate: Callable[..., None]
     seed_artifacts: Callable[..., None]
+
+
+class _TrackerBinding(NamedTuple):
+    """TrackerPort plus the seeded change and journals of the same binding.
+
+    The tracked change belongs to the binding, not to a separate fixture: a real
+    tracker can only be written to for an issue that exists, so every binding
+    seeds it up front (the fake tolerates unknown ids, Plane does not).
+    """
+
+    port: TrackerPort
+    change: Change
+    statuses: Callable[[str], tuple[str, ...]]
+    approvals: Callable[[str], tuple[Gate, ...]]
+
+
+def _tracked_change() -> Change:
+    """The one change the tracker suite runs against, seeded by every binding.
+
+    ``created_at`` is explicit so the value survives the ISO-8601 round trip
+    through the Plane API and stays comparable with the mapped ``Change``.
+    """
+    return Change(
+        id="chg-001",
+        title="Add export button",
+        source=ChangeSource.TRACKER,
+        external_ref="PLANE-42",
+        product=PRODUCT,
+        risk_class=RiskClass.R1,
+        created_at=datetime(2026, 9, 13, 9, 30, tzinfo=UTC),
+    )
 
 
 @pytest.fixture
@@ -259,38 +301,69 @@ def _github_seed_artifacts(emulator: GitHubApiEmulator) -> Callable[..., None]:
 
 
 @pytest.fixture
-def tracker() -> FakeTracker:
-    return FakeTracker()
+def plane_emulator() -> PlaneApiEmulator:
+    """A fresh in-memory Plane API for one test."""
+    return PlaneApiEmulator()
 
 
 @pytest.fixture
-def tracker_port(tracker: FakeTracker) -> TrackerPort:
-    return tracker
-
-
-@pytest.fixture
-def tracked_change(tracker: FakeTracker) -> Change:
-    """Seed the tracker with one change; ``get_change`` finds it by external ref."""
-    change = Change(
-        id="chg-001",
-        title="Add export button",
-        source=ChangeSource.TRACKER,
-        external_ref="PLANE-42",
-        product=PRODUCT,
-        risk_class=RiskClass.R1,
+def plane_adapter(plane_emulator: PlaneApiEmulator) -> PlaneTrackerAdapter:
+    """The Plane tracker adapter bound to the emulator: no network, no real API key."""
+    return PlaneTrackerAdapter(
+        PlaneConfig(
+            base_url=PLANE_API_BASE_URL,
+            workspace_slug=WORKSPACE_SLUG,
+            project_id=PROJECT_ID,
+            repository=PRODUCT,
+            api_key=PLANE_API_TOKEN,
+        ),
+        transport=plane_emulator.transport(),
     )
-    tracker.seed("PLANE-42", change)
-    return change
+
+
+@pytest.fixture(params=["fake", "plane"])
+def tracker_binding(request: pytest.FixtureRequest) -> _TrackerBinding:
+    """TrackerPort bound to the fake and the Plane adapter, both seeded (ADR-013)."""
+    change = _tracked_change()
+    if request.param == "plane":
+        emulator: PlaneApiEmulator = request.getfixturevalue("plane_emulator")
+        adapter: PlaneTrackerAdapter = request.getfixturevalue("plane_adapter")
+        emulator.seed_change("PLANE-42", change)
+        return _TrackerBinding(
+            port=adapter,
+            change=change,
+            statuses=emulator.statuses_of,
+            approvals=emulator.approvals_of,
+        )
+    fake = FakeTracker()
+    fake.seed("PLANE-42", change)
+    return _TrackerBinding(
+        port=fake,
+        change=change,
+        statuses=fake.statuses_of,
+        approvals=fake.approvals_of,
+    )
 
 
 @pytest.fixture
-def published_statuses(tracker: FakeTracker) -> Callable[[str], tuple[str, ...]]:
-    return tracker.statuses_of
+def tracker_port(tracker_binding: _TrackerBinding) -> TrackerPort:
+    return tracker_binding.port
 
 
 @pytest.fixture
-def requested_approvals(tracker: FakeTracker) -> Callable[[str], tuple[Gate, ...]]:
-    return tracker.approvals_of
+def tracked_change(tracker_binding: _TrackerBinding) -> Change:
+    """The change seeded in the bound tracker; ``get_change`` finds it by external ref."""
+    return tracker_binding.change
+
+
+@pytest.fixture
+def published_statuses(tracker_binding: _TrackerBinding) -> Callable[[str], tuple[str, ...]]:
+    return tracker_binding.statuses
+
+
+@pytest.fixture
+def requested_approvals(tracker_binding: _TrackerBinding) -> Callable[[str], tuple[Gate, ...]]:
+    return tracker_binding.approvals
 
 
 @pytest.fixture
