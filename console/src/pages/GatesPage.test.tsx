@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
@@ -126,5 +126,42 @@ describe("GatesPage", () => {
       return method === "GET" && headers !== undefined && headers.Authorization !== undefined;
     });
     expect(readWithAuth).toHaveLength(0);
+  });
+
+  it("refreshes expected_state_revision when the reloaded card reports the new decision", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("operator-token");
+    let cardLoads = 0;
+    stubFetch([
+      ...READ_ROUTES(() => {
+        cardLoads += 1;
+        // The reload after the recorded decision sees the fresh count.
+        return jsonResponse(200, makeChangeCard(cardLoads >= 2 ? 1 : 0));
+      }),
+      {
+        method: "POST",
+        pattern: /\/api\/v1\/changes\/chg_demo_001\/approvals$/,
+        handler: () => jsonResponse(201, decision),
+      },
+    ]);
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId("gates-run_demo_001");
+    const field = screen.getByLabelText("expected_state_revision") as HTMLInputElement;
+    expect(field.value).toBe("1");
+
+    await user.type(screen.getByLabelText("subject_revision"), "abc1234def");
+    await user.click(screen.getByRole("button", { name: "Записать решение" }));
+    await screen.findByText(/Решение записано: dec_abc123/);
+
+    // decisions_count 0 → 1 refreshes the optimistic lock without remounting the
+    // form, so the success notice survives the reload.
+    await waitFor(() => expect(field.value).toBe("2"));
+    expect(screen.getByText(/Решение записано: dec_abc123/)).toBeInTheDocument();
+
+    // The field stays editable: an operator edit is not reset on re-render.
+    await user.clear(field);
+    await user.type(field, "9");
+    expect(field.value).toBe("9");
   });
 });
