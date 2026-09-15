@@ -74,8 +74,16 @@ spec:
               mountPath: /tmp
             - name: nginx-cache
               mountPath: /var/cache/nginx
+            # The image entrypoint renders the nginx template (envsubst) into
+            # /etc/nginx/conf.d, which is read-only under readOnlyRootFilesystem:
+            # without this mount the stock config stays, the /api proxy silently
+            # disappears and pods stay Ready anyway (probes only hit "/").
+            - name: nginx-conf-d
+              mountPath: /etc/nginx/conf.d
       volumes:
         - name: tmp
           emptyDir: {}
         - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-conf-d
           emptyDir: {}
