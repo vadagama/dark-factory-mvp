@@ -3,9 +3,9 @@
 ``factory`` is the entry point of a factory stage (ADR-006 p.1): the same core
 release runs locally and in CI (FR-022), so no always-on service is needed.
 This module owns the command tree (``stage run``/``stage resume``,
-``run status``, ``reconcile``, ``outbox dispatch``/``outbox replay``/
-``outbox skip``, ``doctor``, ``api serve``, ``release verify``), option
-validation and exit codes.
+``run status``/``run publish``, ``reconcile``, ``outbox dispatch``/
+``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
+``release verify``), option validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
 error, 2 invalid input/configuration; argparse rejects invalid input with
 exit code 2, matching the contract.
@@ -18,7 +18,9 @@ persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``,
 outbox events per ADR-016) in ``dark_factory.cli.outbox``, ``api serve``
 (T035, the REST API of contract api.md) in ``dark_factory.cli.api`` and
 ``release verify`` (T034, smoke + release evidence, ADR-011 p.6) in
-``dark_factory.cli.release``; the remaining handlers (``stage resume`` and
+``dark_factory.cli.release`` and ``run publish`` (T-061, the run-record index
+published into ``dark-factory-runs``, ADR-015 p.4) in
+``dark_factory.cli.runs``; the remaining handlers (``stage resume`` and
 ``run status`` with the durable state-store wiring) arrive in later tasks and
 report ``not_implemented`` with exit code 2 until then.
 """
@@ -78,6 +80,20 @@ class RunStatusArgs:
     """Arguments of ``factory run status`` (contract cli.md)."""
 
     run_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RunPublishArgs:
+    """Arguments of ``factory run publish`` (T-061, ADR-015 p.4).
+
+    ``record`` is the persisted ``run_record.json`` of a stage or release run;
+    ``runs_root`` is the ``dark-factory-runs`` checkout and falls back to
+    ``DARK_FACTORY_RUNS_ROOT``, resolved by the command.
+    """
+
+    record: str
+    runs_root: str | None
     json_output: bool
 
 
@@ -167,6 +183,7 @@ CommandArgs = (
     StageRunArgs
     | StageResumeArgs
     | RunStatusArgs
+    | RunPublishArgs
     | ReconcileArgs
     | OutboxDispatchArgs
     | OutboxReplayArgs
@@ -234,12 +251,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stage_resume.set_defaults(command="stage_resume")
 
-    run = commands.add_parser("run", help="Inspect a run.")
+    run = commands.add_parser("run", help="Inspect a run and publish its record.")
     run_commands = run.add_subparsers(required=True, metavar="command")
     run_status = run_commands.add_parser("status", help="Show the status of a run.")
     run_status.add_argument("--run-id", required=True, help="Id of the run to inspect.")
     run_status.add_argument("--json", action="store_true", help="Emit the run record as JSON.")
     run_status.set_defaults(command="run_status")
+
+    run_publish = run_commands.add_parser(
+        "publish", help="Publish a run record into dark-factory-runs (T-061, ADR-015 p.4)."
+    )
+    run_publish.add_argument(
+        "--record", required=True, help="Path of the persisted run record to publish."
+    )
+    run_publish.add_argument(
+        "--runs-root",
+        help="Checkout of dark-factory-runs; defaults to DARK_FACTORY_RUNS_ROOT.",
+    )
+    run_publish.add_argument(
+        "--json", action="store_true", help="Emit the publish outcome as JSON."
+    )
+    run_publish.set_defaults(command="run_publish")
 
     reconcile = commands.add_parser(
         "reconcile", help="Perform one idempotent Reconciler pass (ADR-019 p.5)."
@@ -416,6 +448,12 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 run_id=_required_str(data, "run_id"),
                 json_output=_flag(data, "json"),
             )
+        case "run_publish":
+            return RunPublishArgs(
+                record=_required_str(data, "record"),
+                runs_root=_option_str(data, "runs_root"),
+                json_output=_flag(data, "json"),
+            )
         case "reconcile":
             return ReconcileArgs(json_output=_flag(data, "json"))
         case "outbox_dispatch":
@@ -502,6 +540,14 @@ def _show_run_status(args: RunStatusArgs) -> int:
     )
 
 
+def _publish_run(args: RunPublishArgs) -> int:
+    # Imported here: cli.runs imports RunPublishArgs and the exit codes from this
+    # module, so a module-level import would be circular.
+    from dark_factory.cli import runs
+
+    return runs.run_publish_command(args)
+
+
 def _reconcile(args: ReconcileArgs) -> int:
     # Imported here: cli.reconcile imports ReconcileArgs and the exit codes
     # from this module, so a module-level import would be circular.
@@ -561,6 +607,8 @@ def dispatch(command: CommandArgs) -> int:
             return _resume_stage(command)
         case RunStatusArgs():
             return _show_run_status(command)
+        case RunPublishArgs():
+            return _publish_run(command)
         case ReconcileArgs():
             return _reconcile(command)
         case OutboxDispatchArgs():

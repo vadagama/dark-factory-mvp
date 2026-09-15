@@ -1,0 +1,974 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "description": "Reference to a produced artifact: type, URI, revision, hash, producer (hld-mvp 5).",
+      "properties": {
+        "artifact_type": {
+          "minLength": 1,
+          "title": "Artifact Type",
+          "type": "string"
+        },
+        "producer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Producer"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_type",
+        "uri"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "ChangeRequestRef": {
+      "description": "Single domain model of a GitHub PR / GitLab MR (ADR-019 p.2).",
+      "properties": {
+        "number": {
+          "minimum": 1,
+          "title": "Number",
+          "type": "integer"
+        },
+        "repository": {
+          "$ref": "#/$defs/RepositoryRef"
+        },
+        "status": {
+          "$ref": "#/$defs/ChangeRequestStatus"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "repository",
+        "number",
+        "status"
+      ],
+      "title": "ChangeRequestRef",
+      "type": "object"
+    },
+    "ChangeRequestStatus": {
+      "description": "Status of a change request in core terms (ADR-019 p.2).",
+      "enum": [
+        "draft",
+        "open",
+        "merged",
+        "closed"
+      ],
+      "title": "ChangeRequestStatus",
+      "type": "string"
+    },
+    "EscalationRule": {
+      "description": "Machine-checkable escalation condition of autonomous implementation (ADR-018 p.5, T-016).\n\n``implementation_contract_unapproved`` is the T-016 precondition gate: an\nunapproved contract never enters implementation. The rest are the ADR-018\np.5 conditions; ``risk_raised_to_r2`` stays a manual assessment until T-080.",
+      "enum": [
+        "implementation_contract_unapproved",
+        "requirements_deficient",
+        "scope_exit",
+        "boundary_change",
+        "new_adr_proposal",
+        "risk_raised_to_r2",
+        "unrecoverable_gate_failure",
+        "autonomy_budget_exhausted",
+        "ui_unverifiable",
+        "irreversible_operation"
+      ],
+      "title": "EscalationRule",
+      "type": "string"
+    },
+    "EscalationViolation": {
+      "description": "One triggered escalation condition with human-readable diagnostics.\n\nProduced by the deterministic checks of\n``dark_factory.orchestration.policy`` and transported to the flow on\n``StageResult.escalations``: a declared violation vetoes autonomous\ncontinuation and stops the flow in ``Blocked``. ``manual_assessment``\nmarks conditions the machine cannot fully verify yet \u2014 the raise of the\nrisk class to R2+ stays manual until T-080 (ADR-018 p.5).",
+      "properties": {
+        "manual_assessment": {
+          "default": false,
+          "title": "Manual Assessment",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "rule": {
+          "$ref": "#/$defs/EscalationRule"
+        }
+      },
+      "required": [
+        "rule",
+        "reason"
+      ],
+      "title": "EscalationViolation",
+      "type": "object"
+    },
+    "Evidence": {
+      "description": "Proof attached to a result: URI + checksum in run records (ADR-015 p.4).\n\n``required``/``available`` back the completion invariant of ADR-009 p.9:\na successful terminal status is forbidden while required evidence is\nunavailable.",
+      "properties": {
+        "available": {
+          "default": true,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "checksum": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checksum"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "produced_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Produced At"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "type": {
+          "$ref": "#/$defs/EvidenceType"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "uri"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "EvidenceType": {
+      "description": "Kind of evidence attached to a result.",
+      "enum": [
+        "log",
+        "report",
+        "screenshot",
+        "sbom",
+        "spec",
+        "diff",
+        "test_results",
+        "deployment",
+        "smoke",
+        "other"
+      ],
+      "title": "EvidenceType",
+      "type": "string"
+    },
+    "ExecuteStageAction": {
+      "description": "Proceed to the next stage of the route.",
+      "properties": {
+        "next_stage": {
+          "$ref": "#/$defs/Stage"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "type": {
+          "const": "execute_stage",
+          "default": "execute_stage",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "next_stage"
+      ],
+      "title": "ExecuteStageAction",
+      "type": "object"
+    },
+    "Finding": {
+      "description": "Structured review finding: id, origin, severity, file/line, reviewed SHA, action, status.\n\n``confidence`` is the producer's self-assessed certainty (0.0-1.0); agent\nfindings carry it, human and CI findings may leave it unset. It documents\nthe judgment, it never changes the blocking weight \u2014 the gate weighs\nseverity and status (FR-006, T-013).",
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "evidence_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "origin": {
+          "$ref": "#/$defs/FindingOrigin"
+        },
+        "required_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Action"
+        },
+        "reviewed_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewed Sha"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Role"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverity"
+        },
+        "status": {
+          "$ref": "#/$defs/FindingStatus"
+        }
+      },
+      "required": [
+        "id",
+        "origin",
+        "severity",
+        "status"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "FindingOrigin": {
+      "description": "Who produced a finding.",
+      "enum": [
+        "agent",
+        "human",
+        "ci"
+      ],
+      "title": "FindingOrigin",
+      "type": "string"
+    },
+    "FindingSeverity": {
+      "description": "Severity of a review finding.",
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "info"
+      ],
+      "title": "FindingSeverity",
+      "type": "string"
+    },
+    "FindingStatus": {
+      "description": "Lifecycle status of a finding.",
+      "enum": [
+        "open",
+        "resolved",
+        "waived",
+        "obsolete"
+      ],
+      "title": "FindingStatus",
+      "type": "string"
+    },
+    "Gate": {
+      "description": "MVP gates (vision 3.9): Specification, Planning, Code, UI, Review, Verification, Release.",
+      "enum": [
+        "specification",
+        "planning",
+        "code",
+        "ui",
+        "review",
+        "verification",
+        "release"
+      ],
+      "title": "Gate",
+      "type": "string"
+    },
+    "GateResult": {
+      "description": "Result of one gate, evaluated against the final SHA (ADR-019 p.3).",
+      "properties": {
+        "evidence_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "gate": {
+          "$ref": "#/$defs/Gate"
+        },
+        "sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha"
+        },
+        "status": {
+          "$ref": "#/$defs/GateStatus"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        }
+      },
+      "required": [
+        "gate",
+        "status"
+      ],
+      "title": "GateResult",
+      "type": "object"
+    },
+    "GateStatus": {
+      "description": "Result status of one gate.",
+      "enum": [
+        "pending",
+        "passed",
+        "failed",
+        "skipped"
+      ],
+      "title": "GateStatus",
+      "type": "string"
+    },
+    "MergeAction": {
+      "description": "Merge the change request per merge policy (ADR-011).",
+      "properties": {
+        "change_request": {
+          "$ref": "#/$defs/ChangeRequestRef"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "type": {
+          "const": "merge",
+          "default": "merge",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change_request"
+      ],
+      "title": "MergeAction",
+      "type": "object"
+    },
+    "Provider": {
+      "description": "Source control / CI provider of a repository (ADR-019).",
+      "enum": [
+        "gitlab",
+        "github"
+      ],
+      "title": "Provider",
+      "type": "string"
+    },
+    "ReleaseAction": {
+      "description": "Proceed with release to the target environment (dev in MVP).",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "target_environment": {
+          "default": "dev",
+          "title": "Target Environment",
+          "type": "string"
+        },
+        "type": {
+          "const": "release",
+          "default": "release",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "ReleaseAction",
+      "type": "object"
+    },
+    "RepositoryRef": {
+      "description": "Provider-neutral product repository reference (ADR-019).",
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "slug": {
+          "minLength": 1,
+          "title": "Slug",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "slug"
+      ],
+      "title": "RepositoryRef",
+      "type": "object"
+    },
+    "RequestApprovalAction": {
+      "description": "Wait for a human approval on a gate (ADR-018).",
+      "properties": {
+        "gate": {
+          "$ref": "#/$defs/Gate"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "requested_from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Role"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "const": "request_approval",
+          "default": "request_approval",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gate"
+      ],
+      "title": "RequestApprovalAction",
+      "type": "object"
+    },
+    "ReworkAction": {
+      "description": "Rework round bounded by the rework limit (vision 3.1: at most 3 rounds).",
+      "properties": {
+        "max_rounds": {
+          "minimum": 1,
+          "title": "Max Rounds",
+          "type": "integer"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "round": {
+          "minimum": 1,
+          "title": "Round",
+          "type": "integer"
+        },
+        "type": {
+          "const": "rework",
+          "default": "rework",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "round",
+        "max_rounds",
+        "reason"
+      ],
+      "title": "ReworkAction",
+      "type": "object"
+    },
+    "Role": {
+      "description": "Agent role catalog (ADR-007).",
+      "enum": [
+        "product",
+        "design",
+        "architect",
+        "infrastructure",
+        "security",
+        "develop",
+        "quality",
+        "ci_cd",
+        "operation"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "SchemaVersion": {
+      "const": 1,
+      "type": "integer"
+    },
+    "Stage": {
+      "description": "Factory Flow stages (T-004).\n\nSpecification -> Planning -> Construction -> Review/Verification -> Release.",
+      "enum": [
+        "specification",
+        "planning",
+        "construction",
+        "review_verification",
+        "release"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "StageStatus": {
+      "description": "Lifecycle status of a StageRun.",
+      "enum": [
+        "pending",
+        "in_progress",
+        "waiting",
+        "succeeded",
+        "failed",
+        "blocked",
+        "skipped",
+        "superseded",
+        "canceled"
+      ],
+      "title": "StageStatus",
+      "type": "string"
+    },
+    "StopAction": {
+      "description": "Terminal stop: a stop condition was hit (T-004).",
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/StopOutcome"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "type": {
+          "const": "stop",
+          "default": "stop",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "reason"
+      ],
+      "title": "StopAction",
+      "type": "object"
+    },
+    "StopOutcome": {
+      "description": "Terminal outcome carried by NextAction.stop (stop conditions, T-004).",
+      "enum": [
+        "blocked",
+        "failed",
+        "canceled"
+      ],
+      "title": "StopOutcome",
+      "type": "string"
+    },
+    "Usage": {
+      "description": "Token/cost usage of one agent call or aggregated over a stage.",
+      "properties": {
+        "completion_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Completion Tokens",
+          "type": "integer"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost"
+        },
+        "prompt_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Prompt Tokens",
+          "type": "integer"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    },
+    "WaitForCIAction": {
+      "description": "Wait for an external CI pipeline running against the change request.",
+      "properties": {
+        "change_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeRequestRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "type": {
+          "const": "wait_for_ci",
+          "default": "wait_for_ci",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "WaitForCIAction",
+      "type": "object"
+    },
+    "WaitForInputAction": {
+      "description": "Wait for human input; the StageResult is persisted before the job ends (ADR-006 p.8).",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "type": {
+          "const": "wait_for_input",
+          "default": "wait_for_input",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "WaitForInputAction",
+      "type": "object"
+    }
+  },
+  "description": "Immutable result of a stage attempt (versioned contract, ADR-015 p.3).\n\n``status`` must be a result status, and the result is persisted before any\nexternal wait (ADR-006 p.8).\n\n``escalations`` lists machine-detected escalation conditions for this\nattempt (ADR-018 p.5): the flow stops autonomous progress while any are\ndeclared.",
+  "properties": {
+    "artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "attempt_number": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "change_id": {
+      "minLength": 1,
+      "title": "Change Id",
+      "type": "string"
+    },
+    "escalations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EscalationViolation"
+      },
+      "title": "Escalations",
+      "type": "array"
+    },
+    "evidence": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "findings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "gate_results": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GateResult"
+      },
+      "title": "Gate Results",
+      "type": "array"
+    },
+    "input_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Revision"
+    },
+    "next_action": {
+      "discriminator": {
+        "mapping": {
+          "execute_stage": "#/$defs/ExecuteStageAction",
+          "merge": "#/$defs/MergeAction",
+          "release": "#/$defs/ReleaseAction",
+          "request_approval": "#/$defs/RequestApprovalAction",
+          "rework": "#/$defs/ReworkAction",
+          "stop": "#/$defs/StopAction",
+          "wait_for_ci": "#/$defs/WaitForCIAction",
+          "wait_for_input": "#/$defs/WaitForInputAction"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ExecuteStageAction"
+        },
+        {
+          "$ref": "#/$defs/WaitForInputAction"
+        },
+        {
+          "$ref": "#/$defs/WaitForCIAction"
+        },
+        {
+          "$ref": "#/$defs/ReworkAction"
+        },
+        {
+          "$ref": "#/$defs/RequestApprovalAction"
+        },
+        {
+          "$ref": "#/$defs/MergeAction"
+        },
+        {
+          "$ref": "#/$defs/ReleaseAction"
+        },
+        {
+          "$ref": "#/$defs/StopAction"
+        }
+      ],
+      "title": "Next Action"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "default": 1
+    },
+    "stage": {
+      "$ref": "#/$defs/Stage"
+    },
+    "status": {
+      "$ref": "#/$defs/StageStatus"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Usage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "stage",
+    "run_id",
+    "change_id",
+    "status",
+    "next_action"
+  ],
+  "title": "StageResult",
+  "type": "object"
+}

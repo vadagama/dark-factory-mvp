@@ -1,9 +1,18 @@
-"""Execution layer of the factory core (HLD §7).
+"""Run-record index published into the ``dark-factory-runs`` repository (T-061).
 
-Today the layer holds the run-record index of T-061: publishing the compact
-immutable evidence index of a run into the ``dark-factory-runs`` repository
-(ADR-015 p.4). Isolated workspaces, command execution and evidence collection
-(``ExecutionPort``, T-012) arrive as providers next to it.
+Single public surface of the package: the store, its models, the layout helpers
+and the screening functions. Layout of the package:
+
+- :mod:`~dark_factory.execution.runs.store` — ``RunRecordStore``: the
+  deterministic, idempotent, immutable writer plus the derived views of a
+  record (usage summary, decisions table);
+- :mod:`~dark_factory.execution.runs.models` — the index models
+  (``RunEvidenceIndex``, ``RunUsageSummary``, ``RunRecordRef``);
+- :mod:`~dark_factory.execution.runs.layout` — partitioning and path safety;
+- :mod:`~dark_factory.execution.runs.sanitize` — secret and size screening;
+- :mod:`~dark_factory.execution.runs.errors` — value-free failures.
+
+The CLI face is ``factory run publish`` (:mod:`dark_factory.cli.runs`).
 """
 
 from dark_factory.execution.runs.errors import (

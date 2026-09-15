@@ -1,0 +1,87 @@
+{
+  "description": "Cross-repository versioning protocol of a run (ADR-015 p.5).\n\nA run record references exact revisions of all inputs; otherwise the run\ncannot be reproduced. Mutable refs are rejected: a value that resolves to\n``latest`` pins nothing, so it must never enter the record.",
+  "properties": {
+    "blueprint_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Blueprint Version"
+    },
+    "factory_commit": {
+      "minLength": 1,
+      "title": "Factory Commit",
+      "type": "string"
+    },
+    "factory_version": {
+      "minLength": 1,
+      "title": "Factory Version",
+      "type": "string"
+    },
+    "gitops_commit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gitops Commit"
+    },
+    "okf_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Okf Revision"
+    },
+    "pack_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pack Name"
+    },
+    "pack_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pack Version"
+    },
+    "product_commit": {
+      "minLength": 1,
+      "title": "Product Commit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "factory_version",
+    "factory_commit",
+    "product_commit"
+  ],
+  "title": "RunManifest",
+  "type": "object"
+}

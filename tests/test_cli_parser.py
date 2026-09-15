@@ -18,6 +18,7 @@ from dark_factory.cli.main import (
     ReconcileArgs,
     ReleaseVerifyArgs,
     ResumeNextAction,
+    RunPublishArgs,
     RunStatusArgs,
     StageResumeArgs,
     StageRunArgs,
@@ -113,6 +114,34 @@ def test_stage_resume_accepts_every_next_action_value(next_action: str) -> None:
 def test_run_status_parses_options() -> None:
     args = parse_command(["run", "status", "--run-id", "run_01H", "--json"])
     assert args == RunStatusArgs(run_id="run_01H", json_output=True)
+
+
+def test_run_publish_parses_options() -> None:
+    assert parse_command(
+        [
+            "run",
+            "publish",
+            "--record",
+            "evidence/run_01H/run_record.json",
+        ]
+    ) == RunPublishArgs(
+        record="evidence/run_01H/run_record.json", runs_root=None, json_output=False
+    )
+    assert parse_command(
+        [
+            "run",
+            "publish",
+            "--record",
+            "evidence/run_01H/run_record.json",
+            "--runs-root",
+            "dark-factory-runs",
+            "--json",
+        ]
+    ) == RunPublishArgs(
+        record="evidence/run_01H/run_record.json",
+        runs_root="dark-factory-runs",
+        json_output=True,
+    )
 
 
 def test_reconcile_and_doctor_parse_options() -> None:
@@ -258,6 +287,7 @@ def test_release_verify_defaults() -> None:
         ["stage", "resume"],
         ["stage", "resume", "--run-id", "run_01H"],
         ["run", "status"],
+        ["run", "publish"],
         ["outbox", "replay"],
         ["outbox", "replay", "--consumer", "tracker"],
         ["outbox", "skip"],
@@ -293,6 +323,7 @@ def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
         ["stage", "resume", "--help"],
         ["run", "--help"],
         ["run", "status", "--help"],
+        ["run", "publish", "--help"],
         ["reconcile", "--help"],
         ["outbox", "--help"],
         ["outbox", "dispatch", "--help"],
