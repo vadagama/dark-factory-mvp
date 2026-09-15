@@ -2,149 +2,116 @@
 
 **Исходники:** [`src/dark_factory/ports/`](../../src/dark_factory/ports/)
 
-**Реализации для тестов:** [`src/dark_factory/adapters/fakes/`](../../src/dark_factory/adapters/fakes/)
+**Реализации:** тесты — [`adapters/fakes/`](../../src/dark_factory/adapters/fakes/); продакшн — [`scm/github/`](../../src/dark_factory/adapters/scm/github/), [`harness/`](../../src/dark_factory/adapters/harness/), [`context/sdd/`](../../src/dark_factory/context/sdd/)
 
 ## 1. Зачем нужны порты
 
-Factory Core следует Ports & Adapters: ядро знает **что** ему нужно от внешнего мира, но не знает **как** конкретный провайдер это делает.
+Factory Core следует Ports & Adapters: ядро знает **что** ему нужно от внешнего мира, но не знает **как** конкретный провайдер это делает. Слой фиксирует четырнадцать runtime-checkable Protocol, их DTO и нормализованные ошибки.
 
 ```mermaid
 flowchart TB
     subgraph Core["Factory Core"]
         FLOW["Flow / application services"]
         PORTS["dark_factory.ports\nProtocol + DTO + errors"]
-        DOMAIN["dark_factory.changes"]
+        DOMAIN["dark_factory.changes\n+ dark_factory.context"]
         FLOW --> PORTS
         PORTS --> DOMAIN
     end
-
     subgraph Adapters["Adapters"]
-        SCM["SCM adapter"]
-        HARNESS["Harness adapter"]
-        TRACKER["Tracker adapter"]
-        ARTIFACTS["Artifact adapter"]
-        TELEMETRY["Telemetry adapter"]
-        WORKFLOW["Workflow adapter"]
-        EVENTS["Event adapter"]
+        SCM["SCM: github\nrepo + MR + pipeline"]
+        CIA["CI: GitHub Actions"]
+        HARNESS["Harness: PydanticAI"]
+        TRACKER["Tracker: Plane"]
+        ARTIFACTS["Artifacts + Telemetry"]
+        WORKFLOW["Workflow + Events\nworkflow-core, outbox"]
+        KNOWLEDGE["Knowledge: sources"]
+        EXECUTION["Execution: workspaces"]
+        SDDAD["SDD: context/sdd"]
     end
-
     SCM --> PORTS
+    CIA --> PORTS
     HARNESS --> PORTS
     TRACKER --> PORTS
     ARTIFACTS --> PORTS
-    TELEMETRY --> PORTS
     WORKFLOW --> PORTS
-    EVENTS --> PORTS
-
-    SCM --> PROVIDER["GitHub / GitLab"]
-    HARNESS --> AI["PydanticAI / future harness"]
-    TRACKER --> PLANE["Plane"]
-    ARTIFACTS --> STORE["CI artifacts / S3 / MinIO"]
-    TELEMETRY --> OTLP["OTLP"]
-    WORKFLOW --> ENGINE["workflow-core / future Temporal"]
-    EVENTS --> PG["PostgreSQL outbox"]
+    KNOWLEDGE --> PORTS
+    EXECUTION --> PORTS
+    SDDAD -.->|"структурно, без импорта"| PORTS
 ```
 
-Правила зависимостей:
+Правила зависимостей (проверяются `tests/test_import_boundaries.py`): core не импортирует `dark_factory.adapters` (правило A) и SDK провайдеров (правило C: `pydantic_ai`, `githubkit`, `gitlab`, `plane`, `kubernetes`, `boto3`, `minio`…); адаптеры импортируют контракты только через единый фасад `dark_factory.ports` (правило B); GitHub PR и GitLab MR представлены одним `ChangeRequestRef`, и второй адаптер проходит ту же contract-test suite; все state-changing операции принимают `idempotency_key`, один run исполняется ровно в одном провайдере.
 
-- core не импортирует `dark_factory.adapters`;
-- адаптеры импортируют контракты через единый фасад `dark_factory.ports`;
-- provider SDK-типы не должны попадать в core contract;
-- GitHub PR и GitLab MR представлены одним `ChangeRequestRef`;
-- второй адаптер реализует тот же Protocol и проходит ту же contract-test suite.
-
-`ports/__init__.py` реэкспортирует Protocol, DTO, ошибки и доменные типы из сигнатур, чтобы адаптерам не требовалось импортировать внутренние пакеты ядра.
+`ports/__init__.py` реэкспортирует Protocol, DTO, ошибки и доменные типы из сигнатур: из `dark_factory.changes` (`Stage`, `Gate`, `RunStatus`, `GateResult`, `Usage`…) и из `dark_factory.context` (`ContextBundle`, `build_bundle`, `ChangeSet`, `RequirementsSnapshot`, ошибки SDD) — адаптерам не требуется импортировать внутренние пакеты ядра. Единственное исключение — адаптеры `context.sdd`, которые намеренно не импортируют `dark_factory.ports`: фасад сам реэкспортирует их ошибки (раздел 5).
 
 ## 2. Состав каталога
 
 | Файл | Назначение |
 |---|---|
-| `protocols.py` | Десять runtime-checkable Protocol |
+| `protocols.py` | Четырнадцать runtime-checkable Protocol |
 | `agents.py` | Версионированные `TaskEnvelope`, `AgentResult` |
-| `common.py` | Общие provider-neutral DTO |
-| `reconciliation.py` | Desired/observed/result reconcile |
-| `events.py` | Типы событий и immutable event envelope |
-| `errors.py` | Нормализованные port-level ошибки |
-| `__init__.py` | Публичный фасад слоя |
+| `common.py` | Общие provider-neutral DTO и функция `stage_gate()` |
+| `context.py` | DTO для `KnowledgePort`/`ExecutionPort` (T-012) |
+| `reconciliation.py` / `events.py` | Desired/observed/result reconcile; типы событий и immutable event envelope |
+| `errors.py` / `__init__.py` | Нормализованные port-level ошибки; публичный фасад слоя |
 
 Все Protocol помечены `@runtime_checkable`: structural compatibility можно проверить через `isinstance(adapter, Port)`. Это не заменяет поведенческие contract tests.
 
 ## 3. Каталог портов
 
-### 3.1. `RepositoryPort`
-
-Операции с ветками и ревизиями продукта.
+### 3.1. Source control: `RepositoryPort`, `MergeRequestPort`, `PipelinePort`
 
 ```python
 get_revision(repository, ref) -> str
 ensure_branch(repository, branch, *, from_revision, idempotency_key) -> str
-```
-
-- `get_revision` возвращает SHA/revision ref;
-- `ensure_branch` идемпотентно обеспечивает ветку от заданной revision и возвращает head.
-
-Изменяющая операция принимает `idempotency_key`, чтобы replay job не создавал второй эффект.
-
-### 3.2. `MergeRequestPort`
-
-Жизненный цикл provider-neutral change request.
-
-```python
+# --- MergeRequestPort ---
 open(request, *, idempotency_key) -> ChangeRequestRef
 find_existing(repository, change_id) -> ChangeRequestRef | None
 add_comment(cr, body, *, idempotency_key) -> None
 merge(cr, *, expected_sha, idempotency_key) -> None
+# --- PipelinePort ---
+status(repository, ref) -> PipelineStatus
 ```
 
-`OpenChangeRequest` содержит repository, factory `change_id`, source/target branches, title/description и `head_sha`.
-
-Безопасный merge требует `expected_sha`: если head изменился, адаптер должен отказать с `HeadMismatchError`, не выполняя merge.
+`get_revision` возвращает SHA/revision ref; `ensure_branch` идемпотентно обеспечивает ветку от заданной revision и возвращает head. `OpenChangeRequest` содержит repository, factory `change_id`, source/target branches, title/description и `head_sha`; `change_id` — ключ дедупликации через `find_existing`. Безопасный merge требует `expected_sha`: при другом head адаптер отказывает с `HeadMismatchError`, не выполняя merge. `PipelinePort` наблюдает CI pipeline; документированный словарь статусов — `queued | in_progress | success | failure | canceled`, но поле имеет тип `str`, поэтому DTO сам этот набор не валидирует.
 
 ```mermaid
 sequenceDiagram
     participant Core
-    participant Repo as RepositoryPort
-    participant CR as MergeRequestPort
-    participant Provider
-
-    Core->>Repo: ensure_branch(..., idempotency_key)
-    Repo->>Provider: ensure branch
-    Provider-->>Repo: provider response
-    Repo-->>Core: head SHA
-    Core->>CR: find_existing(repository, change_id)
-    alt Change request отсутствует
-        Core->>CR: open(request, idempotency_key)
-        CR->>Provider: create PR or MR
-        Provider-->>CR: provider reference
-        CR-->>Core: ChangeRequestRef
-    else уже существует
-        CR-->>Core: existing ChangeRequestRef
+    participant SCM as SCM adapter
+    Core->>SCM: find_existing(repository, change_id)
+    alt отсутствует
+        Core->>SCM: open(request, idempotency_key)
     end
-    Core->>CR: merge(cr, expected_sha, idempotency_key)
+    SCM-->>Core: ChangeRequestRef
+    Core->>SCM: merge(cr, expected_sha, idempotency_key)
     alt head изменился
-        CR-->>Core: HeadMismatchError
+        SCM-->>Core: HeadMismatchError
     else head совпадает
-        CR->>Provider: merge
-        Provider-->>CR: provider response
-        CR-->>Core: success
+        SCM-->>Core: merge выполнен
     end
 ```
 
-### 3.3. `PipelinePort`
+### 3.2. `CIPort`
 
 ```python
-status(repository, ref) -> PipelineStatus
+run_stage_job(request, *, idempotency_key) -> str
+gate_status(job_ref) -> GateResult
+artifacts(job_ref) -> list[ArtifactRef]
 ```
 
-Наблюдает CI pipeline. `PipelineStatus` содержит ref, строковый status и optional URL. Документированный словарь:
+Диспетчеризация CI-задания стадии, наблюдение его gate-результата и сбор артефактов (ADR-019 p.3). `StageJobRequest` содержит repository, `stage` (строка) и `ref` — ветку или SHA, на которых задание исполняется. Гейт задания — базовый гейт стадии из `stage_gate()`:
 
-```text
-queued | in_progress | success | failure | canceled
-```
+| Stage | Базовый гейт CI-задания |
+|---|---|
+| `specification` | Specification |
+| `planning` | Planning |
+| `construction` | Code |
+| `review_verification` | Verification |
+| `release` | Release |
 
-Поле имеет тип `str`, поэтому DTO сам не валидирует этот закрытый набор; адаптер и contract tests обязаны его соблюдать.
+`stage_gate(stage)` принимает строку и валидирует её через `Stage(stage)`; неизвестная стадия — `ValueError`. Полная route-политика гейтов остаётся в `rules/gates.py`: маршрут добавляет гейты, которые CI-задание не оценивает (например, UI). Адаптеры: `FakeCI` (идемпотентен по ключу — replay возвращает job ref первого вызова; незасеянное задание сообщает `pending`) и `GitHubCI`.
 
-### 3.4. `TrackerPort`
+### 3.3. `TrackerPort`
 
 ```python
 get_change(external_ref) -> Change | None
@@ -152,64 +119,44 @@ publish_status(change_id, status, *, idempotency_key) -> None
 request_approval(change_id, gate, *, idempotency_key) -> None
 ```
 
-Интеграция с внешним tracker. По контракту недоступность tracker не должна блокировать CLI/Console, однако отдельного result/error-типа для degraded режима пока нет.
+Интеграция с внешним tracker (Plane, ADR-013). По контракту недоступность tracker не должна блокировать CLI/Console (FR-020); отдельного result/error-типа для degraded режима пока нет.
 
-### 3.5. `HarnessPort`
+### 3.4. `HarnessPort`
 
 ```python
 run_stage(envelope) -> AgentResult
 health() -> HealthStatus
 ```
 
-Единственная граница выполнения агентной работы. Детерминированные шаги стадии должны обходить harness.
+Единственная граница выполнения агентной работы; детерминированные шаги стадии должны обходить harness. Конверт закрепляет роль, скилл и снимок `ContextBundle` (раздел 4.1); пайплайн профилей живёт в `dark_factory.agents`. Продакшн-адаптер — `PydanticAIHarness`; его типы не просачиваются в core.
 
-Первый адаптер — PydanticAI, но его типы и API не должны просачиваться в core.
-
-### 3.6. `ArtifactStorePort`
+### 3.5. `ArtifactStorePort` и `TelemetryPort`
 
 ```python
 put(spec) -> ArtifactRef
 get(ref) -> bytes
 exists(ref) -> bool
+# --- TelemetryPort ---
+span(name, **attributes: str) -> AbstractContextManager[Span]
+record_usage(usage, **attributes: str) -> None
 ```
 
-Хранилище тяжёлой evidence. `ArtifactSpec` содержит type, name, bytes и optional producer.
+`ArtifactStorePort` — хранилище тяжёлой evidence; `ArtifactSpec` содержит `artifact_type`, `name`, `content: bytes` и optional `producer`. У `put()` нет отдельного idempotency key: fake использует content-addressing по SHA-256, production adapter обязан сохранить эквивалентную повторяемую семантику.
 
-У `put()` нет отдельного idempotency key: fake использует content-addressing по SHA-256. Production adapter должен сохранить эквивалентную повторяемую семантику.
+`TelemetryPort` — единственный синхронный порт; поддерживает корреляцию `change → run → stage → agent → tool`, атрибуты типизированы строками. Минимальный `Span` — context manager; T-060 заменит его OTel-реализацией за тем же контрактом.
 
-### 3.7. `TelemetryPort`
-
-```python
-span(name, **attributes) -> AbstractContextManager[Span]
-record_usage(usage, **attributes) -> None
-```
-
-Единственный синхронный порт. Поддерживает корреляцию `change → run → stage → agent → tool`.
-
-Минимальный `Span` — context manager. T-060 заменит его OTel-реализацией за тем же контрактом.
-
-### 3.8. `WorkflowEnginePort`
+### 3.6. `WorkflowEnginePort` и `ReconciliationService`
 
 ```python
 start(*, idempotency_key, expected_revision=None) -> str
 resume(run_id, *, idempotency_key) -> str
 cancel(run_id, *, idempotency_key, reason) -> None
 get_status(run_id) -> RunStatus
-```
-
-Управляет жизненным циклом execution substrate. Это не `state/engine.py` и не `flow.apply_result()`:
-
-- WorkflowEngine запускает/resume/cancel наблюдаемое исполнение;
-- Flow вычисляет доменный переход;
-- state store хранит authoritative desired state.
-
-### 3.9. `ReconciliationService`
-
-```python
+# --- ReconciliationService ---
 reconcile(*, desired, observed) -> ReconcileResult
 ```
 
-Отделён от workflow engine, потому что разные engines требуют разной recovery logic.
+Управляет жизненным циклом execution substrate; это не `state/engine.py` и не `flow.apply_result()`: engine запускает/resume/cancel наблюдаемое исполнение, Flow вычисляет доменный переход, state store хранит authoritative desired state. Reconciliation отделён от engine, потому что разные engines требуют разной recovery logic.
 
 ```mermaid
 sequenceDiagram
@@ -217,175 +164,186 @@ sequenceDiagram
     participant PG as PostgreSQL
     participant Engine as WorkflowEnginePort
     participant Reconcile as ReconciliationService
-
-    Cron->>PG: read desired status + revision
+    Cron->>PG: desired + revision
     PG-->>Cron: ReconcileDesired
     Cron->>Engine: get_status(run_id)
-    Engine-->>Cron: observed status
+    Engine-->>Cron: observed
     Cron->>Reconcile: reconcile(desired, observed)
     Reconcile-->>Cron: ReconcileResult
-    alt drift
-        Cron->>Cron: применить corrective action\nв пользу PostgreSQL
-    else in sync
-        Cron->>Cron: no-op
-    end
+    Note over Cron: drift: corrective action в пользу PostgreSQL. In sync: no-op
 ```
 
-`ReconcileObserved.state_revision` optional: не каждый engine сообщает revision. `ReconcileResult` всегда несёт authoritative desired status/revision.
+`ReconcileObserved.state_revision` optional: не каждый engine сообщает revision; `ReconcileResult` всегда несёт authoritative desired status/revision.
 
-### 3.10. `EventPublisherPort`
+### 3.7. `EventPublisherPort`
 
 ```python
 publish(event) -> None
 ```
 
-Отделяет producer-а события от транспорта/outbox tables. `DomainEvent` уже содержит `event_id`, поэтому именно он служит ключом дедупликации.
+Отделяет producer-а события от транспорта/outbox tables; `DomainEvent` уже содержит `event_id` — он служит ключом дедупликации. Атомарность `state + event` — обязанность adapter/application transaction; она не выражена параметром Python-метода.
 
-Важно: атомарность `state + event` — обязанность adapter/application transaction; она не выражена параметром Python-метода.
+### 3.8. `KnowledgePort`, `ExecutionPort`, `SDDPort`
+
+```python
+collect(request) -> ContextBundle
+# --- ExecutionPort ---
+prepare_workspace(request, *, idempotency_key) -> WorkspaceHandle
+run_command(workspace, argv, *, idempotency_key) -> ExecutionResult
+collect_evidence(workspace, path, *, idempotency_key) -> EvidenceFile
+# --- SDDPort ---
+create_change(change) -> str
+read_requirements(change_id) -> RequirementsSnapshot
+apply_delta(change_id, *, expected_revision) -> str
+```
+
+`KnowledgePort` собирает источники контекста изменения в версионированный `ContextBundle` (T-012, FR-001); вход — `ContextRequest(change_id, run_id)`. Порт сознательно минимален: поиск и traversal источников придут вместе с реальными source providers, не раньше (YAGNI). В P0 реализация — `FakeKnowledge`: seed-хранилище, sha256 по содержимому, фиксированный `retrieved_at`; пустой bundle — валидный детерминированный результат, а не ошибка. `ExecutionPort` — изолированный worktree от закреплённой ревизии, исполнение команд и сбор evidence (T-012): `prepare_workspace` идемпотентен по ключу (replay возвращает тот же handle, FR-017), `collect_evidence` возвращает файл с sha256-хешем содержимого. В P0 реализация — `FakeExecution` (результат команды детерминирован по `argv`, evidence из seed-файлов); реальный worktree-адаптер появится позже.
+
+`SDDPort` — жизненный цикл ChangeSet над product baseline, Native SDD Core (ADR-020 p.8). Адаптеры: `NativeChangeSetAdapter` (основной), `SpecKitAdapter` (bootstrap-импорт legacy-артефактов `specs/`), `OpenSpecAdapter` (compatibility import/export). Все три реализуют Protocol **структурно** из `dark_factory.context.sdd` и не импортируют `dark_factory.ports` — runtime-checkable валидация работает и без этого импорта. `apply_delta` оптимистична: `expected_revision` закрепляет baseline, расхождение — `BaselineMismatchError` с expected/actual.
 
 ## 4. DTO
 
 ### 4.1. Agent contract
 
-`TaskEnvelope` и `AgentResult`:
+| Контракт | Поля |
+|---|---|
+| `TaskEnvelope` | `schema_version = 1`, `change_id`, `run_id`, `stage`, `role`, `instruction`, `skill_id?`, `bundle_hash?` |
+| `AgentResult` | `schema_version = 1`, `ok`, `output = ""`, `usage?` |
 
-- immutable (`frozen=True`);
-- имеют `schema_version = 1`;
-- добавление optional/compatible полей допустимо;
-- breaking change требует новой schema version.
+Оба immutable (`frozen=True`) pydantic-модели с `AGENTS_SCHEMA_VERSION = 1` (`AgentSchemaVersion = Literal[1]`): добавление optional-полей сохраняет версию, breaking change требует новой. T-011 добавил `skill_id` и `bundle_hash` аддитивно (ADR-007): конверт закрепляет роль, скилл и снимок `ContextBundle` (FR-001); минимальные envelope остаются валидными.
 
-```mermaid
-classDiagram
-    class TaskEnvelope {
-        schema_version = 1
-        change_id
-        run_id
-        stage
-        role
-        instruction
-    }
-    class AgentResult {
-        schema_version = 1
-        ok
-        output
-        usage
-    }
-    class HarnessPort {
-        <<Protocol>>
-        run_stage(TaskEnvelope) AgentResult
-        health() HealthStatus
-    }
-    HarnessPort ..> TaskEnvelope
-    HarnessPort ..> AgentResult
-```
-
-### 4.2. Common DTO
+### 4.2. Common и context DTO
 
 | DTO | Поля |
 |---|---|
-| `HealthStatus` | `healthy`, optional detail |
-| `PipelineStatus` | ref, status, optional URL |
-| `OpenChangeRequest` | repository, change ID, branches, title, description, head SHA |
-| `ArtifactSpec` | type, name, bytes, producer |
-| `Span` | name и mutable attributes |
+| `HealthStatus` (dataclass) | `healthy`, optional `detail` |
+| `PipelineStatus` (dataclass) | `ref`, `status`, optional `url` |
+| `OpenChangeRequest` | repository, change_id, source/target branches, title, description?, head_sha |
+| `StageJobRequest` | repository, `stage: str`, `ref` |
+| `ArtifactSpec` | `artifact_type`, `name`, `content: bytes`, producer? |
+| `Span` (dataclass) | `name`, mutable `attributes: dict[str, str]` |
+| `ContextRequest` | `change_id`, `run_id` |
+| `WorkspaceRequest` | `repository: RepositoryRef`, `revision`, `change_id` |
+| `WorkspaceHandle` | `workspace_id`, `repository`, `revision` |
+| `ExecutionResult` | `ok`, `exit_code`, `stdout = ""`, `stderr = ""` |
+| `EvidenceFile` | `path`, `content_hash` (sha256), `content: bytes` |
 
-### 4.3. Reconciliation DTO
+`HealthStatus`, `PipelineStatus`, `Span` — dataclasses (первые два frozen), остальные — frozen pydantic-модели; `Span` совместим с `with port.span(...) as span:` и на `__exit__` ничего не записывает; context-DTO живут в `ports/context.py` и обслуживают `KnowledgePort`/`ExecutionPort`.
 
-Все immutable:
+### 4.3. `ContextBundle`
 
-- `ReconcileDesired(run_id, status, state_revision)`;
-- `ReconcileObserved(run_id, status, state_revision?)`;
-- `ReconcileResult(run_id, in_sync, status, state_revision)`.
+Доменный тип из `dark_factory.context.bundle`, реэкспортируемый фасадом: `ContextSource(kind, location, revision?, content_hash, retrieved_at)`; `SourceKind`: `repo`, `spec`, `constitution`, `adr`, `engineering_pack`, `evidence` — один `spec` закрывает `specs/` до T-020 и `openspec/` после, их различает `location`; сам `ContextBundle(schema_version = 1, change_id, run_id, sources: tuple, bundle_hash)`.
 
-### 4.4. Event envelope
+`build_bundle(*, change_id, run_id, sources)`: отвергает точный дубликат — совпадение identity `(kind, location, revision, content_hash)` даже при другом `retrieved_at` — как `ValueError`, а не молчаливое слияние; нормализует `sources` в канонический порядок; считает `bundle_hash` как sha256 канонической сериализации отсортированных identity, `retrieved_at` в hash не входит. Равные входы всегда дают равный bundle — воспроизводимость DoD T-012.
 
-`DomainEvent` содержит:
+### 4.4. Reconciliation и SDD DTO
 
-- event ID/type/version/time;
-- change/run/stage;
-- aggregate ID/version;
-- correlation/causation IDs;
-- artifact refs;
-- payload.
+- `ReconcileDesired(run_id, status, state_revision)`, `ReconcileObserved(run_id, status, state_revision?)`, `ReconcileResult(run_id, in_sync, status, state_revision)` — все immutable;
+- `ChangeSet` (из `context.sdd.normalized`) — агрегат: `manifest` плюс опциональные `delta`, `documents`, `tasks`, `verification`, `evidence`, `reconciliation`;
+- `RequirementsSnapshot(change_id, baseline_revision, requirements)` — результат `read_requirements`; каждая `RequirementEntry` несёт `id`, `operation` и опциональные `artifact`/`superseded_by`.
 
-Ordering гарантируется не глобально, а только внутри одного `aggregate_id` через outbox sequence. Разные aggregates одного run общего порядка не имеют.
+### 4.5. Event envelope
+
+`DomainEvent` содержит event ID/type/version/time; change/run/stage; aggregate ID/version; correlation/causation IDs; artifact refs; payload. `EventType` (девять значений): `change.intaken`, `run.started`, `run.stage_completed`, `run.status_changed`, `gate.evaluated`, `approval.recorded`, `merge.completed`, `release.completed`, `usage.recorded`. Ordering гарантируется не глобально, а только внутри одного `aggregate_id` через outbox sequence — разные aggregates одного run общего порядка не имеют.
 
 ## 5. Ошибки
 
-Текущая нормализованная иерархия:
+Текущие иерархии (GitHub-адаптер дополняет PortError-иерархию собственным `GitHubAPIError`):
 
 ```text
 RuntimeError
 └── PortError
     ├── HeadMismatchError
-    └── RunNotFoundError
+    ├── RunNotFoundError
+    └── GitHubAPIError          (только adapters/scm/github/client.py)
+
+Exception
+└── SDDError                    (dark_factory/context/sdd/errors.py)
+    ├── ChangeNotFoundError
+    ├── BaselineMismatchError
+    ├── MissingArtifactError
+    └── FrontmatterError
 ```
 
 | Ошибка | Значение |
 |---|---|
 | `HeadMismatchError` | Merge запросил устаревший expected SHA |
 | `RunNotFoundError` | Workflow engine не знает run ID |
+| `ChangeNotFoundError` | Нет ChangeSet с запрошенным id под factory root |
+| `BaselineMismatchError` | Baseline на диске не совпал с ожидаемой ревизией; несёт expected/actual |
 
-Общих типов для unavailable, timeout, authentication, rate limit и generic not found пока нет. Fake adapters в некоторых случаях выбрасывают built-in `KeyError`/`ValueError`; production-код не должен предполагать более широкий нормализованный контракт, чем объявлено в `errors.py`.
+Фасад реэкспортирует только `ChangeNotFoundError` и `BaselineMismatchError`; иерархия SDD порождается от `Exception` напрямую, потому что адаптеры `context.sdd` не импортируют `dark_factory.ports` (раздел 1). Общих типов для unavailable, timeout, authentication, rate limit и generic not found пока нет. Fake adapters в ряде случаев выбрасывают built-in `KeyError`/`ValueError`; production-код не должен предполагать более широкий нормализованный контракт, чем объявлен в `errors.py`.
 
 ## 6. Идемпотентность
 
-State-changing операции используют один из трёх механизмов:
+State-changing операции используют один из четырёх механизмов:
 
 | Механизм | Где применяется |
 |---|---|
-| Явный `idempotency_key` | branch, CR, comment, tracker update, workflow start/resume/cancel |
+| Явный `idempotency_key` | branch, CR, comment, tracker update, CI job dispatch, workspace prepare, workflow start/resume/cancel |
 | Content hash | artifact `put` |
+| `expected_revision` | SDD `apply_delta` — optimistic concurrency |
 | `event_id` | event publication |
 
-Порт принимает ключ, но durable effect ledger находится в state/application слое. Сам Protocol не гарантирует хранение ключа между рестартами — это обязанность адаптера.
+`run_command`/`collect_evidence` принимают ключ по контракту, но в P0-фейке остаются детерминированными чтениями без replay ledger. Порт принимает ключ, но durable effect ledger находится в state/application слое; сам Protocol не гарантирует хранение ключа между рестартами — это обязанность адаптера.
 
 ## 7. Правила реализации адаптера
 
 Новый адаптер должен:
 
-1. импортировать публичные типы из `dark_factory.ports`;
+1. импортировать публичные типы из `dark_factory.ports` (исключение — структурные адаптеры `context.sdd`, раздел 3.8);
 2. не возвращать provider SDK objects;
-3. реализовать async/sync семантику сигнатур;
-4. сохранять идемпотентность mutating methods;
-5. нормализовать объявленные ошибки;
-6. выполнять optimistic checks, например `expected_sha`;
-7. пройти общую contract-test suite;
-8. не смешивать два provider-а внутри одного run.
+3. реализовать async/sync семантику сигнатур — все порты, кроме `TelemetryPort`, async;
+4. сохранять идемпотентность mutating methods и нормализовать объявленные ошибки;
+5. выполнять optimistic checks, например `expected_sha` или `expected_revision`;
+6. пройти общую contract-test suite;
+7. не смешивать два provider-а внутри одного run.
 
 ## 8. Текущее и целевое состояние
 
-В HLD `SourceControlPort` — логическая группа возможностей. В коде она разложена на три независимых Protocol:
-
-- `RepositoryPort`;
-- `MergeRequestPort`;
-- `PipelinePort`.
-
-`CIPort` и `SDDPort`, перечисленные в целевой архитектуре, в текущем `ports/` ещё не реализованы и относятся к следующим задачам плана.
-
-Концептуальные сигнатуры в старых ADR могут отличаться от текущего `protocols.py`. Для реализации source of truth — текущий Python contract и contract tests; ADR объясняет архитектурный intent.
+В HLD `SourceControlPort` — логическая группа возможностей; в коде она разложена на три независимых Protocol (`RepositoryPort`, `MergeRequestPort`, `PipelinePort`), а исполнение CI-заданий вынесено в отдельный `CIPort`. `CIPort` и `SDDPort`, ранее относившиеся к следующим задачам плана, теперь формализованы и реализованы: `CIPort` — `FakeCI` и `GitHubCI`; `SDDPort` — адаптеры `context.sdd`. `KnowledgePort` и `ExecutionPort` пока закрыты фейками P0; реальные source providers и worktree-адаптер появятся в следующих задачах. Сигнатуры 1:1 с [`specs/001-dark-factory-mvp/contracts/ports.md`](../../specs/001-dark-factory-mvp/contracts/ports.md); концептуальные сигнатуры в старых ADR могут отличаться от текущего `protocols.py`: для реализации source of truth — текущий Python contract и contract tests, ADR объясняет архитектурный intent.
 
 ## 9. Граничные случаи
 
-- `PipelineStatus.status` не ограничен enum на уровне типа;
-- атомарность `EventPublisherPort.publish()` с state change не выражена сигнатурой;
-- provider exclusivity run-а не выражена в `WorkflowEnginePort`;
-- fencing token отсутствует в `ReconciliationService` contract и обеспечивается state layer;
-- fake reconcile определяет `in_sync` по status, не по revision;
-- error normalization пока неполна;
-- область уникальности `idempotency_key` зависит от конкретной операции/адаптера и должна быть документирована реализацией.
+| Случай | Поведение |
+|---|---|
+| `PipelineStatus.status` | не ограничен enum на уровне типа |
+| `StageJobRequest.stage` | строка, не `Stage`: `stage_gate` кидает `ValueError` на неизвестную стадию |
+| `publish()` вместе с state change | атомарность не выражена сигнатурой |
+| Provider exclusivity run-а | не выражена в `WorkflowEnginePort` |
+| Fencing token | отсутствует в `ReconciliationService`, обеспечивается state layer |
+| Fake reconcile | определяет `in_sync` по status, не по revision |
+| Error normalization | неполна; fakes кидают built-in `KeyError`/`ValueError` |
+| Пустой `ContextBundle` | валидный воспроизводимый результат (`sources == ()`) |
+| Дубликат источника в `build_bundle` | `ValueError`, даже если отличается только `retrieved_at` |
+| `KnowledgePort` | без поиска и traversal — минимальность по YAGNI |
+| `FakeExecution.run_command`/`collect_evidence` | детерминированные чтения, replay ledger не ведётся |
+| Область уникальности `idempotency_key` | зависит от операции/адаптера, документируется реализацией |
 
-## 10. Где искать проверки
+## 10. Связь с другими модулями
 
-- `tests/test_import_boundaries.py` — направление зависимостей;
-- `tests/contract/` — единый поведенческий контракт fake/production adapters;
+| Документ | Связь |
+|---|---|
+| [context.md](context.md) | `ContextBundle`, `ContextSource` и Native SDD Core — доменные типы за `KnowledgePort`/`SDDPort` |
+| [agents.md](agents.md) | Роли, скиллы и профили, которые `TaskEnvelope` передаёт в `HarnessPort` |
+| [orchestration-flow-and-state.md](orchestration-flow-and-state.md) | Application services и state store — потребители портов, outbox, effect ledger |
+
+## 11. Где искать проверки
+
+- `tests/test_import_boundaries.py` — правила A/B/C направления зависимостей;
+- `tests/contract/` — четырнадцать сюит, по одной на каждый Protocol (от `test_repository_port.py` до `test_sdd_port.py`, включая `test_ci_port.py`, `test_knowledge_port.py`, `test_execution_port.py`): единый поведенческий контракт fake/production adapters;
+- `tests/test_agents_contract.py` — версионирование `TaskEnvelope`/`AgentResult`;
+- `tests/test_context_bundle.py` — воспроизводимость, канонический порядок и дубликаты `ContextBundle`;
 - `src/dark_factory/adapters/fakes/` — минимальные эталонные реализации для разработки.
 
-## 11. Связанные решения
+## 12. Связанные решения
 
 - [ADR-002](../adr/ADR-002-python-core-stack.md) — Python/PydanticAI за `HarnessPort`;
-- [ADR-006](../adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) — workflow и reconciliation;
+- [ADR-006](../adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) — workflow, retries, reconciliation;
 - [ADR-008](../adr/ADR-008-plugin-architecture-core-sdk.md) — расширяемость адаптерами;
-- [ADR-015](../adr/ADR-015-repository-boundaries.md) — границы и единый фасад ports;
-- [ADR-016](../adr/ADR-016-postgresql-outbox.md) — event publishing;
-- [ADR-019](../adr/ADR-019-multi-provider-sc-ci-github-first.md) — GitHub/GitLab neutrality.
+- [ADR-013](../adr/ADR-013-plane-tracker-trackerport.md) — Plane за `TrackerPort`;
+- [ADR-015](../adr/ADR-015-repository-boundaries.md) — границы репозиториев и единый фасад ports;
+- [ADR-016](../adr/ADR-016-postgresql-outbox.md) — event publishing через outbox;
+- [ADR-017](../adr/ADR-017-unified-openspec-sdd-factory-profile.md) — единый OpenSpec/SDD-профиль фабрики (bootstrap-адаптеры `SDDPort`);
+- [ADR-019](../adr/ADR-019-multi-provider-sc-ci-github-first.md) — provider-neutral SC/CI, GitHub-first;
+- [ADR-020](../adr/ADR-020-native-sdd-core.md) — Native SDD Core за `SDDPort`.

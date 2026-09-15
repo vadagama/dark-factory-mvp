@@ -8,21 +8,25 @@
 
 `rules/` содержит детерминированные политики, которые отвечают на вопрос: **может ли автономный Flow продолжать работу?**
 
-Подсистема разделена на два файла:
+Подсистема разделена на три файла:
 
 - `gates.py` — обязательные проверки качества для пары route/stage;
-- `limits.py` — пределы rework, токенов, стоимости и времени.
+- `limits.py` — пределы rework, токенов, стоимости и времени;
+- `merge_protection.py` — требования к branch protection провайдера для merge-гейта (T-026, T-032).
 
-Функции не обращаются к БД, CI, часам ОС или внешним API. Время для deadline передаётся явно, поэтому одинаковый вход даёт одинаковый результат.
+Функции не обращаются к БД, CI, часам ОС, сети или внешним API. Время для deadline передаётся явно, наблюдаемые настройки провайдера — готовыми данными, поэтому одинаковый вход даёт одинаковый результат.
 
 ```mermaid
 flowchart LR
     INPUT["Route + Stage + GateResult[]\nBudgetSnapshot + now"] --> GATES["rules/gates.py"]
     INPUT --> LIMITS["rules/limits.py"]
+    OBSERVED["Наблюдаемые настройки\nbranch protection"] --> MP["rules/merge_protection.py"]
     GATES --> FLOW["orchestration/flow.py"]
     LIMITS --> FLOW
-    FLOW -->|"разрешено"| CONTINUE["Следующая стадия / release"]
-    FLOW -->|"нарушение"| BLOCKED["StopAction(blocked)"]
+    MP --> MERGE["orchestration/policy/merge.py\nчерез адаптер провайдера"]
+    MERGE --> FLOW
+    FLOW -->|"разрешено"| CONTINUE["Следующая стадия / merge / release"]
+    FLOW -->|"нарушение"| BLOCKED["StopAction(blocked)\nили wait"]
 ```
 
 ## 2. Gate policy
@@ -83,7 +87,7 @@ flowchart LR
 3. оставляет отсутствующие, `pending` и `failed`;
 4. сортирует результат по строковому `Gate.value`.
 
-Если один гейт проверялся несколько раз, **последний элемент входной последовательности выигрывает**. Timestamp и `GateResult.sha` здесь не сравниваются.
+Если один гейт проверялся несколько раз, **последний элемент входной последовательности выигрывает**: новый SHA инвалидирует прежние прохождения (ADR-009 п.7). Timestamp и `GateResult.sha` здесь не сравниваются — гейты на уровне Flow «SHA-blind», привязку к финальному SHA добавляют merge policy и провайдерская branch protection (см. раздел 4 и [quality.md](quality.md)).
 
 Результаты необязательных гейтов не влияют на решение.
 
@@ -91,7 +95,7 @@ flowchart LR
 
 ### 3.1. `BudgetSnapshot`
 
-Flow использует run-level snapshot:
+Flow использует run-level snapshot (`changes/usage.py`):
 
 | Поле | Default | Назначение |
 |---|---:|---|
@@ -103,13 +107,22 @@ Flow использует run-level snapshot:
 | `cost_used` | `0` | Накопленная стоимость |
 | `deadline` | `None` | Опциональный предельный момент |
 
-По умолчанию включён только rework limit. Остальные лимиты действуют, когда им назначено значение.
+У snapshot есть вычисляемые свойства — `rework_exhausted`, `token_budget_exhausted`, `cost_budget_exhausted`, `rework_rounds_remaining`, — которые и читают правила лимитов. По умолчанию включён только rework limit; остальные лимиты действуют, когда им назначено значение.
 
-### 3.2. Rework
+### 3.2. Нарушения — типизированные
 
-`rework_violation(budget, requested_round)` проверяет:
+Каждое нарушение — frozen-dataclass `LimitViolation` с полями:
 
-1. исчерпан ли run-level счётчик `used_rework_rounds >= max_rework_rounds`;
+| Поле | Тип | Значения |
+|---|---|---|
+| `rule` | `LimitRule` | `rework_limit`, `token_budget`, `cost_budget`, `deadline` |
+| `reason` | `str` | Человекочитаемая диагностика с точными числами |
+
+### 3.3. Rework
+
+`rework_violation(budget, *, requested_round)` проверяет:
+
+1. исчерпан ли run-level счётчик (`budget.rework_exhausted`, то есть `used_rework_rounds >= max_rework_rounds`);
 2. не превышает ли запрошенный номер `requested_round` максимум.
 
 При разрешённом rework Flow увеличивает `used_rework_rounds` на единицу.
@@ -120,9 +133,9 @@ Flow использует run-level snapshot:
 - код не требует, чтобы `requested_round == used_rework_rounds + 1`;
 - token/cost/deadline при rework отдельно не проверяются текущей реализацией.
 
-### 3.3. Продолжение
+### 3.4. Продолжение
 
-`continuation_violations(budget, now)` возвращает все нарушения в стабильном порядке:
+`continuation_violations(budget, *, now)` возвращает все нарушения в стабильном порядке:
 
 1. token budget;
 2. cost budget;
@@ -138,9 +151,47 @@ Flow использует run-level snapshot:
 
 - ровно на token/cost budget продолжение уже запрещено;
 - ровно в момент deadline продолжение ещё разрешено;
-- несколько budget violations объединяются в одну строку через `; `.
+- в Flow несколько нарушений объединяются в одну строку причины через `; `.
 
-## 4. Порядок принятия решения в Flow
+## 4. Merge protection policy
+
+`merge_protection.py` (T-026, T-032) описывает **требования к настройкам branch protection провайдера** — данные, а не сетевые вызовы. Это провайдерская сторона merge policy (GitHub rulesets / GitLab protected branches).
+
+### 4.1. Требуемая политика — `MergeProtectionPolicy`
+
+| Поле | Default | Требование |
+|---|---|---|
+| `protected_branch` | `True` | Целевая ветка отклоняет прямые пушы и force-push |
+| `required_approving_reviews` | `1` | Минимум один approving human review |
+| `required_status_checks` | `True` | Обязательные проверки enforcing на merge, то есть на финальном SHA |
+| `allowed_merge_methods` | `{squash}` | Только squash; объявленный набор исчерпывающий |
+| `dismiss_stale_approvals` | `True` | Новый пуш снимает старые approvals |
+
+`DEFAULT_MERGE_PROTECTION` — константа с этими значениями. Требования — провайдерский аналог version-bound approvals (ADR-009 п.7): новый SHA не должен наследовать одобрения старого.
+
+### 4.2. Наблюдение и проверка
+
+`ObservedBranchProtection` — все поля обязательны: адаптер явно фиксирует, что увидел, а неполное наблюдение не должно выглядеть комплиантным. `protection_violations(observed, *, policy=DEFAULT_MERGE_PROTECTION)` сравнивает наблюдение с политикой и возвращает `list[MergeProtectionViolation]`; пустой список — compliance.
+
+Проверка детерминирована: не более одного нарушения на правило, в фиксированном порядке `MergeProtectionRule`:
+
+1. `branch_not_protected` — ветка не защищена;
+2. `insufficient_required_approvals` — требуемых approvals меньше минимума;
+3. `required_checks_missing` — обязательные проверки не enforced;
+4. `non_squash_merge_allowed` — набор разрешённых методов merge отличается от squash-only;
+5. `stale_approvals_not_dismissed` — stale approvals не снимаются.
+
+```mermaid
+flowchart LR
+    PROVIDER["Адаптер провайдера (T-030)\nGitHub / GitLab"] -->|"ObservedBranchProtection"| CHECK["protection_violations()"]
+    POLICY["MergeProtectionPolicy\n(DEFAULT_MERGE_PROTECTION)"] --> CHECK
+    CHECK -->|"[]"| OK["Compliance: merge policy может полагаться\nна provider-side гарантии"]
+    CHECK -->|"[нарушения]"| FIX["Violations → эскалация/починка\nнастроек провайдера"]
+```
+
+В текущем коде `protection_violations` вызывается только тестами; наблюдаемые настройки должен поставлять адаптер провайдера (T-030). Merge policy в Flow работает поверх: stage-гейты SHA-blind, а гарантии финального SHA дают branch protection плюс version-bound approval.
+
+## 5. Порядок принятия решения в Flow
 
 Гейты и continuation limits проверяются только при продвижении через:
 
@@ -148,14 +199,23 @@ Flow использует run-level snapshot:
 - `MergeAction`;
 - `ReleaseAction`.
 
-Для этих действий `_block_reason()` проверяет:
+Для всех трёх `_block_reason()` проверяет по порядку:
 
-1. обязательные гейты;
-2. token/cost/deadline.
+1. обязательные гейты (`unsatisfied_gates`);
+2. token/cost/deadline (`continuation_violations`).
 
 Если одновременно нарушены гейты и бюджет, наружу возвращается причина по гейтам. Это осознанный приоритет: сначала диагностика качества стадии, затем расхода ресурсов.
 
-Для release после этого отдельно проверяются completion invariants: обязательная evidence должна быть доступна, blocker findings — закрыты.
+Дальше порядок расходится по действиям:
+
+| Действие | После `_block_reason()` |
+|---|---|
+| `execute_stage` | `_escalation_reason(target)`: объявленные эскалации → contract entry gate (при входе в Construction) → autonomy budget контракта (`iterations_used = len(run.stages)`) |
+| `merge` | объявленные эскалации → merge policy (`evaluate_merge`) |
+| `release` | объявленные эскалации → completion invariants (обязательная evidence доступна, blocker findings закрыты) |
+| `rework` | объявленные эскалации → autonomy budget → rework limit; эскалация и исчерпанный autonomy budget ветоируют раунд **без сжигания** |
+
+Merge policy без `merge_context` не консультируется вовсе: отсутствие merge-фактов — ручной режим (FR-010), run переходит в `WAITING` на человеческий merge. Подробности merge policy — [orchestration-operations.md](orchestration-operations.md), полный алгоритм — [orchestration-flow-and-state.md](orchestration-flow-and-state.md).
 
 ```mermaid
 flowchart TD
@@ -164,8 +224,14 @@ flowchart TD
     G -- "нет" --> B["StopAction(blocked)\nпричина: gates"]
     G -- "да" --> L{"Token, cost, deadline\nне исчерпаны?"}
     L -- "нет" --> C["StopAction(blocked)\nпричина: limits"]
-    L -- "да, execute/merge" --> N["Продвинуться"]
-    L -- "да, release" --> I{"Completion invariants?"}
+    L -- "да" --> ESC{"Эскалации и\nautonomy budget?"}
+    ESC -- "нарушены" --> E["StopAction(blocked)\nrework-раунд не сжигается"]
+    ESC -- "нет, execute" --> N["Продвинуться"]
+    ESC -- "нет, merge" --> M{"Merge policy"}
+    M -- "blocked" --> B2["StopAction(blocked)"]
+    M -- "manual_merge_required" --> W["WAITING: human merge"]
+    M -- "авторизован" --> N2["Продвинуться"]
+    ESC -- "нет, release" --> I{"Completion invariants?"}
     I -- "нет" --> D["StopAction(blocked)\nпричина: evidence/findings"]
     I -- "да" --> S["Run succeeded"]
 ```
@@ -180,22 +246,24 @@ flowchart TD
 
 Поэтому расход текущего StageResult может исчерпать бюджет и заблокировать этот же переход.
 
-## 5. Матрица действий и политик
+## 6. Матрица действий и политик
 
-| Action | Gate check | Token/cost/deadline | Rework limit | Completion invariants |
-|---|---:|---:|---:|---:|
-| `execute_stage` | да | да | нет | нет |
-| `merge` | да | да | нет | нет |
-| `release` | да | да | нет | да |
-| `rework` | нет | нет | да | нет |
-| `wait_for_input` | нет | нет | нет | нет |
-| `wait_for_ci` | нет | нет | нет | нет |
-| `request_approval` | нет | нет | нет | нет |
-| `stop` | нет | нет | нет | нет |
+| Action | Gate check | Token/cost/deadline | Эскалации | Contract entry / autonomy | Rework limit | Merge policy | Completion invariants |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `execute_stage` | да | да | да | да | нет | нет | нет |
+| `merge` | да | да | только объявленные | нет | нет | да | нет |
+| `release` | да | да | только объявленные | нет | нет | нет | да |
+| `rework` | нет | нет | да | только autonomy | да | нет | нет |
+| `wait_for_input` | нет | нет | нет | нет | нет | нет | нет |
+| `wait_for_ci` | нет | нет | нет | нет | нет | нет | нет |
+| `request_approval` | нет | нет | нет | нет | нет | нет | нет |
+| `stop` | нет | нет | нет | нет | нет | нет | нет |
 
 Wait-action может перевести run в ожидание даже при уже исчерпанном бюджете. При этом usage текущего результата всё равно будет накоплен. Проверка сработает при следующем действии продвижения.
 
-## 6. Как нарушение представляется
+Эскалации и contract entry gate живут не в `rules/`, а в [`orchestration/policy/escalation.py`](../../src/dark_factory/orchestration/policy/escalation.py) — Flow вызывает их вместе с правилами `rules/`, поэтому они включены в порядок принятия решения.
+
+## 7. Как нарушение представляется
 
 Нарушение policy не является исключением. Flow синтезирует:
 
@@ -210,7 +278,7 @@ next_stage = None
 
 `blocked` — не окончательный `RunStatus`: доменная таблица разрешает восстановление `blocked → running` после устранения причины.
 
-## 7. Граничные случаи
+## 8. Граничные случаи
 
 | Случай | Поведение |
 |---|---|
@@ -225,16 +293,32 @@ next_stage = None
 | `used_rework_rounds == max_rework_rounds` | rework запрещён |
 | `requested_round` пропустил номер, но не превысил max | текущий код разрешает |
 | `ReworkAction.max_rounds` отличается от run budget | решение принимает run budget |
+| Объявлена эскалация в StageResult | execute/merge/release/rework заблокированы; rework-раунд не сжигается |
+| Вход в Construction без approved Implementation Contract | execute блокируется (contract entry gate) |
+| Исчерпан autonomy budget контракта | execute и rework блокируются |
+| `merge_context` не передан | ручной режим: run в `WAITING` на человеческий merge |
+| Merge policy вернул `blocked` | `StopAction(blocked)` с причиной политики |
+| Наблюдение провайдера не соответствует `MergeProtectionPolicy` | список violations в фиксированном порядке правил |
 
-## 8. Где искать проверки
+## 9. Где искать проверки
 
 - `tests/test_rules_gates.py` — required/unsatisfied gates и порядок;
 - `tests/test_rules_limits.py` — границы budgets и rework;
+- `tests/test_rules_merge_protection.py` — compliance и violations branch protection;
 - `tests/test_flow_engine.py` — интеграция rules с Flow;
+- `tests/test_flow_policy.py` — merge policy и эскалации в Flow;
 - `tests/test_flow_transitions.py` — разрешённые action types.
 
-## 9. Связанные решения
+## 10. Связанные решения
 
 - [ADR-005](../adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) — детерминированный межстадийный FSM;
-- [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge/release policy;
+- [ADR-009](../adr/ADR-009-minimal-bootstrap-otel.md) — version-bound approvals, инвалидируемые новым SHA;
+- [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge/release policy и branch protection;
 - [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — остановка автономного цикла и участие человека.
+
+## 11. Связь с другими модулями
+
+- [routes.md](routes.md) — топология маршрутов и стадий, из которой берутся гейты;
+- [quality.md](quality.md) — кто вычисляет результаты гейтов, которые проверяет `rules/`;
+- [orchestration-flow-and-state.md](orchestration-flow-and-state.md) — главный потребитель: как Flow применяет правила;
+- [orchestration-operations.md](orchestration-operations.md) — merge policy и эскалации рядом с правилами `rules/`.
