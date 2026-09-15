@@ -15,6 +15,7 @@
 | [agents.md](agents.md) | Контракт агента (envelope), профили ролей, скиллы и подключение к HarnessPort |
 | [context.md](context.md) | ContextBundle и SDD-слой: модели ChangeSet, frontmatter, baseline, адаптеры native/Spec Kit/OpenSpec |
 | [quality.md](quality.md) | Независимую приёмку, specification gate и GateDecision — вычисление результатов гейтов |
+| [execution.md](execution.md) | Слой Execution: публикацию run-записей в `dark-factory-runs` — разметка, идемпотентность, immutability, screening, индекс evidence |
 | [cli.md](cli.md) | Команды CLI: stage, doctor, ci_job, outbox, reconcile, run records, api serve, release verify |
 | [api.md](api.md) | HTTP API: аутентификация, эндпоинты, агрегаты, аудит |
 
@@ -57,6 +58,7 @@ flowchart TD
 - `context/` — **«что агент получает на вход и где живёт SDD-слой?»**;
 - `agents/` — **«каков контракт агента и его профилей?»**;
 - `ports/` — **«через какие provider-neutral контракты ядро взаимодействует с внешним миром?»**;
+- `execution/` — **«как запись о run попадает в Git так, чтобы её нельзя было незаметно переписать?»**;
 - `cli/` и `api/` — **«как запустить и наблюдать фабрику снаружи?»**.
 
 > В текущем коде доменный Flow, PostgreSQL state store, outbox и reconciler — отдельные подсистемы. Production-сервис, который загружает состояние, вызывает `apply_result()`, сохраняет результат и выполняет внешние эффекты через порты, ещё не реализован; сегодня подсистемы соединяют CLI-команды (`stage`, `outbox`, `reconcile`) и HTTP API.

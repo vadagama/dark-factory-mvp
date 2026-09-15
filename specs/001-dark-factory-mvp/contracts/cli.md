@@ -12,6 +12,7 @@ factory stage run    --change <path|ref> --stage <stage> [--route quick|standard
                      [--evidence-dir <dir>] [--non-interactive]
 factory stage resume --run-id <id> --next-action <wa|ci|input> [--json]
 factory run status   --run-id <id> [--json]
+factory run publish  --record <path> [--runs-root <dir>] [--json]  # публикация run-записи (T-061)
 factory reconcile    [--json]           # один идемпотентный проход Reconciler
 factory outbox dispatch [--once]        # доставка событий (ADR-016)
 factory doctor       [--json]           # проверка окружения и конфигурации
@@ -60,6 +61,8 @@ factory doctor       [--json]           # проверка окружения и
 | 2 | невалидный вход/конфигурация (стадия не запускалась) | — |
 
 `waiting` — не ошибка: результат персистится **до** внешнего ожидания (ADR-006 §8), job завершается, продолжение — новым запуском.
+
+`factory run publish` (T-061, ADR-015 §4) не исполняет стадию и не производит `StageResult`: он публикует уже сохранённый `run_record.json` в checkout репозитория `dark-factory-runs` (`--runs-root` или переменная `DARK_FACTORY_RUNS_ROOT`). Коды выхода: `0` — запись создана или уже была опубликована без изменений; `1` — запись отклонена (секрет, превышение размера, неполная цепочка evidence, конфликт immutability); `2` — неверный ввод/конфигурация (нечитаемая запись, несоответствие схеме, не задан runs-root), при этом ничего не записано.
 
 ## Поведение и инварианты
 
