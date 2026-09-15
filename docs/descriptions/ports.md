@@ -157,7 +157,9 @@ record_usage(usage, **attributes: str) -> None
 
 `ArtifactStorePort` — хранилище тяжёлой evidence; `ArtifactSpec` содержит `artifact_type`, `name`, `content: bytes` и optional `producer`. У `put()` нет отдельного idempotency key: fake использует content-addressing по SHA-256, production adapter обязан сохранить эквивалентную повторяемую семантику.
 
-`TelemetryPort` — единственный синхронный порт; поддерживает корреляцию `change → run → stage → agent → tool`, атрибуты типизированы строками. Минимальный `Span` — context manager; T-060 заменит его OTel-реализацией за тем же контрактом.
+`TelemetryPort` — единственный синхронный порт; поддерживает корреляцию `change → run → stage → agent → tool → CI job → deployment`, атрибуты типизированы строками. `Span` остаётся value-объектом порта и context manager'ом: адаптер `OtlpTelemetryAdapter` (T-060, `adapters/telemetry`) отдаёт вызывающему именно его, а OTel-span живёт под ним, поэтому типы провайдера в core не просачиваются. Корреляция держится на вложенности: каждый `span(...)` открывает текущий OTel-span, поэтому вложенный span становится ребёнком предыдущего без передачи id.
+
+`record_usage` пишет usage/cost отдельным короткоживущим span'ом `factory.usage` — ребёнком текущего span'а (AI-вызова или стадии) — с атрибутами `usage.prompt_tokens`, `usage.completion_tokens`, `usage.total_tokens`, `usage.cost`; без активного span'а запись не теряется. Политика экспорта (T-060): по умолчанию job logs (stdout), опционально JSON-lines artifact (`DARK_FACTORY_TELEMETRY_EXPORTER=file` + `DARK_FACTORY_TELEMETRY_FILE`); внешний OTLP-backend — вне MVP (TD-003). Сбой экспортёра деградирует телеметрию, но не роняет пайплайн. Вызывающий обязан не передавать в имена и атрибуты секреты и персональные данные (ADR-009 п.8).
 
 ### 3.6. `WorkflowEnginePort` и `ReconciliationService`
 
@@ -315,7 +317,7 @@ State-changing операции используют один из четырё�
 
 ## 8. Текущее и целевое состояние
 
-В HLD `SourceControlPort` — логическая группа возможностей; в коде она разложена на три независимых Protocol (`RepositoryPort`, `MergeRequestPort`, `PipelinePort`), а исполнение CI-заданий вынесено в отдельный `CIPort`. `CIPort` и `SDDPort`, ранее относившиеся к следующим задачам плана, теперь формализованы и реализованы: `CIPort` — `FakeCI` и `GitHubCI`; `SDDPort` — адаптеры `context.sdd`. `KnowledgePort` и `ExecutionPort` пока закрыты фейками P0; реальные source providers и worktree-адаптер появятся в следующих задачах. `TrackerPort` уже закрыт реальным провайдером: `PlaneTrackerAdapter` (T-033) рядом с `NoOpTracker` и `FakeTracker`. Сигнатуры 1:1 с [`specs/001-dark-factory-mvp/contracts/ports.md`](../../specs/001-dark-factory-mvp/contracts/ports.md); концептуальные сигнатуры в старых ADR могут отличаться от текущего `protocols.py`: для реализации source of truth — текущий Python contract и contract tests, ADR объясняет архитектурный intent.
+В HLD `SourceControlPort` — логическая группа возможностей; в коде она разложена на три независимых Protocol (`RepositoryPort`, `MergeRequestPort`, `PipelinePort`), а исполнение CI-заданий вынесено в отдельный `CIPort`. `CIPort` и `SDDPort`, ранее относившиеся к следующим задачам плана, теперь формализованы и реализованы: `CIPort` — `FakeCI` и `GitHubCI`; `SDDPort` — адаптеры `context.sdd`. `KnowledgePort` и `ExecutionPort` пока закрыты фейками P0; реальные source providers и worktree-адаптер появятся в следующих задачах. `TrackerPort` уже закрыт реальным провайдером: `PlaneTrackerAdapter` (T-033) рядом с `NoOpTracker` и `FakeTracker`. `TelemetryPort` тоже закрыт реальным провайдером: `OtlpTelemetryAdapter` (T-060) рядом с `FakeTelemetry`; подключение адаптера к стадиям и Flow — следующая задача, как и внешний OTLP-backend (TD-003). Сигнатуры 1:1 с [`specs/001-dark-factory-mvp/contracts/ports.md`](../../specs/001-dark-factory-mvp/contracts/ports.md); концептуальные сигнатуры в старых ADR могут отличаться от текущего `protocols.py`: для реализации source of truth — текущий Python contract и contract tests, ADR объясняет архитектурный intent.
 
 ## 9. Граничные случаи
 
@@ -349,6 +351,7 @@ State-changing операции используют один из четырё�
 - `tests/contract/` — четырнадцать сюит, по одной на каждый Protocol (от `test_repository_port.py` до `test_sdd_port.py`, включая `test_ci_port.py`, `test_knowledge_port.py`, `test_execution_port.py`): единый поведенческий контракт fake/production adapters;
 - `tests/contract/plane_api.py` — in-memory эмулятор Plane REST API, которым сюита `test_tracker_port.py` параметризована `fake | plane`;
 - `tests/test_plane_tracker_adapter.py`, `tests/test_plane_webhook.py` — маппинг задачи, запись комментарием, guard webhook (все негативные сценарии);
+- `tests/test_telemetry_otlp_adapter.py` — восстановление цепочки трасс `change → … → deployment`, usage-корреляция, политика экспорта и изоляция сбоя экспортёра;
 - `tests/test_agents_contract.py` — версионирование `TaskEnvelope`/`AgentResult`;
 - `tests/test_context_bundle.py` — воспроизводимость, канонический порядок и дубликаты `ContextBundle`;
 - `src/dark_factory/adapters/fakes/` — минимальные эталонные реализации для разработки.
@@ -358,6 +361,7 @@ State-changing операции используют один из четырё�
 - [ADR-002](../adr/ADR-002-python-core-stack.md) — Python/PydanticAI за `HarnessPort`;
 - [ADR-006](../adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) — workflow, retries, reconciliation;
 - [ADR-008](../adr/ADR-008-plugin-architecture-core-sdk.md) — расширяемость адаптерами;
+- [ADR-009](../adr/ADR-009-minimal-bootstrap-otel.md) — OTel как нейтральный контракт наблюдаемости за `TelemetryPort`;
 - [ADR-013](../adr/ADR-013-plane-tracker-trackerport.md) — Plane за `TrackerPort`;
 - [ADR-015](../adr/ADR-015-repository-boundaries.md) — границы репозиториев и единый фасад ports;
 - [ADR-016](../adr/ADR-016-postgresql-outbox.md) — event publishing через outbox;
