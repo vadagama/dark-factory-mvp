@@ -232,8 +232,11 @@ def test_console_security_context(default_docs: list[dict[str, Any]]) -> None:
     assert container_security["readOnlyRootFilesystem"] is True
     assert container_security["capabilities"]["drop"] == ["ALL"]
     mounts = {mount["mountPath"] for mount in container["volumeMounts"]}
-    assert {"/tmp", "/var/cache/nginx"} <= mounts, (
-        "read-only root filesystem requires writable nginx temp paths"
+    # /etc/nginx/conf.d is required by the entrypoint: envsubst renders the
+    # nginx template there; read-only without a writable mount (the /api
+    # proxy then silently disappears while probes keep the pod Ready).
+    assert {"/tmp", "/var/cache/nginx", "/etc/nginx/conf.d"} <= mounts, (
+        "read-only root filesystem requires writable nginx temp and conf paths"
     )
 
 

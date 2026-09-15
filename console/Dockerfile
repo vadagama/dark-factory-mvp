@@ -19,7 +19,8 @@ ENV API_UPSTREAM=host.docker.internal:8000
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY dist/ /usr/share/nginx/html/
 
-# nginx-unprivileged listens on 8080 as UID 101 by default; writable temp
-# paths are provided by the chart (emptyDir on /tmp and /var/cache/nginx)
-# because the container runs with readOnlyRootFilesystem.
+# nginx-unprivileged listens on 8080 as UID 101 by default; writable paths
+# are provided by the chart (emptyDir on /tmp and /var/cache/nginx, plus
+# /etc/nginx/conf.d for the entrypoint's envsubst render above) because the
+# container runs with readOnlyRootFilesystem.
 EXPOSE 8080
