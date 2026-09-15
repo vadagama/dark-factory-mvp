@@ -1,0 +1,42 @@
+# Default values for the root Argo CD Applications (T032).
+#
+# Both root Applications track the protected trunk (`main`) of their
+# repositories: merge to main is MR-only with squash and no force-push
+# (ADR-011/ADR-015), so `main` is an append-only pointer and every merge is
+# picked up automatically (ADR-011: deploy to dev after merge is automatic).
+# Immutability is enforced at the image digest level, not by pinning chart
+# source revisions; rollback = revert the merge/GitOps commit (ADR-010 п.1).
+
+# Argo CD Applications are namespaced resources: they live in the namespace
+# where Argo CD is installed (bootstrap T029).
+argocdNamespace: argocd
+
+# Argo CD AppProject for all factory applications.
+project: default
+
+# Source repository of the platform chart (this repository).
+factoryRepoURL: https://github.com/vadagama/dark-factory-mvp.git
+factoryPath: charts/dark-factory
+# values-local.yaml = local Docker Desktop profile (T031): ingress on,
+# compact resources.
+factoryValueFile: values-local.yaml
+factoryTargetRevision: main
+
+# GitOps repository with the desired state of the environments (ADR-015 п.1).
+# It does not exist yet at T032 time: the seed in deploy/argocd/gitops-seed/
+# is pushed by a human (see gitops-seed/README.md); install.sh
+# --gitops-repo-url overrides this default when the org/name differs.
+gitopsRepoURL: https://github.com/vadagama/dark-factory-gitops.git
+gitopsPath: envs/dev
+gitopsTargetRevision: main
+
+# Sync policy shared by both root applications. `automated` implements the
+# ADR-011 flow (after the human merge, the deploy follows automatically).
+# prune/selfHeal stay disabled in the MVP: an accidental deletion in git must
+# not cascade-delete workloads, and manual debugging changes are not silently
+# reverted — drift stays visible as OutOfSync. Hardening (prune/selfHeal=true)
+# is a deliberate follow-up decision, not a default.
+syncPolicy:
+  automated:
+    prune: false
+    selfHeal: false

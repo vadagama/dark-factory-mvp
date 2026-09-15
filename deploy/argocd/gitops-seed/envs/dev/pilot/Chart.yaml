@@ -1,0 +1,10 @@
+apiVersion: v2
+name: pilot
+description: >-
+  Desired state of the pilot workload in apps-dev (T032 fixture). Will be
+  replaced by the real pilot product chart from the product repository once it
+  exists (T-070); until then this chart demonstrates the release flow of US5:
+  the GitOps MR changes the immutable image digest, Argo CD syncs apps-dev.
+type: application
+version: 0.1.0
+appVersion: "0.0.0-bootstrap"

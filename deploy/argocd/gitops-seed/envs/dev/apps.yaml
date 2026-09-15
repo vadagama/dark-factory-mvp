@@ -1,0 +1,35 @@
+# Child Argo CD Applications of the dev environment (T032 seed).
+#
+# The `apps-dev` root Application (deployed by deploy/argocd/chart) points at
+# this directory: on sync Argo CD creates the Applications below next to itself
+# in namespace `argocd`; each child deploys its desired state into `apps-dev`.
+#
+# `pilot-dev` is the fixture for the US5 release flow (T-043/T-044): the ONLY
+# release variable is the immutable image digest in envs/dev/pilot/values.yaml
+# — the GitOps MR replaces the placeholder (see examples/gitops-mr-digest-change.md).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pilot-dev
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: dark-factory
+    app.kubernetes.io/managed-by: dark-factory-gitops
+spec:
+  project: default
+  source:
+    # Self-referential by design: the gitops repository owns both the
+    # Application and the desired state it points to (ADR-015 п.1).
+    repoURL: https://github.com/vadagama/dark-factory-gitops.git
+    targetRevision: main
+    path: envs/dev/pilot
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: apps-dev
+  syncPolicy:
+    automated:
+      # ADR-011: after the human merge the deploy follows automatically.
+      # prune/selfHeal stay false in the MVP (same rationale as the root
+      # applications in deploy/argocd/chart/values.yaml).
+      prune: false
+      selfHeal: false
