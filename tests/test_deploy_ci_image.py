@@ -79,6 +79,25 @@ def _dockerfile_run_instructions() -> list[str]:
     return [instruction for instruction in instructions if instruction.startswith("RUN ")]
 
 
+def _dockerfile_stages() -> list[str]:
+    """Dockerfile split into per-stage texts at FROM boundaries, comments stripped."""
+    stages: list[str] = []
+    current: list[str] = []
+    for raw in _dockerfile_text().splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("FROM "):
+            if current:
+                stages.append("\n".join(current))
+            current = [stripped]
+        else:
+            current.append(raw)
+    if current:
+        stages.append("\n".join(current))
+    return stages
+
+
 # --- Dockerfile: reproducibility contract ----------------------------------
 
 
@@ -133,17 +152,41 @@ def test_dockerfile_source_date_epoch_contract() -> None:
 
 def test_dockerfile_strips_timestamps_from_file_contents() -> None:
     # mtime normalization cannot fix file CONTENTS: uv writes a wall-clock
-    # timestamp into uv_cache.json inside freshly built dist-info directories,
-    # and apt/dpkg embed Start-Date/End-Date inside /var/log (dpkg.log, apt
-    # history/term.log). Both must be deleted in their layers.
+    # timestamp into uv_cache.json inside freshly built dist-info directories
+    # (and its RECORD entry embeds the same content hash), apt/dpkg embed
+    # Start-Date/End-Date inside /var/log, and ldconfig's aux-cache embeds
+    # library load addresses. All three must be deleted in their layers.
     for line in _dockerfile_run_instructions():
         if "uv sync" in line:
             assert "-name uv_cache.json -delete" in line, (
                 f"uv sync layer must delete uv_cache.json: {line}"
             )
+            assert "-name RECORD" in line and "uv_cache[.]json" in line, (
+                f"uv sync layer must drop the uv_cache.json RECORD entry: {line}"
+            )
     apt_layers = [line for line in _dockerfile_run_instructions() if "apt-get install" in line]
     assert len(apt_layers) == 1, "expected exactly one apt layer"
     assert "find /var/log -type f -delete" in apt_layers[0], "apt/dpkg logs embed timestamps"
+    assert "rm -f /var/cache/ldconfig/aux-cache" in apt_layers[0], (
+        "ldconfig aux-cache embeds library load addresses"
+    )
+
+
+def test_dockerfile_runtime_tree_is_shipped_with_one_copy() -> None:
+    # Several COPY steps into a pre-existing /app re-stamp the parent
+    # directory entry with the wall-clock time of each copy (verified
+    # experimentally — it breaks digest stability); the runtime tree must be
+    # assembled in the builder and copied exactly once into a non-existing
+    # /app, so the root entry carries the SDE-normalized source mtime.
+    stages = _dockerfile_stages()
+    assert len(stages) == 2, "expected exactly builder + runtime stages"
+    runtime = stages[1]
+    assert "COPY --from=builder /out /app" in runtime
+    before_copy = runtime.split("COPY --from=builder /out /app", 1)[0]
+    assert "WORKDIR" not in before_copy, "/app must not pre-exist before the COPY"
+    # The assembly excludes the build files from the runtime tree.
+    builder = stages[0]
+    assert "mkdir /out" in builder and "cp -a /app/.venv /out/.venv" in builder
 
 
 def test_dockerfile_dependencies_come_from_the_lockfile() -> None:
