@@ -1,4 +1,8 @@
-"""In-memory fake of the telemetry port (OTLP adapter arrives with T-060)."""
+"""In-memory fake of the telemetry port (T-060).
+
+The production adapter lives in ``dark_factory.adapters.telemetry``
+(``OtlpTelemetryAdapter``); the same contract suite runs against both.
+"""
 
 from contextlib import AbstractContextManager
 
