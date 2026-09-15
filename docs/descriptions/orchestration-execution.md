@@ -98,6 +98,8 @@ def build_context(*, change: Change, stage: Stage, route: Route, run_id: str,
 | Функция | Возвращает | Семантика |
 |---|---|---|
 | `budget_exhaustions(budget: BudgetSnapshot, *, now: datetime) -> list[LimitViolation]` | нарушения лимитов в стабильном порядке (FR-008, ADR-018 p.5) | сначала `rework_violation(budget, requested_round=budget.used_rework_rounds + 1)`, затем `continuation_violations` (token → cost → deadline) |
+| `budget_stop_reason(check: BudgetCheck) -> str \| None` | `None` при `within_limits`, иначе `check.diagnostics` | исчерпание run/role-бюджета останавливает попытку (T-062, FR-018, ADR-018 p.5) |
+| `budget_findings(check: BudgetCheck) -> list[Finding]` | по одному открытому blocker finding на каждое нарушение (`id = budget:<scope>[:<role>]:<rule>`, `origin = ci`) | видимость в Console: их считает `api.aggregates.open_blocker_count` (T-062) |
 | `pending_gate_results(required_gates: frozenset[Gate]) -> list[GateResult]` | `GateResult(gate, GateStatus.PENDING)` на каждый обязательный гейт, отсортировано по `gate.value` | документирует, какие гейты стадия требует и что они ещё не вычислены; `pending` не удовлетворяет гейт в политике flow |
 | `change_request_missing(stage: Stage, change: Change) -> bool` | `True`, если стадия завершается через merge, а `change.change_request is None` | применяется только к `REVIEW_VERIFICATION` (`_STAGES_REQUIRING_CHANGE_REQUEST`); на других стадиях `False` |
 
@@ -111,10 +113,13 @@ def build_context(*, change: Change, stage: Stage, route: Route, run_id: str,
 | `cost_budget` | `cost_used >= cost_budget` | `cost budget exhausted: {used}/{budget}` |
 | `deadline` | `now > deadline` (строго) | `deadline {deadline.isoformat()} passed` |
 
+Проверки бюджета попытки (T-062) приходят в `checks.py` уже вычисленными: `orchestration.budget.BudgetCoordinator` отдаёт `BudgetCheck`, а здесь он превращается в stop-reason и blocker findings — сам вердикт и его пороги описаны в [budget.md](budget.md).
+
 ## 5. `stages/executor.py` — агрегация и решение
 
 ```python
-def run_deterministic_stage(context: StageContext, *, now: datetime | None = None) -> StageResult
+def run_deterministic_stage(context: StageContext, *, now: datetime | None = None,
+                            budget_check: BudgetCheck | None = None) -> StageResult
 def waiting_reason(context: StageContext) -> str
 ```
 
@@ -123,8 +128,11 @@ def waiting_reason(context: StageContext) -> str
 1. `reference_now = now if now is not None else datetime.now(UTC)` — параметр `now` переопределяет настенные часы для проверки deadline и `produced_at` (детерминизм в тестах, как в `flow.apply_result`);
 2. `gate_results = pending_gate_results(context.required_gates)`;
 3. `violations = budget_exhaustions(context.budget, now=reference_now)`;
-4. если `violations` непустой → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason="; ".join(violation.reason ...))` — исчерпание лимитов выигрывает (SC-006);
-5. иначе → `StageStatus.WAITING` + `WaitForInputAction(reason=waiting_reason(context))`.
+4. если `violations` непустой → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason="; ".join(violation.reason ...))` — исчерпание переносимого snapshot выигрывает (SC-006), findings пустые;
+5. иначе, если `budget_check is not None` и `budget_stop_reason(budget_check) is not None` → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason=diagnostics)` + `findings=budget_findings(budget_check)` (T-062: Awaiting Decision);
+6. иначе → `StageStatus.WAITING` + `WaitForInputAction(reason=waiting_reason(context))`.
+
+`budget_check` — необязательный явный шов (T-062): под `DEFAULT_BUDGET_POLICY` (или без аргумента) результат побайтово совпадает с результатом до T-062, поэтому выбор политики всегда явный. Что означает вердикт `awaiting_decision` и как из него получаются blocker findings — [budget.md](budget.md).
 
 `waiting_reason` называет каждую недостающую часть: `required gates not evaluated: {гейты через ", "} (machine checks run on the final SHA in CI (FR-009))`, а при отсутствии change request на `review_verification` добавляется `change request is not attached to the change (merge, ADR-011)` — части соединяются через `"; "`.
 
@@ -264,6 +272,7 @@ API:
 |---|---|
 | [orchestration-flow-and-state.md](orchestration-flow-and-state.md) | межстадийный FSM `apply_result()`, применение `ReworkAction`, state store |
 | [rules.md](rules.md) | гейт-политика `required_gates` (вход `build_context`), лимиты `rework_violation`/`continuation_violations` |
+| [budget.md](budget.md) | бюджет-координатор `orchestration/budget/`: `BudgetCheck` — вход `budget_check`, резервации и вердикт Awaiting Decision |
 | [orchestration-operations.md](orchestration-operations.md) | эксплуатационные подсистемы orchestration: events, reconcile, policy (эскалации) |
 | [context.md](context.md) | `ContextBundle` и SDD-слой — входы агентов (не детерминированного пути); там же различие `StageContext` vs `ContextBundle` |
 | [agents.md](agents.md) | конвейер `AgentProfile → TaskEnvelope → AgentResult` за `HarnessPort`; адаптеры порта |

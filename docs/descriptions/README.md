@@ -10,6 +10,7 @@
 | [rules.md](rules.md) | Политики обязательных гейтов, rework-, token-, cost-, deadline-лимитов и branch protection для merge |
 | [orchestration-flow-and-state.md](orchestration-flow-and-state.md) | Межстадийный автомат `flow.py`, PostgreSQL state store, идемпотентность, merge policy и эскалации в Flow |
 | [orchestration-execution.md](orchestration-execution.md) | Внутристадийное исполнение: snapshot, контекст, taskgraph, детерминированный executor, bounded rework |
+| [budget.md](budget.md) | Бюджет-координатор `orchestration/budget/`: run/role-лимиты и allowance, резервации, вердикт Awaiting Decision и его отображение в `BLOCKED` и Console |
 | [orchestration-operations.md](orchestration-operations.md) | Эксплуатационные подсистемы: outbox events, reconciler, policy (decision class, escalation, merge, participation, risk) |
 | [ports.md](ports.md) | Порты гексагональной архитектуры, DTO, ошибки и правила реализации адаптеров |
 | [agents.md](agents.md) | Контракт агента (envelope), профили ролей, скиллы и подключение к HarnessPort |
@@ -32,6 +33,8 @@ flowchart TD
     RESULT --> FLOW["orchestration/flow.py\nмежстадийный FSM"]
     ROUTE["flows/routes.py\nследующая стадия"] --> FLOW
     RULES["rules/\nгейты, лимиты,\nmerge protection"] --> FLOW
+    RULES --> BUDGET["orchestration/budget/\nrun/role-лимиты,\nрезервации, вердикт"]
+    BUDGET -.->|"BudgetCheck"| STAGE
     POLICY["orchestration/policy/\nrisk, escalation, merge,\nparticipation"] --> FLOW
     FLOW --> DECISION["FlowDecision"]
     DECISION --> APP["Прикладной orchestration service\nсохранение и side effects"]
@@ -50,6 +53,7 @@ flowchart TD
 
 - `flows/routes.py` отвечает на вопрос **«какая стадия следующая?»**;
 - `rules/` — **«можно ли продолжать?»** (гейты, лимиты, branch protection);
+- `orchestration/budget/` — **«укладывается ли прогон в лимиты и сколько уже зарезервировано?»** (run/role allowance, резервации вызовов, вердикт Awaiting Decision);
 - `quality/` — **«какой результат у проверок?»** (вычисление, не решение);
 - `orchestration/flow.py` — **«допустимо ли действие и как меняются доменные статусы?»**;
 - `orchestration/stages/` + `taskgraph` + `rework` — **«как исполнить одну стадию и когда вернуться на доработку?»**;
