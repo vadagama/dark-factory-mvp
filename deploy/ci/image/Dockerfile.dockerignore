@@ -1,0 +1,12 @@
+# Minimal build context (BuildKit per-Dockerfile ignore, T033): only the
+# inputs the image build actually consumes. A small context is faster and,
+# more importantly, part of the reproducibility contract — nothing outside
+# this list can silently change the build inputs.
+**
+!alembic.ini
+!migrations/
+!src/
+!pyproject.toml
+!uv.lock
+!README.md
+!deploy/ci/image/build-constraints.txt

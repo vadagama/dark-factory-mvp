@@ -1,0 +1,6 @@
+# Build constraints for the project wheel inside the image build (T033).
+# uv resolves `build-system.requires = ["hatchling"]` unpinned by default;
+# a hatchling release would change the wheel metadata and therefore the image
+# digest for the same SHA. Pinned here via UV_BUILD_CONSTRAINT; bumps are
+# conscious changes (deploy/ci/README.md, reproducibility deviations).
+hatchling==1.32.0
