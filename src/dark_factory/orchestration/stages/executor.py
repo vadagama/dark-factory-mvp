@@ -13,17 +13,30 @@ the harness (ADR-003). Attempt state persistence is a later task (T011):
 the context — the CLI passes the default snapshot until the state store
 lands, so exhaustion outcomes are produced only for callers that carry a
 persisted budget.
+
+The shared attempt budget (T-062) enters through the optional ``budget_check``
+produced by ``orchestration.budget.BudgetCoordinator``: an ``awaiting_decision``
+check blocks the attempt with its diagnostics and one open blocker finding per
+triggered limit, so a human sees why (ADR-018 p.5) and
+``api.aggregates.open_blocker_count`` counts it. Without the argument — under
+``DEFAULT_BUDGET_POLICY``, which sets no limit at all — the produced result is
+exactly the one this path produced before T-062: opting into a configured
+policy is explicit and never a silent behaviour change.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Final
 
 from dark_factory.changes.enums import StageStatus, StopOutcome
-from dark_factory.changes.findings import GateResult
+from dark_factory.changes.findings import Finding, GateResult
 from dark_factory.changes.next_action import NextAction, StopAction, WaitForInputAction
 from dark_factory.changes.run import StageResult
+from dark_factory.orchestration.budget import BudgetCheck
 from dark_factory.orchestration.stages.checks import (
     budget_exhaustions,
+    budget_findings,
+    budget_stop_reason,
     change_request_missing,
     pending_gate_results,
 )
@@ -42,16 +55,24 @@ def waiting_reason(context: StageContext) -> str:
     return "; ".join(parts)
 
 
-def run_deterministic_stage(context: StageContext, *, now: datetime | None = None) -> StageResult:
+def run_deterministic_stage(
+    context: StageContext,
+    *,
+    now: datetime | None = None,
+    budget_check: BudgetCheck | None = None,
+) -> StageResult:
     """Aggregate the machine checks into the StageResult of one attempt.
 
     Decision order: limit exhaustion wins and ends the attempt ``blocked``
-    with the violation reasons (SC-006); otherwise the attempt ends
-    ``waiting`` (FR-009: gate execution is out of scope here) with the
-    required-but-unevaluated gates recorded as ``pending`` gate results and
-    an actionable reason. ``now`` overrides the wall clock for the deadline
-    check and ``produced_at`` (determinism in tests, as in
-    ``flow.apply_result``).
+    with the violation reasons (SC-006); an ``awaiting_decision`` budget check
+    (T-062) blocks the same way with its diagnostics and a blocker finding per
+    triggered limit; otherwise the attempt ends ``waiting`` (FR-009: gate
+    execution is out of scope here) with the required-but-unevaluated gates
+    recorded as ``pending`` gate results and an actionable reason. ``now``
+    overrides the wall clock for the deadline check and ``produced_at``
+    (determinism in tests, as in ``flow.apply_result``); ``budget_check`` is the
+    optional coordinator output — the explicit seam for a configured budget
+    policy.
     """
     reference_now = now if now is not None else datetime.now(UTC)
     gate_results = pending_gate_results(context.required_gates)
@@ -67,6 +88,17 @@ def run_deterministic_stage(context: StageContext, *, now: datetime | None = Non
             gate_results=gate_results,
             produced_at=reference_now,
         )
+    if budget_check is not None:
+        stop_reason = budget_stop_reason(budget_check)
+        if stop_reason is not None:
+            return _result(
+                context,
+                status=StageStatus.BLOCKED,
+                next_action=StopAction(outcome=StopOutcome.BLOCKED, reason=stop_reason),
+                gate_results=gate_results,
+                findings=budget_findings(budget_check),
+                produced_at=reference_now,
+            )
     return _result(
         context,
         status=StageStatus.WAITING,
@@ -83,6 +115,7 @@ def _result(
     next_action: NextAction,
     gate_results: list[GateResult],
     produced_at: datetime,
+    findings: Sequence[Finding] = (),
 ) -> StageResult:
     """StageResult skeleton shared by both outcomes: identity from the context.
 
@@ -97,5 +130,6 @@ def _result(
         status=status,
         next_action=next_action,
         gate_results=gate_results,
+        findings=list(findings),
         produced_at=produced_at,
     )

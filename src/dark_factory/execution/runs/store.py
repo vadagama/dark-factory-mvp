@@ -43,7 +43,7 @@ from dark_factory.changes.enums import RunStatus
 from dark_factory.changes.findings import Decision, Finding, GateResult
 from dark_factory.changes.refs import ArtifactRef, Evidence
 from dark_factory.changes.run_records import RunRecord, from_json, to_json, to_yaml
-from dark_factory.changes.usage import Usage
+from dark_factory.changes.usage import RoleUsage, Usage
 from dark_factory.execution.runs.errors import (
     EvidenceChainError,
     RunRecordImmutabilityError,
@@ -366,12 +366,23 @@ class RunRecordStore:
             shutil.rmtree(staging, ignore_errors=True)
 
 
-def build_usage_summary(record: RunRecord, /) -> RunUsageSummary:
+def build_usage_summary(
+    record: RunRecord,
+    /,
+    *,
+    roles: tuple[RoleUsage, ...] = (),
+) -> RunUsageSummary:
     """Token/cost summary of a run, aggregated from its immutable stage results.
 
     A stage without a recorded usage contributes zeros rather than being
     dropped, so the summary always lists exactly the attempts of the record; a
     total that no attempt reported stays ``None`` instead of a misleading ``0``.
+
+    ``roles`` carries the per-role aggregate of the budget coordinator (T-062).
+    The record itself does not hold per-role spend yet — the coordinator's
+    ledger is not persisted (that wiring belongs to the durable state store) —
+    so it defaults to an empty section instead of inventing numbers from stage
+    usage, which carries no role.
     """
     stages: list[RunStageUsage] = []
     prompt_tokens = 0
@@ -403,6 +414,7 @@ def build_usage_summary(record: RunRecord, /) -> RunUsageSummary:
             total_tokens=total_tokens,
             cost=cost,
         ),
+        roles=roles,
     )
 
 
