@@ -213,9 +213,17 @@ jobs:
   # SHA (deployment.md §8). Publishes the immutable sha-<sha> tag to ghcr.io
   # and produces scan/SBOM/digest evidence. Never carries merge/deploy
   # credentials (packages: write only, ADR-011/ADR-019).
+  #
+  # The calling job MUST grant what the callee requests: factory-image.yml
+  # declares `packages: write`, and a caller that does not grant it makes
+  # GitHub reject the whole run at startup (no jobs, no logs) — the T-044
+  # incident that kept every ci.yml run from starting.
   factory-image:
     name: Factory OCI image (trusted build)
     needs: [lint, typecheck, test, build, security, factory-us1-parity, factory-stage-smoke]
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/factory-image.yml
     with:
       sha: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -364,9 +372,15 @@ jobs:
   # green final SHA (factory-image pattern). Publishes the immutable sha-<sha>
   # tag to ghcr.io/vadagama/dark-factory-console with scan/SBOM/digest
   # evidence; packages: write only (ADR-011/ADR-019).
+  #
+  # Same caller-side grant as factory-image above: the callee declares
+  # `packages: write`, so the calling job must grant it.
   console-image:
     name: Console OCI image (trusted build)
     needs: [lint, typecheck, test, build, security, factory-us1-parity, factory-stage-smoke, console-lint, console-typecheck, console-test, console-build, console-e2e]
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/console-image.yml
     with:
       sha: ${{ github.event.pull_request.head.sha || github.sha }}
