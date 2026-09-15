@@ -234,13 +234,17 @@ curl -s http://127.0.0.1:8080/api/v1/changes                        # → [] и�
 Тот же результат минус UI:
 
 ```bash
+# Токен читаем в переменную, а не подставляем значение в команду: значение
+# остаётся только в секрете шага 2 и в браузере (шаг 5), но не в истории шелла.
+read -rsp 'Операторский токен: ' TOKEN; echo
+
 # дедупликация: повтор с тем же Idempotency-Key вернёт 200 и тот же change
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8080/api/v1/changes \
-  -H "Content-Type: application/json" -H "Authorization: Bearer dev-operator-token" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: once-only" \
   -d '{"id":"chg_curl_demo1","title":"Curl demo","source":"console","product":{"provider":"github","slug":"my-org/my-product"},"risk_class":"R0"}'
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8080/api/v1/changes \
-  -H "Content-Type: application/json" -H "Authorization: Bearer dev-operator-token" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: once-only" \
   -d '{"id":"chg_curl_demo1","title":"Curl demo","source":"console","product":{"provider":"github","slug":"my-org/my-product"},"risk_class":"R0"}'
 ```
