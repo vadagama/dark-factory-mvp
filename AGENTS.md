@@ -82,6 +82,7 @@ SDD-слой для фич. Каноническая модель — **Native S
 ├── packs/                     # шаблоны для продуктовых репозиториев: Product Baseline + ChangeSet (ADR-020; T-022)
 ├── .factory/                  # Native SDD Core (ADR-020): product baseline + changes; создаётся в T-020
 ├── specs/                     # артефакты фич Spec Kit bootstrap-фазы (до T-020)
+├── console/                   # Console MVP (T036, ADR-021): React+Vite+TS, npm; свои CI-гейты и nginx-образ
 └── src/                       # код фабрики (модульный монолит на Python, ADR-002)
 ```
 

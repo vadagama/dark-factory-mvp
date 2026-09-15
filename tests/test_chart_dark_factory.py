@@ -54,6 +54,19 @@ def _api_container(deployment: dict[str, Any]) -> dict[str, Any]:
     return container
 
 
+def _workload_with_component(
+    docs: list[dict[str, Any]], kind: str, component: str
+) -> dict[str, Any]:
+    """First workload of `kind` whose metadata component label matches."""
+    found = [
+        doc
+        for doc in _by_kind(docs, kind)
+        if doc.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") == component
+    ]
+    assert found, f"expected at least one {kind} with component={component} in the rendered chart"
+    return found[0]
+
+
 def _container_env(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {entry["name"]: entry for entry in container["env"]}
 
@@ -181,3 +194,84 @@ def test_migrations_job_is_a_hook(default_docs: list[dict[str, Any]]) -> None:
     assert reference == {"name": "factory-api-database", "key": "DATABASE_URL"}
     pod_spec = job["spec"]["template"]["spec"]
     assert pod_spec["serviceAccountName"] == "factory-api"
+
+
+# -------------------------------------------------------------------------
+# Console (T036, ADR-021 p.7): nginx serving the SPA + /api proxy.
+# -------------------------------------------------------------------------
+
+
+def test_renders_console_deployment_and_service(default_docs: list[dict[str, Any]]) -> None:
+    deployment = _workload_with_component(default_docs, "Deployment", "console")
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    labels = deployment["metadata"]["labels"]
+    assert labels["app.kubernetes.io/part-of"] == "dark-factory"
+    assert labels["app.kubernetes.io/managed-by"] == "dark-factory"
+    assert labels["app.kubernetes.io/component"] == "console"
+    service = _workload_with_component(default_docs, "Service", "console")
+    assert service["spec"]["type"] == "ClusterIP"
+    assert service["spec"]["ports"][0]["port"] == 80
+    assert service["spec"]["ports"][0]["targetPort"] == "http"
+
+
+def test_console_security_context(default_docs: list[dict[str, Any]]) -> None:
+    pod_spec = _workload_with_component(default_docs, "Deployment", "console")["spec"]["template"][
+        "spec"
+    ]
+    assert pod_spec["automountServiceAccountToken"] is False
+    pod_security = pod_spec["securityContext"]
+    assert pod_security["runAsNonRoot"] is True
+    # nginx-unprivileged runs as UID/GID 101 — not the 65532 of the API image.
+    assert pod_security["runAsUser"] == 101
+    assert pod_security["runAsGroup"] == 101
+    assert pod_security["seccompProfile"]["type"] == "RuntimeDefault"
+    container = pod_spec["containers"][0]
+    container_security = container["securityContext"]
+    assert container_security["allowPrivilegeEscalation"] is False
+    assert container_security["readOnlyRootFilesystem"] is True
+    assert container_security["capabilities"]["drop"] == ["ALL"]
+    mounts = {mount["mountPath"] for mount in container["volumeMounts"]}
+    assert {"/tmp", "/var/cache/nginx"} <= mounts, (
+        "read-only root filesystem requires writable nginx temp paths"
+    )
+
+
+def _console_container(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    pod_spec = _workload_with_component(docs, "Deployment", "console")["spec"]["template"]["spec"]
+    container: dict[str, Any] = pod_spec["containers"][0]
+    return container
+
+
+def test_console_resources_and_image_tag(default_docs: list[dict[str, Any]]) -> None:
+    container = _console_container(default_docs)
+    resources = container["resources"]
+    assert resources["requests"] == {"cpu": "25m", "memory": "32Mi"}
+    assert resources["limits"] == {"cpu": "100m", "memory": "64Mi"}
+    image = container["image"]
+    assert image.startswith("ghcr.io/vadagama/dark-factory-console:")
+    tag = image.rsplit(":", 1)[-1]
+    # The bootstrap placeholder is allowed (T031 pattern); floating tags are not.
+    assert tag and tag != "latest", "the image tag must be pinned, not latest"
+
+
+def test_console_proxies_to_the_api_service(default_docs: list[dict[str, Any]]) -> None:
+    container = _console_container(default_docs)
+    env = _container_env(container)
+    upstream = env["API_UPSTREAM"]["value"]
+    assert upstream == "dark-factory.default.svc.cluster.local:8000"
+    # The console holds no credentials: no secret refs at all in its env.
+    assert all("valueFrom" not in entry for entry in container["env"])
+
+
+def test_console_probes_are_process_only(default_docs: list[dict[str, Any]]) -> None:
+    # The console serves static files; a probe must not depend on the API.
+    container = _console_container(default_docs)
+    assert container["livenessProbe"]["httpGet"]["path"] == "/"
+    assert container["readinessProbe"]["httpGet"]["path"] == "/"
+    assert container["livenessProbe"]["httpGet"]["port"] == "http"
+
+
+def test_console_container_port(default_docs: list[dict[str, Any]]) -> None:
+    container = _console_container(default_docs)
+    assert container["ports"] == [{"name": "http", "containerPort": 8080, "protocol": "TCP"}]

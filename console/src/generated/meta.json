@@ -1,0 +1,137 @@
+{
+  "factory_mode": {
+    "auto_merge_risk_classes": [],
+    "human_gates": [
+      "specification",
+      "review"
+    ],
+    "merge_authorization_gate": "review",
+    "merge_methods": [
+      "squash"
+    ],
+    "mode": "with_approvals",
+    "stage_sequence": [
+      "specification",
+      "planning",
+      "construction",
+      "review_verification",
+      "release"
+    ]
+  },
+  "limits": {
+    "cost_budget": null,
+    "deadline": null,
+    "max_rework_rounds": 3,
+    "token_budget": null
+  },
+  "profiles": [
+    {
+      "constraints": [
+        "Implement only the approved specification; expand scope only through a new task.",
+        "Follow the existing patterns, structure and dependencies of the repository.",
+        "Run the repository checks (lint, typecheck, tests) and report only verified results."
+      ],
+      "description": "Implements the approved specification as code changes and addresses independent review findings.",
+      "inputs": [
+        "spec",
+        "review_report",
+        "context"
+      ],
+      "name": "Develop",
+      "outputs": [
+        "code"
+      ],
+      "role": "develop",
+      "schema_version": 1,
+      "skills": [
+        "implementation",
+        "implementation-rework"
+      ],
+      "stop_conditions": [
+        "An acceptance criterion cannot be met within the approved scope - escalate.",
+        "The implementation requires a stack, dependency or architecture change (new ADR) - stop.",
+        "A required secret or credential is missing - never guess it, stop and ask.",
+        "The rework round limit is exhausted - escalate to the Flow."
+      ],
+      "tools": [
+        "read_file",
+        "write_file",
+        "apply_patch",
+        "run_command"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
+        "Scope the change to what the task requires; list everything else as out of scope.",
+        "Every requirement carries at least one acceptance criterion.",
+        "Never modify code, infrastructure or pipeline configuration directly."
+      ],
+      "description": "Turns an incoming task into refined requirements and a testable specification, and packages the change for review.",
+      "inputs": [
+        "task",
+        "context"
+      ],
+      "name": "Product",
+      "outputs": [
+        "requirements",
+        "spec",
+        "change_request"
+      ],
+      "role": "product",
+      "schema_version": 1,
+      "skills": [
+        "intake",
+        "requirements-refinement",
+        "spec-authoring",
+        "change-request"
+      ],
+      "stop_conditions": [
+        "The task contradicts the constitution or an accepted ADR - escalate.",
+        "Scope or priority questions stay unanswered after clarification - stop and ask.",
+        "The change needs an architectural decision that has not been made - escalate."
+      ],
+      "tools": [
+        "read_file",
+        "search_repo"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
+        "Review and verify independently; never fix findings in the reviewed change yourself.",
+        "Ground every verdict in evidence: checks, test runs and the pinned revision.",
+        "Report each finding with severity, location and a required action."
+      ],
+      "description": "Reviews code changes independently of their author and verifies the implementation against the acceptance criteria.",
+      "inputs": [
+        "spec",
+        "code",
+        "context"
+      ],
+      "name": "Quality",
+      "outputs": [
+        "review_report",
+        "acceptance_verdict"
+      ],
+      "role": "quality",
+      "schema_version": 1,
+      "skills": [
+        "code-review",
+        "acceptance-verification"
+      ],
+      "stop_conditions": [
+        "The change under review does not match the pinned revision - stop.",
+        "Acceptance criteria cannot be verified from the produced evidence - fail the verdict.",
+        "A blocker finding touches areas outside the reviewed scope - escalate."
+      ],
+      "tools": [
+        "read_file",
+        "run_tests",
+        "run_command"
+      ],
+      "version": "1.0.0"
+    }
+  ],
+  "schema_version": 1
+}

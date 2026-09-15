@@ -55,6 +55,30 @@ ingress:
   host: factory.localhost
   annotations: {}
 
+console:
+  # Console static bundle served by nginx (T036, ADR-021 p.7). The nginx image
+  # also proxies /api/ to the API Service — no Ingress involvement.
+  replicas: 1
+  port: 8080
+  image:
+    repository: ghcr.io/vadagama/dark-factory-console
+    # PLACEHOLDER tag: the real immutable image is built by the trusted
+    # console-image workflow and delivered through this chart (T031 pattern).
+    # Real digest — after the first console-image run, pattern of T031. Until
+    # then pods with this tag stay in ImagePullBackOff.
+    tag: "bootstrap"
+    pullPolicy: IfNotPresent
+  # Recreate mirrors the API: the console talks to the same API; a short
+  # overlap is harmless, but the quota envelope is shared with the API pod.
+  strategy: Recreate
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
 resources:
   # Fits the T029 envelope: requests 100m/128Mi + PostgreSQL 250m/256Mi
   # <= 1 CPU/2Gi; limits 500m/512Mi + PostgreSQL 1 CPU/1Gi <= 2 CPU/4Gi.
