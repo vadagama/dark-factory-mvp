@@ -1,0 +1,37 @@
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Never cache index.html so deploys are picked up immediately; assets are
+    # content-hashed by vite and cached hard.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # SPA fallback: every non-file path serves the app shell.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API proxy: keeps the /api prefix (no trailing slash on proxy_pass).
+    # nginx-unprivileged runs as UID 101 with readOnlyRootFilesystem in the
+    # chart, so temp dirs live on tmpfs volumes mounted by the chart.
+    location /api/ {
+        proxy_pass http://${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

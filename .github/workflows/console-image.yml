@@ -1,0 +1,261 @@
+# Trusted console OCI image build (T036, ADR-021 p.7) — factory-image.yml §8 pattern.
+#
+# Trust boundary: identical to the factory image (T033) — the TRUSTED build
+# tier, not an agent stage job. One GitHub-hosted runner VM, the only console
+# workflow job holding `packages: write`; agent stage jobs and agent pods keep
+# `contents: read` / no credentials at all (FR-023, ADR-011, ADR-019).
+#
+# Contract:
+#   - builds the final SHA of the change (FR-009/SC-004) as a multi-arch image
+#     (linux/amd64 + linux/arm64, ADR-010 p.4);
+#   - the static bundle (console/dist) is built here on the pinned Node from
+#     console/.nvmrc, then copied into the nginx image by console/Dockerfile;
+#   - publishes ONLY the immutable tag `sha-<sha>` to
+#     ghcr.io/vadagama/dark-factory-console; floating tags (latest) are
+#     forbidden — promotion happens by digest (GitOps MR, T032/T034 pattern);
+#   - produces evidence: image digest, SBOM (SPDX, per platform), image
+#     vulnerability scan (trivy, fail-closed on HIGH/CRITICAL without a fix),
+#     secrets scan (gitleaks);
+#   - NO rebuild-check input: the console Dockerfile has no reproducibility
+#     requirement (ADR-021 p.7; the factory image keeps its T033 check).
+#
+# Publication order: the image is pushed before trivy runs. A failing scan
+# leaves the digest in the registry but the run red — the release gate is the
+# green run record / GitOps promotion, which never consumes evidence from a
+# red run.
+name: Console image
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Final SHA to build (FR-009); defaults to the triggering SHA.
+        required: false
+        type: string
+        default: ${{ github.sha }}
+      push:
+        description: Publish the image to ghcr.io (fork PRs never push).
+        required: false
+        type: boolean
+        default: true
+      platforms:
+        description: Target platforms (ADR-010 p.4, multi-arch).
+        required: false
+        type: string
+        default: linux/amd64,linux/arm64
+      artifact-retention-days:
+        description: Retention of the image evidence artifact (days).
+        required: false
+        type: number
+        default: 30
+    outputs:
+      digest:
+        description: Immutable digest of the published image (sha256:...).
+        value: ${{ jobs.image.outputs.digest }}
+      image_ref:
+        description: Full image reference repository@digest for promotion.
+        value: ${{ jobs.image.outputs.image_ref }}
+      tag:
+        description: Published immutable tag (sha-<sha>).
+        value: ${{ jobs.image.outputs.tag }}
+
+# contents: read  — checkout only.
+# packages: write — publish the image to ghcr.io (trusted tier only).
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # Same SHA = same build; supersede duplicate runs instead of racing.
+  group: console-image-${{ inputs.sha }}
+  cancel-in-progress: true
+
+env:
+  # Consumed by charts/dark-factory (T036); the image name mirrors the factory
+  # image convention. Change only together with charts/dark-factory/values.yaml.
+  CONSOLE_IMAGE: ghcr.io/vadagama/dark-factory-console
+
+jobs:
+  image:
+    name: Build, scan, publish (immutable digest)
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+      image_ref: ${{ steps.digest.outputs.image_ref }}
+      tag: ${{ steps.digest.outputs.tag }}
+    env:
+      SHA: ${{ inputs.sha }}
+      TAG: sha-${{ inputs.sha }}
+      # Fork PRs build (Dockerfile validation) but never publish: the
+      # GITHUB_TOKEN of a fork run has no packages:write on this repository.
+      CAN_PUSH: ${{ inputs.push && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # The trusted build always runs on the final SHA of the change
+          # (FR-009/SC-004), never on a merge preview or stale ref.
+          ref: ${{ inputs.sha }}
+
+      - name: Set up Node
+        # Same toolchain as the console gates (ci.yml console-* jobs): npm ci
+        # with the lockfile, Node pinned by console/.nvmrc.
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: console/.nvmrc
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Secrets scan (gitleaks)
+        # Working-tree scan of the change (the MR gate semantics); exit 1 on
+        # any finding fails the build before anything is built or pushed.
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source /repo --no-git --redact --exit-code 1
+
+      - name: Build console bundle (dist/)
+        working-directory: console
+        run: |
+          npm ci
+          npm run build
+
+      - name: Normalize build context mtimes
+        # Stable timestamps for the COPY layers (commit time = function of the
+        # SHA). The console image has no digest-stability requirement, but the
+        # metadata stays honest about the built source.
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$SHA")" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        # Needed for the push and for trivy/syft to pull the published image
+        # (the package stays private until the owner flips it public).
+        if: env.CAN_PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./console
+          file: console/Dockerfile
+          platforms: ${{ inputs.platforms }}
+          # Attestations embed invocation parameters; SBOM is produced as an
+          # artifact below instead (factory-image pattern).
+          provenance: false
+          sbom: false
+          push: ${{ env.CAN_PUSH }}
+          tags: ${{ env.CONSOLE_IMAGE }}:${{ env.TAG }}
+
+      - name: Image vulnerability scan (trivy, fail-closed)
+        # Scans the PUBLISHED digest for both platforms (the pilot cluster is
+        # arm64, CI runs amd64 — scan both). Unfixed HIGH/CRITICAL fail the
+        # run; the promotion gate never consumes a red run's evidence.
+        if: env.CAN_PUSH == 'true'
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "scanning $platform"
+            # stdout IS the report (host redirection — the container FS is
+            # ephemeral); exit 1 on unfixed HIGH/CRITICAL fails the run.
+            docker run --rm \
+              -v /home/runner/.docker/config.json:/tmp/docker/config.json:ro \
+              -e DOCKER_CONFIG=/tmp/docker \
+              ghcr.io/aquasecurity/trivy:0.68.1@sha256:a93fd67162843c0f749002af9245fe9a2e5edc41445bd71d3949c803e95ef05b \
+              image \
+                --platform "$platform" \
+                --ignore-unfixed \
+                --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                --format json \
+                "${CONSOLE_IMAGE}@${{ steps.build.outputs.digest }}" \
+                > "trivy-report-$(echo "$platform" | tr / -).json"
+          done
+
+      - name: SBOM (syft, SPDX, per platform)
+        if: env.CAN_PUSH == 'true'
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "syft $platform"
+            docker run --rm \
+              -v /home/runner/.docker/config.json:/tmp/docker/config.json:ro \
+              -e DOCKER_CONFIG=/tmp/docker \
+              ghcr.io/anchore/syft:v1.51.1@sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c \
+              packages \
+                --platform "$platform" \
+                "${CONSOLE_IMAGE}@${{ steps.build.outputs.digest }}" \
+                -o spdx-json > "sbom-$(echo "$platform" | tr / -).json"
+          done
+
+      - name: Publish digest outputs and evidence
+        id: digest
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          if [ -n "$digest" ]; then
+            image_ref="${CONSOLE_IMAGE}@${digest}"
+          else
+            # Build without push (fork PR): the digest is not computed for a
+            # cache-only export; evidence records the run as unpublished.
+            image_ref=""
+          fi
+          {
+            echo "digest=$digest"
+            echo "image_ref=$image_ref"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+          cat > image-digest.json <<EOF
+          {
+            "schema_version": 1,
+            "repository": "$CONSOLE_IMAGE",
+            "tag": "$TAG",
+            "digest": "$digest",
+            "image_ref": "$image_ref",
+            "git_sha": "$SHA",
+            "platforms": "${{ inputs.platforms }}",
+            "source_date_epoch": "$SOURCE_DATE_EPOCH",
+            "workflow_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+
+      - name: Upload image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-image-evidence-${{ inputs.sha }}-${{ github.run_id }}
+          path: |
+            image-digest.json
+            trivy-report-*.json
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          if-no-files-found: warn
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-image-sbom-${{ inputs.sha }}-${{ github.run_id }}
+          path: sbom-*.json
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          if-no-files-found: warn
+
+      - name: Job summary
+        run: |
+          {
+            echo "## Console image (T036)"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| image | \`$CONSOLE_IMAGE\` |"
+            echo "| tag | \`$TAG\` |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| platforms | \`${{ inputs.platforms }}\` |"
+            echo "| SOURCE_DATE_EPOCH | \`$SOURCE_DATE_EPOCH\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -116,7 +116,7 @@ flowchart TD
 | Reconciler CronJob | Идемпотентный проход каждые 2–5 мин: зависшие jobs, timeout, retry, superseded, WAIT-продолжение | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) п.5–6, п.12 |
 | Outbox Dispatcher CronJob | Доставка событий outbox, retry/dead-letter | [ADR-016](adr/ADR-016-postgresql-outbox.md) п.4 |
 | API (FastAPI) | runs, evidence, approvals, управление; mutating-операции — token-authenticated | [ADR-002](adr/ADR-002-python-core-stack.md), [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md) п.7 |
-| Console (React) | Операторский контроль: 5 экранов MVP | [ADR-014](adr/ADR-014-react-uikit-storybook.md), plan T-051 |
+| Console (React) | Операторский контроль: 5 экранов MVP | [ADR-014](adr/ADR-014-react-uikit-storybook.md), [ADR-021](adr/ADR-021-console-mvp-delivery.md) |
 | PostgreSQL | Authoritative operational state | [ADR-004](adr/ADR-004-postgresql-factory-state.md) |
 
 ---

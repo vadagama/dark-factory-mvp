@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dark-factory.fullname" . }}-console
+  labels:
+    {{- include "dark-factory.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: {{ .Values.console.replicas }}
+  strategy:
+    type: {{ .Values.console.strategy }}
+  selector:
+    matchLabels:
+      {{- include "dark-factory.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: console
+  template:
+    metadata:
+      labels:
+        {{- include "dark-factory.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: console
+    spec:
+      # The console holds no credentials: it serves static files and proxies
+      # /api/ to the API Service; the operator token lives in the browser.
+      serviceAccountName: {{ include "dark-factory.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        # nginx-unprivileged runs as UID/GID 101 (image default).
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: console
+          image: "{{ .Values.console.image.repository }}:{{ .Values.console.image.tag }}"
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          env:
+            # In-cluster upstream of the /api/ proxy (console/Dockerfile):
+            # the API Service of this release in this namespace.
+            - name: API_UPSTREAM
+              value: {{ printf "%s.%s.svc.cluster.local:%v" (include "dark-factory.fullname" .) .Release.Namespace (.Values.api.port | int) | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.console.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              # The nginx process itself; serving the SPA shell needs no API.
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.console.resources | nindent 12 }}
+          volumeMounts:
+            # readOnlyRootFilesystem: nginx needs writable tmp paths. /tmp for
+            # the master process and client body temp under /var/cache/nginx.
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
