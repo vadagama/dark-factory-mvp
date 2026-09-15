@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -49,12 +50,14 @@ def _dockerfile_text() -> str:
     return DOCKERFILE.read_text(encoding="utf-8")
 
 
-def _workflow() -> dict:
-    return yaml.safe_load(IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+def _workflow() -> dict[str, Any]:
+    values: dict[str, Any] = yaml.safe_load(IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+    return values
 
 
-def _ci() -> dict:
-    return yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+def _ci() -> dict[str, Any]:
+    values: dict[str, Any] = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    return values
 
 
 def _dockerfile_run_instructions() -> list[str]:
