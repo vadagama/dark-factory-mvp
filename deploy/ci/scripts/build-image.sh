@@ -23,8 +23,8 @@
 set -eu
 
 IMAGE=ghcr.io/vadagama/dark-factory
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../../.." && pwd)
 
 PUSH=0
 PLATFORM=""
@@ -48,16 +48,20 @@ cd "$REPO_ROOT"
 # A dirty tree inside the build context changes the build inputs silently —
 # refuse to build. Changes outside the context (dockerignore whitelist) do
 # not affect the digest and are not our business here.
-context_paths=(
-    alembic.ini
-    migrations
-    src
-    pyproject.toml
-    uv.lock
-    README.md
+#
+# The paths are passed as a POSIX positional list, not as a bash array: the
+# script declares #!/bin/sh, and on Debian/Ubuntu /bin/sh is dash, where
+# `name=(...)` is a syntax error. The option loop above shifts on every
+# iteration, so it has consumed all arguments and $@ is free to reuse here.
+set -- \
+    alembic.ini \
+    migrations \
+    src \
+    pyproject.toml \
+    uv.lock \
+    README.md \
     deploy/ci/image
-)
-dirty=$(git status --porcelain -- "${context_paths[@]}")
+dirty=$(git status --porcelain -- "$@")
 if [ -n "$dirty" ]; then
     echo "error: files inside the build context have uncommitted changes:" >&2
     echo "$dirty" >&2

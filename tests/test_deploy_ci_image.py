@@ -14,7 +14,9 @@ Two layers are validated without building anything:
    (the image is built only after every deterministic check is green).
 
 The helper script (``deploy/ci/scripts/build-image.sh``) is checked with
-``bash -n``/``shellcheck`` when available, following the T032 convention.
+``bash -n``, ``sh -n`` and ``shellcheck`` when available, following the T032
+convention. The POSIX check is the one that rejects a bash-ism in a
+``#!/bin/sh`` script: ``bash -n`` accepts bash arrays happily.
 """
 
 import re
@@ -343,6 +345,35 @@ def test_build_script_is_valid_shell() -> None:
     result = _run_bash_n()
     if result is None:
         pytest.skip("bash is not installed")
+    assert result.returncode == 0, result.stderr
+
+
+def _run_sh_n() -> subprocess.CompletedProcess[str] | None:
+    """``sh -n`` on the helper script, which declares ``#!/bin/sh``.
+
+    ``bash -n`` accepts bash-only syntax silently, so it cannot guard a
+    script that declares POSIX ``sh`` but uses bash arrays. On Debian/Ubuntu
+    ``/bin/sh`` is dash, where an array is a syntax error; that is what the
+    CI runner provides. macOS ships bash as ``/bin/sh`` (POSIX mode keeps
+    arrays), so here the check is only as strict as the local ``sh`` — the
+    test still runs, it never silently skips when ``sh`` exists.
+    """
+    sh = shutil.which("sh")
+    if sh is None:
+        return None
+    return subprocess.run(
+        [sh, "-n", str(BUILD_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def test_build_script_is_valid_posix_sh() -> None:
+    result = _run_sh_n()
+    if result is None:
+        pytest.skip("sh is not installed")
     assert result.returncode == 0, result.stderr
 
 
