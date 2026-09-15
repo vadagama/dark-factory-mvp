@@ -208,3 +208,14 @@ jobs:
     with:
       change: ./fixtures/chg_smoke.yaml
       stage: construction
+
+  # Trusted OCI image build (T033, docs T-044): only of a fully green final
+  # SHA (deployment.md §8). Publishes the immutable sha-<sha> tag to ghcr.io
+  # and produces scan/SBOM/digest evidence. Never carries merge/deploy
+  # credentials (packages: write only, ADR-011/ADR-019).
+  factory-image:
+    name: Factory OCI image (trusted build)
+    needs: [lint, typecheck, test, build, security, factory-us1-parity, factory-stage-smoke]
+    uses: ./.github/workflows/factory-image.yml
+    with:
+      sha: ${{ github.event.pull_request.head.sha || github.sha }}

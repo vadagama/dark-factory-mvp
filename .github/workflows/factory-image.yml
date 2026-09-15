@@ -1,0 +1,316 @@
+# Trusted factory OCI image build (T033, docs plan T-044) — deployment.md §8.
+#
+# Trust boundary: this is the TRUSTED build tier, not an agent stage job. It
+# runs on a GitHub-hosted runner (one job = one disposable VM, no privileged
+# Docker-in-Docker) and is the only workflow job that holds
+# `packages: write` — the credential needed to publish the immutable image.
+# Agent stage jobs (factory-stage.yml) and agent pods (deploy/ci) keep
+# `contents: read` / no credentials at all (FR-023, ADR-011, ADR-019).
+#
+# Contract:
+#   - builds the final SHA of the change (FR-009/SC-004) as a multi-arch
+#     image (linux/amd64 + linux/arm64, ADR-010 p.4: the pilot cluster is
+#     arm64 Docker Desktop);
+#   - publishes ONLY the immutable tag `sha-<sha>` to
+#     ghcr.io/vadagama/dark-factory; `latest` and other floating tags are
+#     forbidden — promotion between environments happens by digest
+#     (GitOps MR, T032/T034);
+#   - produces evidence: image digest, SBOM (SPDX, per platform), image
+#     vulnerability scan (trivy, fail-closed on HIGH/CRITICAL without a fix),
+#     secrets scan (gitleaks), SAST (bandit), SCA (pip-audit);
+#   - optionally rebuilds the same SHA a second time (--no-cache) and fails
+#     when the digest differs — the T033 DoD reproducibility check.
+#
+# Publication order: the image is pushed before trivy runs. A failing scan
+# leaves the digest in the registry but the run red — the release gate is the
+# green run record / GitOps promotion (T034), which never consumes evidence
+# from a red run.
+name: Factory image
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Final SHA to build (FR-009); defaults to the triggering SHA.
+        required: false
+        type: string
+        default: ${{ github.sha }}
+      push:
+        description: Publish the image to ghcr.io (fork PRs never push).
+        required: false
+        type: boolean
+        default: true
+      platforms:
+        description: Target platforms (ADR-010 p.4, multi-arch).
+        required: false
+        type: string
+        default: linux/amd64,linux/arm64
+      rebuild-check:
+        description: Rebuild the same SHA cold and fail on digest mismatch (T033 DoD).
+        required: false
+        type: boolean
+        default: false
+      artifact-retention-days:
+        description: Retention of the image evidence artifact (days).
+        required: false
+        type: number
+        default: 30
+    outputs:
+      digest:
+        description: Immutable digest of the published image (sha256:...).
+        value: ${{ jobs.image.outputs.digest }}
+      image_ref:
+        description: Full image reference repository@digest for promotion.
+        value: ${{ jobs.image.outputs.image_ref }}
+      tag:
+        description: Published immutable tag (sha-<sha>).
+        value: ${{ jobs.image.outputs.tag }}
+
+# contents: read  — checkout only; no merge/deploy credentials here either.
+# packages: write — publish the image to ghcr.io (trusted tier only).
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # Same SHA = same build; supersede duplicate runs instead of racing.
+  group: factory-image-${{ inputs.sha }}
+  cancel-in-progress: true
+
+env:
+  # The chart (T031) and the agent-Job template (T030) consume exactly this
+  # repository name; the workflow repository is dark-factory-mvp — the image
+  # name differs on purpose (the image is the factory itself, not an artifact
+  # of this repo). Change only together with charts/dark-factory/values.yaml
+  # and deploy/ci/manifests/agent-job-template.yaml.
+  FACTORY_IMAGE: ghcr.io/vadagama/dark-factory
+
+jobs:
+  image:
+    name: Build, scan, publish (immutable digest)
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+      image_ref: ${{ steps.digest.outputs.image_ref }}
+      tag: ${{ steps.digest.outputs.tag }}
+    env:
+      SHA: ${{ inputs.sha }}
+      TAG: sha-${{ inputs.sha }}
+      # Fork PRs build (Dockerfile validation) but never publish: the
+      # GITHUB_TOKEN of a fork run has no packages:write on this repository.
+      CAN_PUSH: ${{ inputs.push && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # The trusted build always runs on the final SHA of the change
+          # (FR-009/SC-004), never on a merge preview or stale ref.
+          ref: ${{ inputs.sha }}
+
+      - name: Derive SOURCE_DATE_EPOCH from the commit
+        # The commit timestamp is a stable function of the SHA; BuildKit
+        # normalizes the image config timestamps to it (T033 reproducibility,
+        # verified empirically: two cold builds produce equal digests).
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$SHA")" >> "$GITHUB_ENV"
+
+      - name: Normalize build context mtimes
+        # COPY layers preserve context mtimes: without this step the same
+        # SHA would produce different digests after a fresh checkout.
+        run: find . -path ./.git -prune -o -exec touch -h -d @"$SOURCE_DATE_EPOCH" {} +
+
+      - name: Secrets scan (gitleaks)
+        # Working-tree scan of the change (the MR gate semantics); exit 1 on
+        # any finding fails the build before anything is built or pushed.
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source /repo --no-git --redact --exit-code 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: SAST (bandit)
+        run: uvx --python 3.12 --from "bandit[toml]==1.9.4" bandit -c pyproject.toml -r src
+
+      - name: SCA (pip-audit on the locked dependency set)
+        run: |
+          uv export --frozen --no-emit-project --no-dev > pip-audit-requirements.txt
+          uvx --python 3.12 pip-audit==2.10.1 -r pip-audit-requirements.txt
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        # Needed for the push and for trivy/syft to pull the published image
+        # (the package stays private until the owner flips it public).
+        if: env.CAN_PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/ci/image/Dockerfile
+          platforms: ${{ inputs.platforms }}
+          # Attestations embed invocation parameters and break digest
+          # stability; SBOM is produced as an artifact below instead.
+          provenance: false
+          sbom: false
+          push: ${{ env.CAN_PUSH }}
+          tags: ${{ env.FACTORY_IMAGE }}:${{ env.TAG }}
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            GIT_SHA=${{ env.SHA }}
+
+      - name: Rebuild check (cold, same SHA)
+        # T033 DoD: a second COLD build (--no-cache defeats layer-cache
+        # masking) of the same SHA must yield the same digest. The same
+        # immutable tag is re-pushed: identical content on success, and on
+        # mismatch the run fails leaving the second digest as the deviation
+        # evidence under the same tag.
+        id: rebuild
+        if: inputs.rebuild-check && env.CAN_PUSH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/ci/image/Dockerfile
+          platforms: ${{ inputs.platforms }}
+          provenance: false
+          sbom: false
+          no-cache: true
+          push: ${{ env.CAN_PUSH }}
+          tags: ${{ env.FACTORY_IMAGE }}:${{ env.TAG }}
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            GIT_SHA=${{ env.SHA }}
+
+      - name: Compare digests
+        if: inputs.rebuild-check && env.CAN_PUSH == 'true'
+        run: |
+          first="${{ steps.build.outputs.digest }}"
+          second="${{ steps.rebuild.outputs.digest }}"
+          if [ -z "$first" ] || [ -z "$second" ]; then
+            echo "digest outputs are empty; rebuild check cannot run" >&2
+            exit 1
+          fi
+          if [ "$first" != "$second" ]; then
+            echo "::error::reproducibility deviation: same SHA produced different digests: $first != $second (see deploy/ci/README.md)"
+            exit 1
+          fi
+          echo "rebuild check passed: digests match ($first)"
+
+      - name: Image vulnerability scan (trivy, fail-closed)
+        # Scans the PUBLISHED digest for both platforms (the pilot cluster is
+        # arm64, CI runs amd64 — scan both). Unfixed HIGH/CRITICAL fail the
+        # run; the promotion gate (T034) never consumes a red run's evidence.
+        if: env.CAN_PUSH == 'true'
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "scanning $platform"
+            # stdout IS the report (host redirection — the container FS is
+            # ephemeral); exit 1 on unfixed HIGH/CRITICAL fails the run.
+            docker run --rm \
+              -v /home/runner/.docker/config.json:/tmp/docker/config.json:ro \
+              -e DOCKER_CONFIG=/tmp/docker \
+              ghcr.io/aquasecurity/trivy:0.68.1@sha256:a93fd67162843c0f749002af9245fe9a2e5edc41445bd71d3949c803e95ef05b \
+              image \
+                --platform "$platform" \
+                --ignore-unfixed \
+                --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                --format json \
+                "${FACTORY_IMAGE}@${{ steps.build.outputs.digest }}" \
+                > "trivy-report-$(echo "$platform" | tr / -).json"
+          done
+
+      - name: SBOM (syft, SPDX, per platform)
+        if: env.CAN_PUSH == 'true'
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "syft $platform"
+            docker run --rm \
+              -v /home/runner/.docker/config.json:/tmp/docker/config.json:ro \
+              -e DOCKER_CONFIG=/tmp/docker \
+              ghcr.io/anchore/syft:v1.51.1@sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c \
+              packages \
+                --platform "$platform" \
+                "${FACTORY_IMAGE}@${{ steps.build.outputs.digest }}" \
+                -o spdx-json > "sbom-$(echo "$platform" | tr / -).json"
+          done
+
+      - name: Publish digest outputs and evidence
+        id: digest
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          if [ -n "$digest" ]; then
+            image_ref="${FACTORY_IMAGE}@${digest}"
+          else
+            # Build without push (fork PR): the digest is not computed for a
+            # cache-only export; evidence records the run as unpublished.
+            image_ref=""
+          fi
+          {
+            echo "digest=$digest"
+            echo "image_ref=$image_ref"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+          cat > image-digest.json <<EOF
+          {
+            "schema_version": 1,
+            "repository": "$FACTORY_IMAGE",
+            "tag": "$TAG",
+            "digest": "$digest",
+            "image_ref": "$image_ref",
+            "git_sha": "$SHA",
+            "platforms": "${{ inputs.platforms }}",
+            "source_date_epoch": "$SOURCE_DATE_EPOCH",
+            "rebuild_check": ${{ inputs.rebuild-check }},
+            "workflow_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+
+      - name: Upload image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-image-evidence-${{ inputs.sha }}-${{ github.run_id }}
+          path: |
+            image-digest.json
+            trivy-report-*.json
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          if-no-files-found: warn
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-image-sbom-${{ inputs.sha }}-${{ github.run_id }}
+          path: sbom-*.json
+          retention-days: ${{ inputs['artifact-retention-days'] }}
+          if-no-files-found: warn
+
+      - name: Job summary
+        run: |
+          {
+            echo "## Factory image (T033)"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| image | \`$FACTORY_IMAGE\` |"
+            echo "| tag | \`$TAG\` |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| platforms | \`${{ inputs.platforms }}\` |"
+            echo "| SOURCE_DATE_EPOCH | \`$SOURCE_DATE_EPOCH\` |"
+            echo "| rebuild check | \`${{ inputs.rebuild-check }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
