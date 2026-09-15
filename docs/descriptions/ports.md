@@ -119,7 +119,21 @@ publish_status(change_id, status, *, idempotency_key) -> None
 request_approval(change_id, gate, *, idempotency_key) -> None
 ```
 
-Интеграция с внешним tracker (Plane, ADR-013). По контракту недоступность tracker не должна блокировать CLI/Console (FR-020); отдельного result/error-типа для degraded режима пока нет.
+Интеграция с внешним tracker (Plane, ADR-013). По контракту недоступность tracker не должна блокировать CLI/Console (FR-020); отдельного result/error-типа для degraded режима пока нет. Адаптеры: `FakeTracker` (память, идемпотентность по ключу), `NoOpTracker` (заглушка для контура без трекера, ADR-013 п.5) и `PlaneTrackerAdapter` (self-hosted Plane, T-033).
+
+`PlaneTrackerAdapter` (пакет `adapters/tracker/`) держит конвенции, которые сигнатурой порта не выражены:
+
+| Аспект | Решение |
+|---|---|
+| `external_ref` | Handle задачи в Plane — id инстанса или проектный ключ (`PLANE-42`); сегменты пути percent-кодируются |
+| Пропавшая задача | 404 → `None` (такой задачи нет); недоступность (5xx, сеть) → `PlaneAPIError` — degraded режим выбирает вызывающий |
+| `change_id` | Тот же handle: для tracker-задач `get_change` возвращает Plane issue id как `Change.id`, поэтому запись адресуется задаче |
+| `publish_status` / `request_approval` | Комментарий к задаче: `factory status: …` и `factory approval requested: …` |
+| Идемпотентность | Невидимый HTML-маркер `<!-- dark-factory:idempotency:<key> -->` в теле комментария (как у source-control адаптера); повтор с тем же ключом ничего не публикует (FR-017) |
+| Риск-класс | Из label `risk:R2`; без такого label — `R1` (intake-дефолт); понижение остаётся политикой (ADR-011 п.5) |
+| Webhook | `webhook.py`: HMAC-SHA256 по `<timestamp>.<body>`, окно ±300 с, дедупликация по `X-Plane-Delivery`, ротация с двумя активными секретами (ADR-013 п.6) |
+
+Подпись покрывает timestamp, поэтому переигранный запрос нельзя «освежить» правкой заголовка; stock Plane подписывает только тело — контракт приходит из webhook-прокси перед фабрикой, а сам webhook остаётся ускорителем, не источником истины (ADR-013 п.2). Конфигурация — из окружения (`PlaneConfig.from_env`): `DARK_FACTORY_PLANE_BASE_URL`, `DARK_FACTORY_PLANE_API_KEY` (секрет), `DARK_FACTORY_PLANE_WORKSPACE_SLUG`, `DARK_FACTORY_PLANE_PROJECT_ID`, `DARK_FACTORY_PLANE_REPOSITORY_SLUG`, опционально `DARK_FACTORY_PLANE_REPOSITORY_PROVIDER` и webhook-секреты (`…_WEBHOOK_SECRET`, `…_WEBHOOK_SECRET_PREVIOUS`).
 
 ### 3.4. `HarnessPort`
 
@@ -301,7 +315,7 @@ State-changing операции используют один из четырё�
 
 ## 8. Текущее и целевое состояние
 
-В HLD `SourceControlPort` — логическая группа возможностей; в коде она разложена на три независимых Protocol (`RepositoryPort`, `MergeRequestPort`, `PipelinePort`), а исполнение CI-заданий вынесено в отдельный `CIPort`. `CIPort` и `SDDPort`, ранее относившиеся к следующим задачам плана, теперь формализованы и реализованы: `CIPort` — `FakeCI` и `GitHubCI`; `SDDPort` — адаптеры `context.sdd`. `KnowledgePort` и `ExecutionPort` пока закрыты фейками P0; реальные source providers и worktree-адаптер появятся в следующих задачах. Сигнатуры 1:1 с [`specs/001-dark-factory-mvp/contracts/ports.md`](../../specs/001-dark-factory-mvp/contracts/ports.md); концептуальные сигнатуры в старых ADR могут отличаться от текущего `protocols.py`: для реализации source of truth — текущий Python contract и contract tests, ADR объясняет архитектурный intent.
+В HLD `SourceControlPort` — логическая группа возможностей; в коде она разложена на три независимых Protocol (`RepositoryPort`, `MergeRequestPort`, `PipelinePort`), а исполнение CI-заданий вынесено в отдельный `CIPort`. `CIPort` и `SDDPort`, ранее относившиеся к следующим задачам плана, теперь формализованы и реализованы: `CIPort` — `FakeCI` и `GitHubCI`; `SDDPort` — адаптеры `context.sdd`. `KnowledgePort` и `ExecutionPort` пока закрыты фейками P0; реальные source providers и worktree-адаптер появятся в следующих задачах. `TrackerPort` уже закрыт реальным провайдером: `PlaneTrackerAdapter` (T-033) рядом с `NoOpTracker` и `FakeTracker`. Сигнатуры 1:1 с [`specs/001-dark-factory-mvp/contracts/ports.md`](../../specs/001-dark-factory-mvp/contracts/ports.md); концептуальные сигнатуры в старых ADR могут отличаться от текущего `protocols.py`: для реализации source of truth — текущий Python contract и contract tests, ADR объясняет архитектурный intent.
 
 ## 9. Граничные случаи
 
@@ -319,6 +333,7 @@ State-changing операции используют один из четырё�
 | `KnowledgePort` | без поиска и traversal — минимальность по YAGNI |
 | `FakeExecution.run_command`/`collect_evidence` | детерминированные чтения, replay ledger не ведётся |
 | Область уникальности `idempotency_key` | зависит от операции/адаптера, документируется реализацией |
+| `publish_status`/`request_approval` к несуществующей задаче | `PlaneAPIError` (404): реальный tracker не принимает запись в никуда, `FakeTracker` допускает любой id; сюита сидит задачу самим binding'ом |
 
 ## 10. Связь с другими модулями
 
@@ -332,6 +347,8 @@ State-changing операции используют один из четырё�
 
 - `tests/test_import_boundaries.py` — правила A/B/C направления зависимостей;
 - `tests/contract/` — четырнадцать сюит, по одной на каждый Protocol (от `test_repository_port.py` до `test_sdd_port.py`, включая `test_ci_port.py`, `test_knowledge_port.py`, `test_execution_port.py`): единый поведенческий контракт fake/production adapters;
+- `tests/contract/plane_api.py` — in-memory эмулятор Plane REST API, которым сюита `test_tracker_port.py` параметризована `fake | plane`;
+- `tests/test_plane_tracker_adapter.py`, `tests/test_plane_webhook.py` — маппинг задачи, запись комментарием, guard webhook (все негативные сценарии);
 - `tests/test_agents_contract.py` — версионирование `TaskEnvelope`/`AgentResult`;
 - `tests/test_context_bundle.py` — воспроизводимость, канонический порядок и дубликаты `ContextBundle`;
 - `src/dark_factory/adapters/fakes/` — минимальные эталонные реализации для разработки.
