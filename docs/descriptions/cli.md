@@ -15,6 +15,7 @@
 | Локальный/CI-прогон одной стадии | `stage run` |
 | Продолжение ожидающего запуска | `stage resume` — заглушка, exit 2 |
 | Инспекция запуска | `run status` — заглушка, exit 2 |
+| Публикация индекса run-записи в `dark-factory-runs` | `run publish` (T-061) |
 | Диагностика окружения и конфигурации | `doctor` |
 | Один идемпотентный проход Reconciler | `reconcile` |
 | Доставка, ручной replay и skip outbox-событий | `outbox dispatch` / `replay` / `skip` |
@@ -32,6 +33,7 @@ flowchart TD
     P --> D["dispatch\nисчерпывающий match\nпо типизированным args"]
     D --> SR["stage run\ncli/stage.py"]
     D --> STUB["stage resume, run status\nnot_implemented, exit 2"]
+    D --> PUB["run publish\ncli/runs.py"]
     D --> REC["reconcile\ncli/reconcile.py"]
     D --> OUT["outbox dispatch/replay/skip\ncli/outbox.py"]
     D --> DOC["doctor\ncli/doctor.py"]
@@ -44,6 +46,8 @@ flowchart TD
     OUT --> DISP["OutboxDispatcher +\nDeliveryRepository\norchestration/events/"]
     APIS --> APP["dark_factory.api.create_app\n+ uvicorn"]
     REL --> QREL["quality/release/\nevaluate_release + probes\nбез БД"]
+    PUB --> RUNS["execution/runs/\nRunRecordStore:\nразметка, идемпотентность,\nimmutability, screening"]
+    RUNS --> RUNREPO["checkout dark-factory-runs\nruns/YYYY/MM/change/run/"]
     SVC --> PG["orchestration/state/engine.py\nPostgreSQL (ADR-004)"]
     DISP --> PG
     APP --> PG
@@ -59,6 +63,7 @@ flowchart TD
 | `doctor` | только переменные окружения; соединение с БД не открывается (офлайн-проверки) |
 | `ci_job` | файл `stage_result.json` + `$GITHUB_OUTPUT` |
 | `release verify` | флаги значений наблюдаемого состояния + артефакт `image-digest.json` (T033); опционально change-снапшот + `--evidence-dir` для run record; PostgreSQL не используется |
+| `run publish` | файл `run_record.json` из `--evidence-dir` (`stage run`/`release verify`) + `--runs-root`/`DARK_FACTORY_RUNS_ROOT`; PostgreSQL не используется |
 
 Что пока **не подключено** к production-обвязке (явные заглушки и упрощения):
 
@@ -84,6 +89,7 @@ flowchart TD
 | `doctor` | `--json` | 3 офлайн-проверки окружения | 0/2 |
 | `api serve` | `--host` (по умолчанию `127.0.0.1`), `--port` (по умолчанию `8000`) | Поднять REST API локально | 0/2 |
 | `release verify` | `--expected-digest` XOR `--digest-json`, `--application`, `--observed-digest`, `--argo-sync`, `--argo-health`, `--smoke-url` (+ `--smoke-digest-url`, `--smoke-digest-header`), `--evidence-dir`+`--change` (парой), `--run-id`, `--json` | Верификация деплоя: digest, Argo, smoke → evidence и rollback-сигнал | 0/1/2 |
+| `run publish` | `--record`*, `--runs-root` (или `DARK_FACTORY_RUNS_ROOT`), `--json` | Публикация индекса run-записи в `dark-factory-runs` | 0/1/2 |
 
 `*` — обязательный флаг. `--stage` принимает `specification`, `planning`, `construction`, `review_verification`, `release`; `--route` — `quick`, `standard` (недопустимые значения отсекает argparse, exit 2).
 
@@ -204,14 +210,25 @@ CLI-лицо верификации релиза (US5): проверка неи�
 - **Evidence**: `--evidence-dir` + `--change` — только парой (снапшот фиксирует, что проверялось): run record с секцией `release` (`RunRecord.release` — `ReleaseEvidence`: digest, сырые Argo-статусы, результаты проб, решение, rollback-сигнал; `schema_version` остался 1 — расширение аддитивно).
 - **Коды выхода**: `0` = released; `1` = release_failed — CI краснеет, при настроенном evidence run record всё равно персистится (ничего не теряется молча); `2` = invalid input (ничего не верифицировано).
 
+### 3.9. `run publish` (T-061, ADR-015 p.4)
+
+CLI-лицо протокола run-записи: берёт `run_record.json`, который уже создали `stage run` (T011) или `release verify` (T034) в `--evidence-dir`, проверяет его и раскладывает компактный индекс в checkout репозитория `dark-factory-runs` (ADR-015 п.4). Отдельная команда выбрана намеренно: стадии идут в sandboxed подах (ADR-018), а запись в аудит-репозиторий — действие доверенного публикатора (то же разделение, что у merge-политики, T-026). БД не касается.
+
+- **Корень репозитория**: `--runs-root` или переменная `DARK_FACTORY_RUNS_ROOT`; не задан ни один → exit 2, ничего не записано.
+- **Валидация входа**: файл читается и парсится в `RunRecord` до любых записей — нечитаемый файл или несоответствие схеме → exit 2, частичного дерева не остаётся.
+- **Публикация** (`execution/runs/RunRecordStore`): детерминированный partitioning `runs/<YYYY>/<MM>/<change>/<run>`, идемпотентность (повтор той же записи → `unchanged`), immutability (иное содержимое по тому же адресу → ошибка), атомарная запись через staging-каталог; подробности — [execution.md](execution.md).
+- **Отказ публикации**: секрет или превышение размера, неполная цепочка evidence, конфликт immutability → exit 1; диагностика называет JSON-путь и вид шаблона, но не значение (ADR-009).
+- **Вывод**: текстовая строка или `--json` `{"outcome", "change_id", "run_id", "path"}`.
+- **Коды выхода**: `0` — created или unchanged; `1` — запись отклонена; `2` — невалидный вход/конфигурация.
+
 ## 4. Парсинг и обработка ошибок (`main.py`)
 
-- **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне: `stage {run,resume}`, `run {status}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
+- **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне: `stage {run,resume}`, `run {status,publish}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
 - **Выборы значений**: `--stage`, `--route`, `--next-action` ограничены `choices` из StrEnum (`Stage`, `Route`, `ResumeNextAction`) — недопустимое значение отсекается argparse'ом с exit 2, совпадающим с контрактом. `--help` на любом уровне → exit 0.
-- **Типизированные аргументы**: `parse_command(argv)` = `build_command_args(build_parser().parse_args(argv))`. Плоский namespace превращается в один из десяти frozen-датаклассов union `CommandArgs` (`StageRunArgs`, `StageResumeArgs`, `RunStatusArgs`, `ReconcileArgs`, `OutboxDispatchArgs`, `OutboxReplayArgs`, `OutboxSkipArgs`, `DoctorArgs`, `ApiServeArgs`, `ReleaseVerifyArgs`). Чтение полей идёт через `_option_str`/`_option_int`/`_required_str`/`_flag`: нарушение типа после argparse — программистская ошибка, `AssertionError`.
+- **Типизированные аргументы**: `parse_command(argv)` = `build_command_args(build_parser().parse_args(argv))`. Плоский namespace превращается в один из одиннадцати frozen-датаклассов union `CommandArgs` (`StageRunArgs`, `StageResumeArgs`, `RunStatusArgs`, `RunPublishArgs`, `ReconcileArgs`, `OutboxDispatchArgs`, `OutboxReplayArgs`, `OutboxSkipArgs`, `DoctorArgs`, `ApiServeArgs`, `ReleaseVerifyArgs`). Чтение полей идёт через `_option_str`/`_option_int`/`_required_str`/`_flag`: нарушение типа после argparse — программистская ошибка, `AssertionError`.
 - **Диспетчеризация**: `dispatch(command)` — исчерпывающий `match` по всем вариантам `CommandArgs`; ветка по умолчанию — `assert_never`, поэтому новая команда требует нового кейса на этапе компиляции.
 - **Заглушки**: `_not_implemented(command, planned_task)` печатает диагностику (текст — stderr, JSON — stdout) и возвращает exit 2.
-- **Циклические импорты**: `cli.stage`, `cli.reconcile`, `cli.outbox`, `cli.api` импортируют args-датаклассы и коды выхода из `main`, поэтому `main` импортирует их лениво — внутри обработчиков.
+- **Циклические импорты**: `cli.stage`, `cli.reconcile`, `cli.outbox`, `cli.api`, `cli.runs` импортируют args-датаклассы и коды выхода из `main`, поэтому `main` импортирует их лениво — внутри обработчиков.
 - **`main(argv)`** возвращает `int` — код процесса; `SystemExit` поднимает обёртка: console-script из `pyproject [project.scripts]` или `__main__.py` (`raise SystemExit(main())`).
 - **Гигиена вывода (ADR-009)**: секреты не попадают в отчёты — `doctor` маскирует URL до `scheme://host:port/database`, outbox/reconcile/api не печатают URL и сырой текст исключений, `stage run` в ошибках валидации показывает первые 3 pydantic-ошибки без эхо-входа, аннотации `ci_job` несут только доменные поля.
 
@@ -241,6 +258,11 @@ CLI-лицо верификации релиза (US5): проверка неи�
 | `release verify`: `--smoke-digest-url` без `--smoke-url` | exit 2 — health-проба основа набора |
 | `release verify`: digest/Argo-проверка провалена | пробы не отправляются, exit 1, rollback-сигнал в отчёте и evidence |
 | `release verify`: smoke не пройден или не запускался | `released` невозможен (FR-013, fail-closed), exit 1 |
+| `run publish`: не задан `--runs-root` и пуст `DARK_FACTORY_RUNS_ROOT` | exit 2, тег `invalid_input`, ничего не записано |
+| `run publish`: записи нет или она не соответствует схеме `RunRecord` | exit 2; каталоги runs-репозитория не создаются |
+| `run publish`: секрет, превышение размера или неполная цепочка evidence | exit 1 `run_record_rejected`; значение не эхоится (ADR-009) |
+| `run publish`: по адресу уже лежит другая запись | exit 1 — immutability (ADR-015 п.4), перезаписи нет |
+| `run publish`: та же запись уже опубликована | exit 0, `unchanged`, файлы не переписываются |
 
 ## 6. Где искать проверки
 
@@ -252,7 +274,8 @@ CLI-лицо верификации релиза (US5): проверка неи�
 - [test_cli_reconcile.py](../../tests/test_cli_reconcile.py) — рендер отчёта, уникальный owner_id, ошибки конфигурации;
 - [test_cli_run_records.py](../../tests/test_cli_run_records.py) — резолв коммитов манифеста (env → `GITHUB_SHA` → git HEAD), сборка записи, маппинг статусов run/stage, round-trip release-секции;
 - [test_cli_release.py](../../tests/test_cli_release.py) — exit-коды, invalid-ветки, e2e DoD (успешный и неуспешный smoke → статусы + evidence), rollback-сигнал, короткое замыкание проб, отсутствие эха секретов;
-- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify` и его флагов.
+- [test_cli_runs.py](../../tests/test_cli_runs.py) — `run publish`: exit-коды, форма `--json`, fallback на `DARK_FACTORY_RUNS_ROOT`, отсутствие эха секрета, созданные файлы записи;
+- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify` и `run publish`, их флагов и отсутствующих обязательных опций.
 
 Интеграционные проги dispatch/reconcile над реальной БД живут в отдельных integration-тестах (unit-слои этих файлов БД не касаются).
 
@@ -272,4 +295,5 @@ CLI-лицо верификации релиза (US5): проверка неи�
 - [orchestration-execution.md](orchestration-execution.md) — детерминированные стадии, которые исполняет `stage run`;
 - [orchestration-operations.md](orchestration-operations.md) — Reconciler и outbox, к которым CLI даёт ручной доступ;
 - [orchestration-flow-and-state.md](orchestration-flow-and-state.md) — межстадийный FSM, state store, идемпотентность и lease, на которые опираются `reconcile`/`outbox`/`api serve`;
-- [api.md](api.md) — REST API, который обслуживает `api serve`.
+- [api.md](api.md) — REST API, который обслуживает `api serve`;
+- [execution.md](execution.md) — `RunRecordStore`, в который пишет `run publish`.
