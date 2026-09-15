@@ -38,7 +38,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.19@sha256:b46b03ddfcfbf8f547af7e9eaefdf8a3
 # Deterministic dependency resolution: lockfile only, no bytecode (a .pyc
 # embeds the source mtime and would break reproducibility; the runtime sets
 # PYTHONDONTWRITEBYTECODE=1 instead), and build constraints pin the wheel
-# builder so the project wheel cannot drift with hatchling releases.
+# builder so the project wheel cannot drift with hatchling releases. uv also
+# records its cache state in uv_cache.json inside freshly built dist-info
+# directories with a wall-clock timestamp in the file CONTENTS — deleted in
+# every sync layer below (mtime normalization cannot fix file contents).
 ENV UV_PYTHON_DOWNLOADS=never \
     UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy \
@@ -51,6 +54,7 @@ COPY pyproject.toml uv.lock README.md ./
 # committed to a layer (with normalized mtimes at the end of each RUN).
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project \
+    && find /app -name uv_cache.json -delete \
     && find /app -exec touch -h -d @$SOURCE_DATE_EPOCH {} +
 
 COPY src/ /app/src/
@@ -58,6 +62,7 @@ COPY src/ /app/src/
 # through UV_BUILD_CONSTRAINT), so the runtime stage needs no source tree.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable \
+    && find /app -name uv_cache.json -delete \
     && find /app -exec touch -h -d @$SOURCE_DATE_EPOCH {} +
 
 FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
@@ -77,6 +82,10 @@ RUN set -eux; \
     apt-get update; \
     apt-get install --no-install-recommends -y git; \
     rm -rf /var/lib/apt/lists/*; \
+    # apt/dpkg embed wall-clock timestamps INSIDE log file contents (dpkg.log,
+    # apt history/term) — mtime normalization does not help; the logs are
+    # runtime noise, so delete them for a deterministic layer.
+    find /var/log -type f -delete; \
     find / -path /sys -prune -o -path /proc -prune -o -path /dev -prune \
       -o -path /etc/hosts -prune -o -path /etc/resolv.conf -prune \
       -o -path /etc/hostname -prune \

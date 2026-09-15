@@ -45,17 +45,47 @@ command -v git >/dev/null 2>&1 || { echo "error: git is not available" >&2; exit
 
 cd "$REPO_ROOT"
 
-# A dirty tree changes the build inputs silently — refuse to build.
-git diff --quiet || { echo "error: working tree has unstaged changes; commit or stash first" >&2; exit 1; }
-git diff --cached --quiet || { echo "error: working tree has staged changes; commit first" >&2; exit 1; }
+# A dirty tree inside the build context changes the build inputs silently —
+# refuse to build. Changes outside the context (dockerignore whitelist) do
+# not affect the digest and are not our business here.
+context_paths=(
+    alembic.ini
+    migrations
+    src
+    pyproject.toml
+    uv.lock
+    README.md
+    deploy/ci/image
+)
+dirty=$(git status --porcelain -- "${context_paths[@]}")
+if [ -n "$dirty" ]; then
+    echo "error: files inside the build context have uncommitted changes:" >&2
+    echo "$dirty" >&2
+    exit 1
+fi
 
 SHA=$(git rev-parse HEAD)
 EPOCH=$(git log -1 --format=%ct HEAD)
 TAG=sha-$SHA
 
 # COPY layers preserve context mtimes: normalize the whole tree to the commit
-# timestamp (the CI workflow does the same before its build).
-find . -path ./.git -prune -o -exec touch -h -d @"$EPOCH" {} +
+# timestamp (the CI workflow does the same before its build). python3 does it
+# portably: BSD touch (macOS) does not understand GNU's `-d @epoch`.
+python3 - "$EPOCH" <<'PY'
+import os
+import sys
+
+epoch = int(sys.argv[1])
+
+for root, dirs, files in os.walk("."):
+    dirs[:] = [d for d in dirs if d != ".git"]
+    for name in dirs + files:
+        path = os.path.join(root, name)
+        try:
+            os.utime(path, (epoch, epoch), follow_symlinks=False)
+        except OSError as error:
+            raise SystemExit(f"cannot normalize mtime of {path}: {error}")
+PY
 
 if [ -z "$PLATFORM" ]; then
     PLATFORM=$(docker version --format '{{.Server.Arch}}' | sed 's/^arm64$/linux\/arm64/; s/^x86_64$/linux\/amd64/')

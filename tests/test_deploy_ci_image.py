@@ -57,6 +57,28 @@ def _ci() -> dict:
     return yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _dockerfile_run_instructions() -> list[str]:
+    """RUN instructions with backslash continuations joined into one string.
+
+    Docker strips comment and blank lines before joining continuations, so
+    embedded comments do not split an instruction; per-physical-line checks
+    would silently miss everything after the first continuation line.
+    """
+    lines = [
+        stripped
+        for raw in _dockerfile_text().splitlines()
+        if (stripped := raw.strip()) and not stripped.startswith("#")
+    ]
+    instructions: list[str] = []
+    parts: list[str] = []
+    for line in lines:
+        parts.append(line.removesuffix("\\"))
+        if not line.endswith("\\"):
+            instructions.append(" ".join(parts))
+            parts = []
+    return [instruction for instruction in instructions if instruction.startswith("RUN ")]
+
+
 # --- Dockerfile: reproducibility contract ----------------------------------
 
 
@@ -93,11 +115,13 @@ def test_dockerfile_pins_base_image_by_digest_in_both_stages() -> None:
 def test_dockerfile_source_date_epoch_contract() -> None:
     text = _dockerfile_text()
     assert "ARG SOURCE_DATE_EPOCH" in text
-    # Every RUN that can write files ends with mtime normalization (BuildKit
+    # Every RUN that writes files ends with mtime normalization (BuildKit
     # does not normalize RUN-produced mtimes itself — verified empirically).
-    run_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("RUN ")]
-    assert run_lines, "expected RUN steps in the Dockerfile"
-    for line in run_lines:
+    # Instructions are joined across continuations: the uv sync and apt layers
+    # are multi-line and the normalization sits on their last line.
+    run_instructions = _dockerfile_run_instructions()
+    assert run_instructions, "expected RUN steps in the Dockerfile"
+    for line in run_instructions:
         if "touch" in line:
             assert "-d @$SOURCE_DATE_EPOCH" in line or '-d @"$SOURCE_DATE_EPOCH"' in line
         # uv sync steps must carry the normalization in the same layer.
@@ -105,6 +129,21 @@ def test_dockerfile_source_date_epoch_contract() -> None:
             assert "touch" in line, f"uv sync layer must normalize mtimes: {line}"
         if "apt-get install" in line:
             assert "touch" in line, f"apt layer must normalize mtimes: {line}"
+
+
+def test_dockerfile_strips_timestamps_from_file_contents() -> None:
+    # mtime normalization cannot fix file CONTENTS: uv writes a wall-clock
+    # timestamp into uv_cache.json inside freshly built dist-info directories,
+    # and apt/dpkg embed Start-Date/End-Date inside /var/log (dpkg.log, apt
+    # history/term.log). Both must be deleted in their layers.
+    for line in _dockerfile_run_instructions():
+        if "uv sync" in line:
+            assert "-name uv_cache.json -delete" in line, (
+                f"uv sync layer must delete uv_cache.json: {line}"
+            )
+    apt_layers = [line for line in _dockerfile_run_instructions() if "apt-get install" in line]
+    assert len(apt_layers) == 1, "expected exactly one apt layer"
+    assert "find /var/log -type f -delete" in apt_layers[0], "apt/dpkg logs embed timestamps"
 
 
 def test_dockerfile_dependencies_come_from_the_lockfile() -> None:

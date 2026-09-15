@@ -13,7 +13,10 @@ indexes.
 """
 
 import importlib.metadata
-import subprocess
+
+# Bandit B404: subprocess runs only the fixed argv tuple ("git", "rev-parse",
+# "HEAD") with no shell and no untrusted input (see _git_head below).
+import subprocess  # nosec B404
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -57,8 +60,11 @@ def _git_head() -> str | None:
 
     Kept as a module-level function so tests can monkeypatch it.
     """
+    # Bandit B603: the argv is the fixed tuple ("git", "rev-parse", "HEAD") —
+    # no shell, no untrusted input; the call below is the exact contract the
+    # check asks to verify.
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # nosec B603
             ("git", "rev-parse", "HEAD"),
             check=False,
             capture_output=True,
