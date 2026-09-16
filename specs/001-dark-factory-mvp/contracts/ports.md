@@ -173,11 +173,12 @@ class KnowledgePort(Protocol):
 @runtime_checkable
 class ExecutionPort(Protocol):
     async def prepare_workspace(self, request: WorkspaceRequest, /, *, idempotency_key: str) -> WorkspaceHandle: ...
+    async def write_file(self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str) -> None: ...
     async def run_command(self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str) -> ExecutionResult: ...
     async def collect_evidence(self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str) -> EvidenceFile: ...
 ```
 
-Изолированный worktree от закреплённой ревизии, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; повтор `prepare_workspace` с тем же `idempotency_key` возвращает тот же handle и не создаёт второй workspace (FR-017). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. В P0 реализация — in-memory фейк.
+Изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; повтор `prepare_workspace` с тем же `idempotency_key` возвращает тот же handle и не создаёт второй workspace (FR-017). `write_file` кладёт содержимое в рабочее дерево идемпотентно по состоянию (тот же путь после повтора держит те же байты) — это write-половина `collect_evidence`, через неё инструменты роли правят изолированный workspace (T-092 S2). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. В P0 реализация — in-memory фейк.
 
 ## Порты, вводимые позже (не авансом)
 

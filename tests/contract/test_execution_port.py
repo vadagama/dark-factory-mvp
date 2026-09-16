@@ -3,6 +3,8 @@
 import asyncio
 from hashlib import sha256
 
+import pytest
+
 from dark_factory.ports import (
     ExecutionPort,
     ExecutionResult,
@@ -75,3 +77,43 @@ def test_collect_evidence_returns_hashed_content(
     assert evidence.path == "reports/pytest-report.xml"
     assert evidence.content == b"<testsuite tests='3'/>"
     assert evidence.content_hash == sha256(evidence.content).hexdigest()
+
+
+def test_write_file_is_readable_as_evidence(
+    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+) -> None:
+    asyncio.run(
+        execution_port.write_file(
+            evidence_workspace, "src/app.py", b"print('hi')\n", idempotency_key="wf-1"
+        )
+    )
+    evidence = asyncio.run(
+        execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-2")
+    )
+    assert evidence.content == b"print('hi')\n"
+    assert evidence.content_hash == sha256(evidence.content).hexdigest()
+
+
+def test_write_file_is_idempotent_by_state(
+    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+) -> None:
+    asyncio.run(
+        execution_port.write_file(evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-1")
+    )
+    asyncio.run(
+        execution_port.write_file(evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-2")
+    )
+    evidence = asyncio.run(
+        execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-1")
+    )
+    assert evidence.content == b"v1"
+
+
+def test_write_file_rejects_unknown_workspace(execution_port: ExecutionPort) -> None:
+    unknown = WorkspaceHandle(
+        workspace_id="ws-9999",
+        repository=PRODUCT,
+        revision="abc123",
+    )
+    with pytest.raises(KeyError):
+        asyncio.run(execution_port.write_file(unknown, "src/app.py", b"v1", idempotency_key="wf-1"))

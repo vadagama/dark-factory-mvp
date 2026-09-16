@@ -164,11 +164,21 @@ class KnowledgePort(Protocol):
 
 @runtime_checkable
 class ExecutionPort(Protocol):
-    """Isolated workspaces, command execution and evidence collection (plan T-012)."""
+    """Isolated workspaces, file writes, command execution and evidence (plan T-012).
+
+    ``write_file`` is the write half of ``collect_evidence``: the role tools of an
+    agent stage (``AgentProfile.tools``) edit the isolated workspace through it
+    (T-092 S2), so the port must be able to put content into the workspace, not
+    only read it back. Like every role tool it is bound per workspace, so the
+    method is additive to the versioned contract (ADR-015 p.3).
+    """
 
     async def prepare_workspace(
         self, request: WorkspaceRequest, /, *, idempotency_key: str
     ) -> WorkspaceHandle: ...
+    async def write_file(
+        self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str
+    ) -> None: ...
     async def run_command(
         self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str
     ) -> ExecutionResult: ...
