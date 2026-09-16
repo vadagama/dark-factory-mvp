@@ -1,9 +1,11 @@
 """AST-based import boundary checks for the dark_factory package (ADR-015 p.3).
 
 Rule A: core modules (everything outside ``dark_factory.adapters``) must not import
-``dark_factory.adapters`` or its subpackages.
+``dark_factory.adapters`` or its subpackages — except ``dark_factory.runtime``, the
+named composition root ADR-024 p.5 carves out: it is the one layer allowed to bind
+core to adapters, and the allowlist is exactly that name, not a weakened rule.
 Rule B: ``dark_factory.adapters`` may import from the core only ``dark_factory.ports``
-(plus its own subpackages).
+(plus its own subpackages) — so no adapter may import the runtime either.
 Rule C: core modules must not import external-system SDKs; providers are reached
 only through adapters (explicit denylist; infrastructure drivers such as
 sqlalchemy/psycopg/pydantic are deliberately not on it).
@@ -17,6 +19,7 @@ from typing import Final
 PACKAGE = "dark_factory"
 ADAPTERS = f"{PACKAGE}.adapters"
 PORTS = f"{PACKAGE}.ports"
+RUNTIME = f"{PACKAGE}.runtime"
 SRC_DIR = Path(__file__).resolve().parents[1] / "src" / PACKAGE
 
 EXTERNAL_SDK_MODULES: Final[tuple[str, ...]] = (
@@ -100,6 +103,10 @@ def _violated_rule(package: str, imported: str) -> str | None:
     """Return "A", "B" or "C" if ``package`` importing ``imported`` breaks a rule."""
     if not _matches(package, ADAPTERS):
         if _matches(imported, ADAPTERS):
+            # ADR-024 p.5: the composition root is the one named exception; any
+            # other core module importing adapters stays a violation.
+            if _matches(package, RUNTIME):
+                return None
             return "A"
         if _matches_external_sdk(imported):
             return "C"
@@ -147,6 +154,38 @@ def test_rule_a_allows_external_and_core_imports() -> None:
     source = "import json\nfrom dark_factory.ports import Agent\nfrom . import sibling\n"
     violations = check_source("dark_factory.changes", "dark_factory.changes", source)
     assert violations == []
+
+
+def test_rule_a_allows_the_runtime_composition_root() -> None:
+    # ADR-024 p.5: dark_factory.runtime is the one core layer allowed to bind
+    # core to adapters, and the allowlist covers its subpackages too.
+    source = (
+        "from dark_factory.adapters.harness import PydanticAIHarness\n"
+        "import dark_factory.adapters\n"
+        "from dark_factory.adapters.scm.github import GitHubAdapter\n"
+    )
+    assert check_source("dark_factory.runtime", "dark_factory.runtime", source) == []
+    assert check_source("dark_factory.runtime.composition", "dark_factory.runtime", source) == []
+
+
+def test_rule_a_still_flags_core_neighbours_of_runtime() -> None:
+    # Only the named layer is exempt: a module that merely looks like it (a
+    # sibling of the package, or a different name) keeps the old rule.
+    source = "from dark_factory.adapters.harness import PydanticAIHarness\n"
+    assert [
+        v.rule for v in check_source("dark_factory.runtimes", "dark_factory.runtimes", source)
+    ] == ["A"]
+    assert [v.rule for v in check_source("dark_factory.cli", "dark_factory.cli", source)] == ["A"]
+
+
+def test_rule_b_flags_adapters_importing_runtime() -> None:
+    # ADR-024 p.5: there is no reverse edge — an adapter importing the
+    # composition root (or any core beyond ports) is still a violation.
+    source = "from dark_factory.runtime import build_runtime\n"
+    assert [
+        v.rule
+        for v in check_source("dark_factory.adapters.github", "dark_factory.adapters", source)
+    ] == ["B"]
 
 
 def test_rule_b_flags_adapters_importing_core() -> None:
