@@ -16,6 +16,7 @@
 | [orchestration-operations.md](orchestration-operations.md) | Эксплуатационные подсистемы: outbox events, reconciler, policy (decision class, escalation, merge, participation, risk) |
 | [ports.md](ports.md) | Порты гексагональной архитектуры, DTO, ошибки и правила реализации адаптеров |
 | [agents.md](agents.md) | Контракт агента (envelope), профили ролей, скиллы и подключение к HarnessPort |
+| [runtime.md](runtime.md) | Composition root `dark_factory.runtime`: сборка адаптеров, allowlist границ, привязка инструментов роли и швы рабочего пути |
 | [context.md](context.md) | ContextBundle и SDD-слой: модели ChangeSet, frontmatter, baseline, адаптеры native/Spec Kit/OpenSpec |
 | [quality.md](quality.md) | Независимую приёмку, specification gate и GateDecision — вычисление результатов гейтов |
 | [execution.md](execution.md) | Слой Execution: публикацию run-записей в `dark-factory-runs` — разметка, идемпотентность, immutability, screening, индекс evidence |
@@ -30,6 +31,7 @@ flowchart TD
     TASK["Задача (Change)"] --> STAGE["orchestration/stages/\nвнутристадийное исполнение"]
     CTX["context/\nContextBundle + SDD"] --> STAGE
     AGENTS["agents/\nпрофили, скиллы, envelope"] -.->|"HarnessPort"| STAGE
+    RUNTIME["runtime/\ncomposition root"] -.->|"адаптеры: harness, SCM, OTel"| STAGE
     STAGE --> RESULT["StageResult + NextAction"]
     QUALITY["quality/\nвычисление гейтов"] --> RESULT
     RESULT --> FLOW["orchestration/flow.py\nмежстадийный FSM"]
@@ -64,11 +66,12 @@ flowchart TD
 - `orchestration/state/` — **«как надёжно сохранить operational state?»**;
 - `context/` — **«что агент получает на вход и где живёт SDD-слой?»**;
 - `agents/` — **«каков контракт агента и его профилей?»**;
+- `runtime/` — **«чем собран работающий процесс: какие реализации портов и из какой конфигурации?»**;
 - `ports/` — **«через какие provider-neutral контракты ядро взаимодействует с внешним миром?»**;
 - `execution/` — **«как запись о run попадает в Git так, чтобы её нельзя было незаметно переписать?»**;
 - `cli/` и `api/` — **«как запустить и наблюдать фабрику снаружи?»**.
 
-> В текущем коде доменный Flow, PostgreSQL state store, outbox и reconciler — отдельные подсистемы. Межстадийный драйвер (T-092) существует: `orchestration/runner.advance_run` загружает запуск, вызывает `apply_result()`, сохраняет решение и событие `run.stage_completed` в одной транзакции; внешние эффекты через порты и harness-исполнитель стадии — срез S2. Подсистемы также соединяют CLI-команды (`stage`, `run`, `outbox`, `reconcile`) и HTTP API.
+> В текущем коде доменный Flow, PostgreSQL state store, outbox и reconciler — отдельные подсистемы. Межстадийный драйвер (T-092) существует: `orchestration/runner.advance_run` загружает запуск, вызывает `apply_result()`, сохраняет решение и событие `run.stage_completed` в одной транзакции. Срез S2 добавлен: агентный `StageExecutor` (`orchestration/stages/agent.py` + `tools.py`) запускает стадию через `HarnessPort` с инструментами роли в изолированном workspace и оставляет ветку/change request портам, а `dark_factory.runtime` собирает адаптеры и связывает их (ядро `runtime` не импортирует — швы приходят аргументом). Остаток: реальный адаптер `ExecutionPort` (TD-022) и ре-поинт консольного entry point на runtime (TD-023). Подсистемы также соединяют CLI-команды (`stage`, `run`, `outbox`, `reconcile`) и HTTP API.
 
 ## Канонические источники
 

@@ -84,6 +84,7 @@ SDD-слой для фич. Каноническая модель — **Native S
 ├── specs/                     # артефакты фич Spec Kit bootstrap-фазы (до T-020)
 ├── console/                   # Console MVP (T036, ADR-021): React+Vite+TS, npm; свои CI-гейты и nginx-образ
 └── src/                       # код фабрики (модульный монолит на Python, ADR-002)
+    └── dark_factory/runtime/  # composition root (ADR-024): единственный слой, которому разрешён импорт adapters
 ```
 
 ## Definition of Done
