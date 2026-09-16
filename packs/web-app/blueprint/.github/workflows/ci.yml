@@ -200,6 +200,50 @@ jobs:
       - name: Unit and component tests (vitest)
         run: npm run test
 
+  # Small UIKit gates (packs/ui, ADR-014): the vendored @small/ui workspace
+  # package carries its own lint (ESLint UIKit-policy + stylelint), typecheck,
+  # vitest (components + axe a11y + tokens drift), gate self-test (fixtures:
+  # violations are blocked, clean code passes) and the Storybook build (the
+  # executable UI spec). The visual regression gate is NOT run here: it is
+  # owned by the factory CI in the pinned Playwright container (packs/ui
+  # rules.md determinism contract).
+  frontend-ui-gates:
+    name: Frontend UI kit gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: UI kit lint (ESLint policy + stylelint)
+        run: npm run ui:lint
+
+      - name: UI kit typecheck
+        run: npm run ui:typecheck
+
+      - name: UI kit tests (vitest)
+        run: npm run ui:test
+
+      - name: UI kit gate self-test
+        run: npm run ui:gates
+
+      - name: UI kit Storybook build
+        run: npm run ui:storybook:build
+
   # Trusted backend image build (factory-image pattern, simplified): gates
   # first, multi-arch, immutable sha-<sha> tag, publish only from main.
   image-backend:
@@ -291,7 +335,7 @@ jobs:
   # Node (frontend/.nvmrc), then copied into the nginx image.
   image-frontend:
     name: Frontend OCI image
-    needs: [frontend-lint, frontend-typecheck, frontend-test]
+    needs: [frontend-lint, frontend-typecheck, frontend-test, frontend-ui-gates]
     runs-on: ubuntu-latest
     permissions:
       contents: read

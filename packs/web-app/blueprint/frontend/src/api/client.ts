@@ -40,7 +40,7 @@ export async function fetchHealth(fetchImpl: typeof fetch = fetch): Promise<Heal
   let response: Response;
   try {
     response = await fetchImpl("/api/healthz");
-  } catch (cause) {
+  } catch {
     throw new ApiError(0, "The API is unreachable");
   }
   if (!response.ok) {

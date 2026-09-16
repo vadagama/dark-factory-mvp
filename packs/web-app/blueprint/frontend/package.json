@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Example product web UI from the web-app engineering pack: React + Vite + TypeScript with a @small/ui workspace stub (real Small UIKit lands in T-071, ADR-014).",
+  "description": "Example product web UI from the web-app engineering pack: React + Vite + TypeScript with the real Small UIKit as the @small/ui workspace package (packs/ui, ADR-014).",
   "engines": {
     "node": ">=22"
   },
@@ -13,7 +13,12 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "ui:lint": "npm run lint --workspace @small/ui",
+    "ui:typecheck": "npm run typecheck --workspace @small/ui",
+    "ui:test": "npm run test --workspace @small/ui",
+    "ui:gates": "npm run test:gates --workspace @small/ui",
+    "ui:storybook:build": "npm run storybook:build --workspace @small/ui"
   },
   "workspaces": [
     "packages/ui"

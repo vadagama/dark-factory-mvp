@@ -4,15 +4,18 @@ Blueprint skeleton of a pilot product repository (web-app engineering pack,
 T-070). Copy this tree into a new product repository as-is, then rename the
 placeholders. Stack (fixed by the pack, ADR-014/ADR-015/ADR-019):
 FastAPI + SQLAlchemy async + PostgreSQL on the backend, React + Vite +
-TypeScript with a `@small/ui` workspace stub on the frontend, Helm chart for
-deployment.
+TypeScript with the Small UIKit (`@small/ui` from the `packs/ui` pack:
+components, patterns, DTCG tokens, Storybook, UI gates) on the frontend,
+Helm chart for deployment.
 
 ## Layout
 
 ```
 .github/workflows/ci.yml   CI: gates + trusted image builds (sha-<sha>, main-only publish)
 backend/                   FastAPI app (src/app), Alembic migrations, pytest suite
-frontend/                  React+Vite SPA; packages/ui = @small/ui workspace stub
+frontend/                  React+Vite SPA; packages/ui = @small/ui (Small UIKit:
+                           12 components, 5 patterns, DTCG tokens, Storybook,
+                           UI gates)
 deploy/Dockerfile.backend  backend OCI image (digest-pinned, non-root, uv.lock-frozen)
 deploy/Dockerfile.frontend frontend OCI image (nginx-unprivileged, serves dist/)
 deploy/chart/              Helm chart: backend + frontend + in-chart PostgreSQL
@@ -46,6 +49,7 @@ Tests:
 ```sh
 cd backend  && uv run pytest                       # unit always; integration needs APP_TEST_DATABASE_URL
 cd frontend && npm run lint && npm run typecheck && npm run test
+cd frontend && npm run ui:lint && npm run ui:test && npm run ui:gates   # @small/ui gates
 ```
 
 ## Deployment
@@ -82,5 +86,5 @@ kubectl -n apps-dev create secret generic example-product-db \
 |---|---|
 | `example-product` / `example_product` | package names, DB name, secret name, chart release |
 | `example-org` | image repositories (chart values, CI env) |
-| `@small/ui` stub | `frontend/packages/ui` - replaced by the real Small UIKit (T-071) |
+| `@small/ui` | workspace package name (`frontend/packages/ui`) - optional rename |
 | `sha256:__*_IMAGE_DIGEST__` | chart values - replaced by the GitOps MR |

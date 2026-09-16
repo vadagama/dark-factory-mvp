@@ -5,11 +5,11 @@
 schema: dark-factory.dev/pack/v1
 id: pack:web-app
 name: web-app
-version: 0.1.0
+version: 0.2.0
 description: >-
-  Engineering pack for web-app products: React + Small UIKit stub frontend,
-  FastAPI + PostgreSQL backend, product CI, application Helm chart and test
-  conventions.
+  Engineering pack for web-app products: React frontend with the real Small
+  UIKit (@small/ui workspace package from packs/ui), FastAPI + PostgreSQL
+  backend, product CI, application Helm chart and test conventions.
 contents:
   - path: README.md
     kind: doc
