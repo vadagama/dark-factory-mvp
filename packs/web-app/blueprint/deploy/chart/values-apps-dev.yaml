@@ -1,0 +1,56 @@
+# Environment overlay for the factory pilot namespace `apps-dev` (T029):
+# ResourceQuota requests 500m/1Gi, limits 1 CPU/2Gi, pods 10, LimitRange min
+# 25m/32Mi; egress deny-by-default (no external calls from the pods).
+#
+# Install (namespace comes from -n, not from this file):
+#   helm upgrade --install example-product packs/web-app/blueprint/deploy/chart \
+#     -n apps-dev -f values-apps-dev.yaml
+#
+# The resources below are pinned explicitly so the environment stays inside
+# the quota envelope, including the upgrade peak when the pre-upgrade
+# migrations Job overlaps with the running pods:
+#   requests  375m/416Mi steady, 425m/480Mi peak  (quota 500m/1Gi)
+#   limits    800m/1664Mi steady, 1 CPU/1920Mi peak (quota 1 CPU/2Gi)
+
+fullnameOverride: example-product
+
+backend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+frontend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+migrations:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+postgres:
+  database: example_product
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi

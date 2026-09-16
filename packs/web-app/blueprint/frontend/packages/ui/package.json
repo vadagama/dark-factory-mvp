@@ -1,0 +1,10 @@
+{
+  "name": "@small/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Workspace stub of the Small UIKit (ADR-014): design tokens + Button. The real UIKit (Radix + adapted shadcn, Storybook) lands in T-071.",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

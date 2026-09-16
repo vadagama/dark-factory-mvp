@@ -1,0 +1,16 @@
+/* Minimal global styles; the product owns its real design system. */
+:root {
+  font-family: system-ui, sans-serif;
+  color: #111827;
+  background: #f9fafb;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}

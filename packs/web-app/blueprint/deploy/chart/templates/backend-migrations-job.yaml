@@ -1,0 +1,62 @@
+{{- if .Values.migrations.enabled }}
+{{- /* Schema migrations as a pre-install/pre-upgrade hook Job (factory chart
+pattern). The backend image ships alembic and migrations/; the DATABASE_URL
+secret must exist before the release is applied. */}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "web-app.fullname" . }}-migrations
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "web-app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrations
+          image: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          command:
+            {{- range .Values.migrations.command }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.database.existingSecret }}
+                  key: {{ .Values.backend.database.secretKey }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

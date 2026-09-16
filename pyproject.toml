@@ -68,6 +68,10 @@ select = [
 [tool.mypy]
 python_version = "3.12"
 files = ["src", "tests"]
+# packs/ holds product-repository templates (data, own toolchain) - factory
+# mypy must not crawl them (`mypy .` in CI would hit duplicate module names,
+# e.g. two Alembic env.py).
+exclude = ["^packs/"]
 strict = true
 plugins = ["pydantic.mypy"]
 

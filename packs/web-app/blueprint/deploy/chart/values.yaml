@@ -1,0 +1,136 @@
+# Default values for the web-app chart (web-app engineering pack, T-070).
+# The environment overlay for the factory pilot namespace lives in
+# values-apps-dev.yaml.
+#
+# Release rules of the pack (rules.md, ADR-019): images are referenced by
+# IMMUTABLE DIGEST ONLY. The sha256 placeholders below are valid seed content -
+# the GitOps MR replaces them with real digests after the product CI publishes
+# `sha-<sha>` images on main (pattern: deploy/argocd/gitops-seed/envs/dev/pilot/
+# values.yaml and examples/gitops-mr-digest-change.md). Never a `latest` or a
+# floating tag.
+#
+# Why PostgreSQL is a chart-internal StatefulSet instead of a dependency chart:
+# - parity with the factory bootstrap (deploy/bootstrap/manifests/postgres.yaml,
+#   T029) - the same single-Replica pattern, probes and security context;
+# - digest-pinning stays under the product's control (Bitnami-style dependency
+#   charts pull subcharts whose images cannot be pinned from the parent
+#   values, which breaks the no-floating-tags rule);
+# - the apps-dev egress is deny-by-default, but images are pulled by the
+#   kubelet, not by pods, so no egress exception is needed either way (KISS).
+
+nameOverride: ""
+fullnameOverride: ""
+
+backend:
+  image:
+    repository: ghcr.io/example-org/example-product-backend
+    # PLACEHOLDER digest: replaced by the GitOps MR after the first CI publish.
+    digest: "sha256:__BACKEND_IMAGE_DIGEST__"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8000
+  # Recreate: the apps-dev ResourceQuota fits one pod of this size next to
+  # PostgreSQL and the frontend - a RollingUpdate overlap of two pods would be
+  # rejected by the quota (same reasoning as the factory chart).
+  strategy: Recreate
+  probes:
+    # Liveness WITHOUT the database: a PostgreSQL outage must not restart the
+    # API pod; readiness (below) reflects the real dependency instead.
+    liveness:
+      path: /
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
+    # Readiness WITH the database ping (/api/healthz returns 503 while the DB
+    # is down) - the pod is removed from the Service endpoints.
+    readiness:
+      path: /api/healthz
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
+  # Within the apps-dev quota (requests 500m/1Gi, limits 1 CPU/2Gi): the sum
+  # of backend + frontend + postgres + the transient migrations Job stays
+  # inside the envelope (see values-apps-dev.yaml).
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+  database:
+    # Full DATABASE_URL in a single key (factory chart pattern). The secret is
+    # created OUTSIDE git, e.g. (with the release named example-product):
+    #   kubectl -n apps-dev create secret generic example-product-db \
+    #     --from-literal=DATABASE_URL='postgresql+psycopg://postgres:<password>@example-product-postgres:5432/example_product'
+    existingSecret: example-product-db
+    secretKey: DATABASE_URL
+
+frontend:
+  image:
+    repository: ghcr.io/example-org/example-product-frontend
+    # PLACEHOLDER digest: replaced by the GitOps MR after the first CI publish.
+    digest: "sha256:__FRONTEND_IMAGE_DIGEST__"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+  strategy: Recreate
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+migrations:
+  # Pre-install/pre-upgrade hook Job running the schema migrations (factory
+  # chart pattern). Requires the backend image to ship alembic + migrations/.
+  enabled: true
+  command:
+    - alembic
+    - upgrade
+    - head
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    # PLACEHOLDER digest: pin the exact upstream build you reviewed, e.g.
+    # `docker buildx imagetools inspect postgres:16.4` - then commit the
+    # digest. Never a floating tag.
+    digest: "sha256:__POSTGRES_IMAGE_DIGEST__"
+    pullPolicy: IfNotPresent
+  port: 5432
+  # Database created on first initialization (POSTGRES_DB); the superuser is
+  # the image default `postgres` (POSTGRES_PASSWORD comes from the secret).
+  database: example_product
+  # Single-Replica blueprint database (parity with the factory bootstrap,
+  # T029). This is NOT a managed database and not a HA setup - the pilot
+  # accepts the risk; products with real durability needs replace this
+  # component with a managed/cloud database.
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  credentials:
+    # Secret with POSTGRES_PASSWORD, created OUTSIDE git. The same secret may
+    # serve both the backend DATABASE_URL and the database bootstrap:
+    #   kubectl -n apps-dev create secret generic example-product-db \
+    #     --from-literal=POSTGRES_PASSWORD='<password>'
+    existingSecret: example-product-db
+    secretKey: POSTGRES_PASSWORD
