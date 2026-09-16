@@ -166,6 +166,21 @@ class KnowledgePort(Protocol):
 class ExecutionPort(Protocol):
     """Isolated workspaces, file writes, command execution and evidence (plan T-012).
 
+    ``idempotency_key`` is not one semantic for every method: replay-dedup is
+    correct only where a call mints an external resource (FR-017), so the
+    contract fixes the role per method.
+
+    * ``prepare_workspace`` — replay-dedup by key: the same key returns the same
+      ``WorkspaceHandle`` and never mints a second workspace.
+    * ``write_file`` — idempotent *by state*, not by key: the path holds the
+      written bytes afterwards (last write wins), and a key must not make the
+      adapter drop a write.
+    * ``run_command`` / ``collect_evidence`` — the key only addresses the call in
+      the effect ledger and audit trail: both execute/read the *current* workspace
+      state and must never return a result cached under the key. An agent stage
+      edits files and re-runs the check with a stable key, so a cached result
+      would pin the first (failing) outcome forever.
+
     ``write_file`` is the write half of ``collect_evidence``: the role tools of an
     agent stage (``AgentProfile.tools``) edit the isolated workspace through it
     (T-092 S2), so the port must be able to put content into the workspace, not

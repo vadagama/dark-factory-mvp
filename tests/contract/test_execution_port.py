@@ -5,6 +5,7 @@ from hashlib import sha256
 
 import pytest
 
+from dark_factory.adapters.fakes import FakeExecution
 from dark_factory.ports import (
     ExecutionPort,
     ExecutionResult,
@@ -66,6 +67,28 @@ def test_run_command_failure_branch(failing_execution: ExecutionPort) -> None:
     assert result.stderr != ""
 
 
+def test_run_command_same_key_reflects_current_state(
+    execution: FakeExecution, execution_port: ExecutionPort
+) -> None:
+    # The key addresses the call in the effect ledger; it is NOT a result cache.
+    # An agent edits a file and re-runs the check under the same key, so a port
+    # that replayed the result stored under the key would pin the first
+    # (failing) outcome forever. The fake keeps no key ledger by construction.
+    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    first = asyncio.run(
+        execution_port.run_command(handle, ("pytest", "-q"), idempotency_key="cmd-1")
+    )
+    assert first.ok is True
+
+    execution.seed_failure(("pytest", "-q"), exit_code=1)  # the workspace state changed
+
+    second = asyncio.run(
+        execution_port.run_command(handle, ("pytest", "-q"), idempotency_key="cmd-1")
+    )
+    assert second.ok is False
+    assert second.exit_code == 1
+
+
 def test_collect_evidence_returns_hashed_content(
     execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
 ) -> None:
@@ -107,6 +130,26 @@ def test_write_file_is_idempotent_by_state(
         execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-1")
     )
     assert evidence.content == b"v1"
+
+
+def test_write_file_overwrite_of_equal_length_is_visible(
+    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+) -> None:
+    # Same path, equal-length payloads and the same key: ``write_file`` is
+    # idempotent by state (last write wins), so the second write must land. A
+    # port that deduplicated by key — the reading this contract rules out — would
+    # silently keep the first payload.
+    asyncio.run(
+        execution_port.write_file(evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-1")
+    )
+    asyncio.run(
+        execution_port.write_file(evidence_workspace, "src/app.py", b"v2", idempotency_key="wf-1")
+    )
+    evidence = asyncio.run(
+        execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-1")
+    )
+    assert evidence.content == b"v2"
+    assert evidence.content_hash == sha256(b"v2").hexdigest()
 
 
 def test_write_file_rejects_unknown_workspace(execution_port: ExecutionPort) -> None:

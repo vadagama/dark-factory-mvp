@@ -87,9 +87,14 @@ def resolve_path(path: str) -> str:
 def _key(workspace: WorkspaceHandle, operation: str, target: str) -> str:
     """Idempotency key of one tool call: workspace + operation + target (FR-017).
 
-    Deterministic and content-addressed where the target is content, so a
-    repeated call with the same intent replays the port operation instead of
-    minting a second effect (ADR-006 p.3).
+    The key is the *address* of the call, and what it addresses differs by
+    operation: a write carries the sha256 of its payload in ``target``, so the
+    key addresses the state the call produces and a repeated write of the same
+    content is a genuine no-op. Reads and command runs address their request
+    (path, argv) and feed the effect ledger only: the port must still execute
+    against the *current* workspace state, never replay a result cached under
+    the key — the agent loop edits a file and re-runs the check, so a cached
+    result would be stale (see ``ExecutionPort``).
     """
     digest = hashlib.sha256(f"{workspace.workspace_id}:{operation}:{target}".encode()).hexdigest()
     return f"tool:{operation}:{digest[:32]}"
@@ -154,11 +159,15 @@ class WorkspaceTools:
         """Write text to a workspace file, creating parent directories as needed."""
         target = resolve_path(path)
         payload = content.encode("utf-8")
+        # Content-addressed, not length-addressed: two payloads of equal size
+        # must not share a key, or an adapter that deduplicates by key would
+        # silently drop the second write (FR-017).
+        digest = hashlib.sha256(payload).hexdigest()
         await self._execution.write_file(
             self._workspace,
             target,
             payload,
-            idempotency_key=_key(self._workspace, "write", f"{target}:{len(payload)}"),
+            idempotency_key=_key(self._workspace, "write", f"{target}:{digest}"),
         )
         return f"wrote {target} ({len(payload)} bytes)"
 

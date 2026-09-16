@@ -9,6 +9,12 @@ Rule B: ``dark_factory.adapters`` may import from the core only ``dark_factory.p
 Rule C: core modules must not import external-system SDKs; providers are reached
 only through adapters (explicit denylist; infrastructure drivers such as
 sqlalchemy/psycopg/pydantic are deliberately not on it).
+Rule D: there is no reverse edge into the composition root — a core module outside
+``dark_factory.runtime`` must not import ``dark_factory.runtime`` or any of its
+subpackages (a sibling that merely looks like the runtime, e.g.
+``dark_factory.runtimes``, is not exempt). The runtime and its own subpackages may
+import themselves. This rule covers core only: ``adapters → runtime`` is reported as
+rule B (above), so an import yields exactly one violation, never two.
 """
 
 import ast
@@ -100,7 +106,7 @@ def _matches_external_sdk(name: str) -> bool:
 
 
 def _violated_rule(package: str, imported: str) -> str | None:
-    """Return "A", "B" or "C" if ``package`` importing ``imported`` breaks a rule."""
+    """Return "A", "B", "C" or "D" if ``package`` importing ``imported`` breaks a rule."""
     if not _matches(package, ADAPTERS):
         if _matches(imported, ADAPTERS):
             # ADR-024 p.5: the composition root is the one named exception; any
@@ -108,6 +114,11 @@ def _violated_rule(package: str, imported: str) -> str | None:
             if _matches(package, RUNTIME):
                 return None
             return "A"
+        if not _matches(package, RUNTIME) and _matches(imported, RUNTIME):
+            # ADR-024 p.5: no reverse edge — the runtime may name itself, and no
+            # other core module may name it. Adapters importing the runtime are
+            # rule B, handled below, so this import is reported exactly once.
+            return "D"
         if _matches_external_sdk(imported):
             return "C"
         return None
@@ -178,9 +189,40 @@ def test_rule_a_still_flags_core_neighbours_of_runtime() -> None:
     assert [v.rule for v in check_source("dark_factory.cli", "dark_factory.cli", source)] == ["A"]
 
 
+def test_rule_d_flags_core_importing_the_composition_root() -> None:
+    # ADR-024 p.5: the binding reaches the core as an argument, never as an
+    # import (docs/descriptions/runtime.md §4), so a core module naming the
+    # runtime — or any of its subpackages — is a violation.
+    source = (
+        "from dark_factory.runtime import build_runtime\nimport dark_factory.runtime.composition\n"
+    )
+    assert [v.rule for v in check_source("dark_factory.cli", "dark_factory.cli", source)] == [
+        "D",
+        "D",
+    ]
+    violations = check_source("dark_factory.orchestration", "dark_factory.orchestration", source)
+    assert [v.rule for v in violations] == ["D", "D"]
+
+
+def test_rule_d_allows_the_runtime_and_its_subpackages() -> None:
+    # The composition root may name itself (an ``__init__`` re-export is not a
+    # reverse edge), but a sibling package that merely looks like the runtime is
+    # not exempt.
+    source = (
+        "from dark_factory.runtime import build_runtime\n"
+        "from dark_factory.runtime.composition import Runtime\n"
+    )
+    assert check_source("dark_factory.runtime", "dark_factory.runtime", source) == []
+    assert check_source("dark_factory.runtime.composition", "dark_factory.runtime", source) == []
+    siblings = check_source("dark_factory.runtimes", "dark_factory.runtimes", source)
+    assert [v.rule for v in siblings] == ["D", "D"]
+
+
 def test_rule_b_flags_adapters_importing_runtime() -> None:
     # ADR-024 p.5: there is no reverse edge — an adapter importing the
-    # composition root (or any core beyond ports) is still a violation.
+    # composition root (or any core beyond ports) is still a violation. It stays
+    # rule B (not D): an adapter's imports are governed by rule B, and the
+    # reported list has exactly one entry, so rule D does not double-fire.
     source = "from dark_factory.runtime import build_runtime\n"
     assert [
         v.rule

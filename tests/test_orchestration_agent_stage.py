@@ -47,6 +47,7 @@ from dark_factory.ports import (
     HealthStatus,
     PortError,
     TaskEnvelope,
+    WorkspaceHandle,
     WorkspaceRequest,
 )
 from tests.changes_factories import make_change
@@ -97,6 +98,20 @@ class UnreachableRepository(FakeRepository):
 
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str:
         raise PortError("the provider rejected the installation token")
+
+
+class RecordingExecution(FakeExecution):
+    """Execution fake that records the idempotency key of every write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_keys: list[tuple[str, str]] = []
+
+    async def write_file(
+        self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str
+    ) -> None:
+        self.write_keys.append((path, idempotency_key))
+        await super().write_file(workspace, path, content, idempotency_key=idempotency_key)
 
 
 def _context(
@@ -272,8 +287,8 @@ def test_port_failure_blocks_with_the_exception_type_only() -> None:
 # --- role tools over the isolated workspace --------------------------------
 
 
-def _tools() -> tuple[WorkspaceTools, FakeExecution]:
-    execution = FakeExecution()
+def _tools(execution: FakeExecution | None = None) -> tuple[WorkspaceTools, FakeExecution]:
+    execution = execution if execution is not None else FakeExecution()
     workspace = asyncio.run(
         execution.prepare_workspace(
             WorkspaceRequest(
@@ -304,6 +319,47 @@ def test_write_then_read_round_trips_a_file() -> None:
     tools, _ = _tools()
     asyncio.run(tools.write_file("src/app.py", "print('hi')\n"))
     assert asyncio.run(tools.read_file("src/app.py")) == "print('hi')\n"
+
+
+def test_write_file_key_addresses_content_not_length() -> None:
+    # Two different payloads of the same length must not collide: a key derived
+    # from the byte count would let an adapter that deduplicates by key drop the
+    # second write silently (FR-017).
+    execution = RecordingExecution()
+    tools, _ = _tools(execution)
+    asyncio.run(tools.write_file("src/app.py", "v1"))
+    asyncio.run(tools.write_file("src/app.py", "v2"))
+
+    (first_path, first_key), (second_path, second_key) = execution.write_keys
+    assert first_path == second_path == "src/app.py"
+    assert first_key != second_key
+    assert asyncio.run(tools.read_file("src/app.py")) == "v2"
+
+
+def test_write_file_key_is_stable_for_identical_content() -> None:
+    # The same path and content always resolve to the same key, so replaying the
+    # same write is a true no-op and not a second effect.
+    execution = RecordingExecution()
+    tools, _ = _tools(execution)
+    asyncio.run(tools.write_file("src/app.py", "same"))
+    asyncio.run(tools.write_file("src/app.py", "same"))
+
+    first_key = execution.write_keys[0][1]
+    assert [key for _path, key in execution.write_keys] == [first_key, first_key]
+
+
+def test_write_file_key_addresses_the_path_too() -> None:
+    # The address is (path, content): content alone would make the same bytes
+    # written to two files share one key, and a deduplicating adapter would
+    # create only the first file.
+    execution = RecordingExecution()
+    tools, _ = _tools(execution)
+    asyncio.run(tools.write_file("src/a.py", "same"))
+    asyncio.run(tools.write_file("src/b.py", "same"))
+
+    keys = [key for _path, key in execution.write_keys]
+    assert keys[0] != keys[1]
+    assert asyncio.run(tools.read_file("src/b.py")) == "same"
 
 
 @pytest.mark.parametrize("path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", "src/../../x"])
