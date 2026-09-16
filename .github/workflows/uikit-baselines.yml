@@ -36,7 +36,9 @@ jobs:
     name: Regenerate visual baselines (pinned browser)
     runs-on: ubuntu-latest
     if: github.event.label.name == 'uikit-baselines'
-    container: mcr.microsoft.com/playwright:v1.63.0-noble
+    # Digest = mcr.microsoft.com/playwright:v1.63.0-noble, see image-digest
+    # above (factory-image pattern: no floating tags).
+    container: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
     defaults:
       run:
         working-directory: packs/ui/blueprint/ui
