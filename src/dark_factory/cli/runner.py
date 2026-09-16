@@ -9,9 +9,10 @@ reports it. Exactly one of ``--change-id`` / ``--run-id`` is required.
 
 A repeat of an already committed stage operation writes nothing and reports
 ``replayed`` with the committed result (ADR-006 p.3, the same policy as
-``factory stage run``); a committed ``failed``/``blocked`` result cannot be
-replayed — a retry is a new attempt, which is the retry/resume protocol of slice
-S2 — and is refused with exit 2.
+``factory stage run``). A stage whose attempt ended ``failed``/``blocked`` is
+retried by the next advance: the attempt number advances and a new physical
+attempt of the same logical operation is opened (ADR-006 p.7), so a failed stage
+is re-run rather than refused.
 
 - ``--change-id`` resolves the run from the change: the run id is derived from
   the change snapshot (``state.run_store.generated_run_id``), so a repeated call
@@ -43,10 +44,9 @@ was written), and the four decision fields (``stage_status``, ``run_status``,
 ``next_stage``, ``reason``) are ``null`` there — the flow was not consulted.
 That writer/decider split is deliberate: ``apply_result`` decides in memory and
 the durable writer mirrors the decision through the domain transition tables;
-only the run status additionally goes through
-``ExecutionRepository.update_status``, which today validates the optimistic
-revision and the fencing token, not the status table (known limitation of
-T-092).
+both the stage status and the run status go through those tables — the run status
+additionally passes ``ExecutionRepository.update_status``, which validates the
+optimistic revision, the fencing token and ``RUN_STATUS_TRANSITIONS``.
 
 Exit codes (contract cli.md), for ``run advance``:
 
@@ -59,8 +59,10 @@ Exit codes (contract cli.md), for ``run advance``:
 | 2 | invalid input, unknown change/run, an unadvanceable run, a refused or unreachable store |
 
 A replayed advance reports the status of the committed result it returned —
-``0`` for a committed ``succeeded``, ``10`` for a committed ``waiting`` — the
-same rule ``factory stage run`` applies.
+``0`` for a committed ``succeeded``, ``10`` for a committed ``waiting``, ``20``
+for ``blocked`` and ``1`` for ``failed`` — the same rule ``factory stage run``
+applies to a committed result. A ``failed``/``blocked`` stage is not refused:
+its next advance retries it as a new attempt (ADR-006 p.7).
 
 ``run status`` exits 0 for a run it found, 2 for an unknown run or an
 unreachable store. Errors never echo the database URL or a raw exception text,
@@ -127,12 +129,16 @@ _EXIT_CODE_BY_OUTCOME: Final[dict[RunAdvanceOutcome, int]] = {
 _REPLAY_EXIT_CODE_BY_STATUS: Final[dict[StageStatus, int]] = {
     StageStatus.SUCCEEDED: EXIT_OK,
     StageStatus.WAITING: EXIT_WAITING,
+    StageStatus.FAILED: EXIT_ERROR,
+    StageStatus.BLOCKED: EXIT_BLOCKED,
 }
 """Exit codes of a replayed advance: the committed result status is authoritative.
 
-``REPLAYABLE_RESULT_STATUSES`` has exactly these members, so a replay can never
-ask for a code outside this table — the same rule ``factory stage run`` applies
-to a committed result.
+Every result status is representable. A committed ``succeeded``/``waiting``
+result of the operation the advance would execute is replayed before any write;
+a ``failed``/``blocked`` result is what a racing writer committed for the attempt
+this advance had opened (the retry of such a stage is the *next* attempt,
+ADR-006 p.7) — either way the reported code is the status of that result.
 """
 
 
@@ -305,9 +311,9 @@ def _advance(
             "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
         )
     except RunnerError as exc:
-        # An unknown run, a terminal one, or a stage whose attempt already has a
-        # committed non-replayable result (the S2 retry protocol): the command
-        # cannot advance the run, and nothing was written.
+        # An unknown run or a terminal one: the command cannot advance the run,
+        # and nothing was written. A committed failed/blocked attempt is not a
+        # refusal any more — the next advance retries it (ADR-006 p.7).
         return _report(
             "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
         )

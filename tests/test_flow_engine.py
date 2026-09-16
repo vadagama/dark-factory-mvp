@@ -680,6 +680,27 @@ def test_stale_attempt_is_rejected() -> None:
         )
 
 
+def test_a_failed_attempt_is_retried_as_the_next_attempt() -> None:
+    run = make_run(route=Route.STANDARD)
+    blocked = apply_result(
+        run, _result(Stage.SPECIFICATION, StopAction(outcome=StopOutcome.BLOCKED, reason="blocked"))
+    )
+    assert blocked.stage_status is StageStatus.BLOCKED
+
+    decision = apply_result(
+        run,
+        _result(Stage.SPECIFICATION, WaitForInputAction(reason="retry"), attempt_number=2),
+    )
+
+    # FAILED/BLOCKED -> IN_PROGRESS: the retry is the next physical attempt of the
+    # same operation, so the active stage run advances to attempt 2 and is then
+    # completed by the usual status walk (ADR-006 p.7).
+    assert decision.stage_status is StageStatus.WAITING
+    assert run.status is RunStatus.WAITING
+    assert run.stages[-1].attempt_number == 2
+    assert run.stages[-1].status is StageStatus.WAITING
+
+
 def test_result_status_inconsistent_with_action_is_rejected() -> None:
     run = make_run(route=Route.STANDARD)
     with pytest.raises(FlowStateError):

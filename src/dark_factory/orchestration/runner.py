@@ -12,17 +12,22 @@ Order of one advance, and why:
 
 1. the run is reconstructed from the state store (ADR-004) and its next stage is
    resolved from the route (ADR-005);
-2. the committed result of that stage operation is looked up **before any
-   write**: a ``succeeded``/``waiting`` result is replayed — the advance reports
-   it and writes nothing (ADR-006 p.3, the same policy as ``factory stage run``);
-   a ``failed``/``blocked`` one would need a new attempt of the same operation
-   (ADR-006 p.7), which the retry/resume protocol of slice S2 owns;
-3. only then the run lease is acquired with its fencing token (ADR-006 p.6), and
-   the run is moved to ``running`` through the domain transition table
-   (``ChangeRun.apply_status``), not by a direct write;
-4. the stage operation and its physical attempt are opened (ADR-006 p.3);
+2. the committed result of the operation the advance would execute is looked up
+   **before any write**: a ``succeeded``/``waiting`` result is replayed — the
+   advance reports it and writes nothing, the lease row included (ADR-006 p.3,
+   ADR-024 p.3, the same policy as ``factory stage run``);
+3. otherwise the run lease is acquired with its fencing token (ADR-006 p.6) and
+   everything is re-derived from the run **under the lease**: a concurrent
+   advance may have committed the very attempt in the window between 1 and 3, so
+   the attempt number and the replay check are bound to the state the lease
+   protects instead of to a stale read (ADR-024, условие 2 приёмки S2);
+4. the physical attempt is opened (ADR-006 p.3): for a committed
+   ``failed``/``blocked`` attempt the number advances — the retry of the same
+   logical operation (ADR-006 p.7) — and the inserted attempt row is the durable
+   guard that a second writer can never execute the same attempt twice;
 5. the fixed ``StageContext`` is assembled (FR-001) with the run's persisted
-   budget, and the injected :class:`StageExecutor` produces the result;
+   budget and the attempt number, and the injected :class:`StageExecutor`
+   produces the result;
 6. ``apply_result`` is called — the single flow transition point — with the
    run's history, the merge context and the observed human decisions;
 7. the decision is persisted atomically with its ``run.stage_completed`` event
@@ -30,24 +35,17 @@ Order of one advance, and why:
 
 ``apply_result`` decides in memory and the durable writer mirrors that decision
 through the same domain transition tables; the run status additionally passes
-``ExecutionRepository.update_status``, which today validates the optimistic
-revision and the fencing token, not the status table (see the known limitations
-below).
+``ExecutionRepository.update_status``, which validates the optimistic revision,
+the fencing token and (since S2) the domain ``RUN_STATUS_TRANSITIONS`` table.
 
 The caller owns the transaction and the clock: ``advance_run`` never commits,
 takes ``now`` for determinism and expects the caller (``session_scope``) to
 commit once — an exception rolls the whole advance back, lease included.
 
-Known limitations of slice S1 (T-092):
+Known limitation of slice S1 (T-092) still open in S2:
 
-- **Retry and resume of a non-terminal stage** — bumping the attempt number and
-  opening a new physical attempt for a ``failed``/``blocked`` operation is the
-  retry protocol of ADR-006 p.7 and belongs to slice S2. Until it lands,
-  re-advancing such a stage raises :class:`AttemptAlreadyCommittedError` rather
-  than reopening a finalized attempt (which would also corrupt its
-  ``finished_at``).
-- **A new input revision for a reworked stage** — rework that re-enters a stage
-  with the same revision maps onto that stage's existing operation row
+- **A reworked stage with an unchanged input revision** — rework that re-enters a
+  stage with the same revision maps onto that stage's existing operation row
   (ADR-006 p.3), so a reconstruction resumes the stage the rework left; a
   faithful rework needs the SCM-derived revision of slice S2.
 """
@@ -61,6 +59,7 @@ from typing import Protocol
 from dark_factory.changes.enums import RunStatus, Stage
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
+    RETRYABLE_STAGE_STATUSES,
     RUN_TERMINAL_STATUSES,
     STAGE_TERMINAL_STATUSES,
     Change,
@@ -70,7 +69,6 @@ from dark_factory.changes.run import (
 )
 from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import FlowDecision, apply_result
-from dark_factory.orchestration.idempotency import REPLAYABLE_RESULT_STATUSES
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 from dark_factory.orchestration.stages.context import StageContext
@@ -261,11 +259,18 @@ def advance_run(
     flow advanced into is inserted as a ``pending`` row of its own operation, so
     the next advance finds it and the run chains.
 
-    Replay comes first and writes nothing: a committed ``succeeded``/``waiting``
-    result of the same operation and attempt is returned as
-    :attr:`RunAdvanceOutcome.REPLAYED` (mirroring ``factory stage run``), and a
-    committed ``failed``/``blocked`` result raises
-    :class:`AttemptAlreadyCommittedError` — the retry/resume protocol of slice S2.
+    Replay comes first and writes nothing: a committed result of the operation
+    the advance would execute is returned as :attr:`RunAdvanceOutcome.REPLAYED`
+    before any mutation, so a repeat never touches the durable rows — the lease
+    row included (ADR-024 p.3).
+
+    A stage whose attempt ended ``failed``/``blocked`` is retried: the next
+    execution gets the next attempt number and opens a new physical attempt of
+    the same logical operation (ADR-006 p.7). The attempt number and the replay
+    check are re-derived from the run **under the lease** (ADR-024, условие 2),
+    because a concurrent advance may commit the attempt between the first read
+    and the write; the attempt row the store inserts is the durable guard that
+    no second writer executes the same attempt.
 
     Raises :class:`RunNotFoundError` for an unknown run and
     :class:`RunNotAdvanceableError` for a terminal one; a flow violation
@@ -273,24 +278,35 @@ def advance_run(
     propagates, so an illegal transition can never be papered over.
     """
     reference_now = now if now is not None else datetime.now(UTC)
-    run = store.load(run_id)
-    if run is None:
-        raise RunNotFoundError(f"run {run_id!r} does not exist")
-    if run.status in RUN_TERMINAL_STATUSES:
-        raise RunNotAdvanceableError(f"run {run_id!r} is terminal ({run.status.value})")
-    stage = next_stage(run)
-    if stage is None:
-        raise RunNotAdvanceableError(f"run {run_id!r} has no stage left to execute")
+    run = _advanceable_run(store, run_id)
+    stage = _next_stage_to_execute(run)
     attempt_number = _attempt_number(run, stage)
     input_revision = _pinned_revision(store, run, stage, change)
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
     if committed is not None:
-        # Before any mutation, including the lease: a committed result is the
-        # operation's outcome and a repeat must not touch the durable rows.
-        return _replay(committed, run_id=run.id, stage=stage)
+        # Fast replay (ADR-024 p.3): a committed result of the operation is
+        # authoritative and a repeat is inert — no lease row, no attempt, no
+        # mutation of any kind.
+        return _replay(committed, stage=stage)
+
+    # From here the advance writes. Take the lease first and re-derive the whole
+    # identity from the run under it (ADR-024, условие 2): the attempt number of
+    # a retry is a race otherwise, and the row open_attempt inserts is the
+    # durable guard against a second execution of the same attempt.
+    fencing_token = store.acquire_lease(run_id=run.id, owner_id=owner_id, ttl=lease_ttl)
+    run = _advanceable_run(store, run_id)
+    stage = _next_stage_to_execute(run)
+    attempt_number = _attempt_number(run, stage)
+    input_revision = _pinned_revision(store, run, stage, change)
+    committed = _committed_result(store, run, stage, attempt_number, input_revision)
+    if committed is not None:
+        # A concurrent advance committed the very attempt in the window above:
+        # the committed result is authoritative, nothing of this advance is
+        # written, and the lease is released instead of left behind.
+        store.release_lease(run_id=run.id, owner_id=owner_id, fencing_token=fencing_token)
+        return _replay(committed, stage=stage)
 
     expected_revision = run.state_revision
-    fencing_token = store.acquire_lease(run_id=run.id, owner_id=owner_id, ttl=lease_ttl)
     if run.status is not RunStatus.RUNNING:
         run.apply_status(RunStatus.RUNNING)
     open_stage = store.open_attempt(
@@ -307,6 +323,7 @@ def advance_run(
         run_id=run.id,
         input_revision=input_revision,
         budget=run.budget,
+        attempt_number=attempt_number,
     )
     result = executor(context)
     decision = apply_result(
@@ -332,16 +349,16 @@ def advance_run(
     )
     store.release_lease(run_id=run.id, owner_id=owner_id, fencing_token=fencing_token)
     if not persisted:
-        # A concurrent writer committed this attempt between the replay check and
-        # the write: nothing of this advance was written, so the committed result
-        # is authoritative and the advance reports it instead of an advance.
+        # A concurrent writer committed this attempt between the last replay check
+        # and the write: nothing of this advance was written, so the committed
+        # result is authoritative and the advance reports it instead of an advance.
         committed = _committed_result(store, run, stage, attempt_number, input_revision)
         if committed is None:  # pragma: no cover - the conflict is a committed row
             raise RunnerError(
                 f"stage {stage.value} of run {run.id!r} was not persisted and has no "
-                "replayable committed result"
+                "committed result"
             )
-        return _replay(committed, run_id=run.id, stage=stage)
+        return _replay(committed, stage=stage)
     return RunAdvance(
         outcome=outcome_for(decision),
         stage=decision.stage,
@@ -350,20 +367,35 @@ def advance_run(
     )
 
 
-def _replay(committed: StageResult, *, run_id: str, stage: Stage) -> RunAdvance:
+def _advanceable_run(store: RunStorePort, run_id: str) -> ChangeRun:
+    """The run of ``run_id``, or a loud error when it cannot be advanced."""
+    run = store.load(run_id)
+    if run is None:
+        raise RunNotFoundError(f"run {run_id!r} does not exist")
+    if run.status in RUN_TERMINAL_STATUSES:
+        raise RunNotAdvanceableError(f"run {run_id!r} is terminal ({run.status.value})")
+    return run
+
+
+def _next_stage_to_execute(run: ChangeRun) -> Stage:
+    """Next stage of ``run``, or a loud error when its route is exhausted."""
+    stage = next_stage(run)
+    if stage is None:
+        raise RunNotAdvanceableError(f"run {run.id!r} has no stage left to execute")
+    return stage
+
+
+def _replay(committed: StageResult, *, stage: Stage) -> RunAdvance:
     """Report a committed stage result as the outcome of an advance that wrote nothing.
 
-    ``failed``/``blocked`` results do not replay: they allow a retry of the same
-    logical operation, which is a *new* attempt (ADR-006 p.3/p.7) — the
-    retry/resume protocol of slice S2. Until it lands the driver refuses loudly
-    rather than reopening an attempt whose result is already committed.
+    A committed result of the operation is authoritative for any status: the
+    advance neither executes the stage again nor touches the durable rows. A
+    ``failed``/``blocked`` result does not *block* a retry — the next attempt
+    gets the next number (``_attempt_number``, ADR-006 p.7), so a retry never
+    looks at this attempt's committed row — but when such a result is what a
+    racing writer committed for the very attempt this advance had opened, it is
+    reported honestly instead of as an advance that did not happen.
     """
-    if committed.status not in REPLAYABLE_RESULT_STATUSES:
-        raise AttemptAlreadyCommittedError(
-            f"stage {stage.value} of run {run_id!r} already has a committed "
-            f"{committed.status.value} result; a retry needs a new attempt "
-            "(ADR-006 p.7, slice S2)"
-        )
     return RunAdvance(
         outcome=RunAdvanceOutcome.REPLAYED,
         stage=stage,
@@ -395,15 +427,25 @@ def _active_stage_runs(run: ChangeRun, stage: Stage) -> list[StageRun]:
 
 
 def _attempt_number(run: ChangeRun, stage: Stage) -> int:
-    """Attempt number of the stage operation: the one in flight, else the first.
+    """Attempt number the next execution of ``stage`` gets (ADR-006 p.7).
 
-    ``flow._ensure_stage_run`` rejects a result whose attempt number does not
-    match the active stage run, so the physical attempt opened here and the
-    in-memory stage run must agree on it. Bumping the number for a retry of the
-    same operation is slice S2 (ADR-006 p.7).
+    A stage whose active attempt ended ``failed``/``blocked`` is retried: the
+    next execution is the *next* physical attempt of the same logical operation,
+    so a committed non-replayable result is never re-used as the identity of a
+    new attempt. Every other active state keeps its number: a stage entered for
+    the first time starts at attempt 1 and a ``waiting`` attempt is resumed with
+    its own result already committed (ADR-006 p.8).
+
+    ``flow._ensure_stage_run`` accepts exactly this pairing — the same attempt
+    for a resume, the next one for a retry — and rejects anything else as stale.
     """
     active = _active_stage_runs(run, stage)
-    return active[-1].attempt_number if active else 1
+    if not active:
+        return 1
+    current = active[-1]
+    if current.status in RETRYABLE_STAGE_STATUSES:
+        return current.attempt_number + 1
+    return current.attempt_number
 
 
 def _pinned_revision(store: RunStorePort, run: ChangeRun, stage: Stage, change: Change) -> str:

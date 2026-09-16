@@ -53,6 +53,7 @@ from dark_factory.changes.run import (
     RUN_TERMINAL_STATUSES,
     STAGE_TERMINAL_STATUSES,
     ChangeRun,
+    InvalidStatusTransition,
     StageResult,
     StageRun,
     completion_violations,
@@ -572,13 +573,17 @@ def _ensure_stage_run(run: ChangeRun, result: StageResult) -> StageRun:
 
     A result for a stage without an active (non-terminal) stage run starts a
     new one — this is how the first execution of a stage enters the flow.
-    A result whose attempt does not match the active one is stale and rejected
-    (ADR-006 p.4: protection against outdated results).
+    A result of the *next* attempt of an active FAILED/BLOCKED stage run is the
+    retry of the same logical operation (ADR-006 p.7): the attempt number
+    advances on the existing stage run and the operation key is unchanged. A
+    result whose attempt matches neither is stale and rejected (ADR-006 p.4:
+    protection against outdated results).
 
     The active run is (re)entered as in progress before the result is applied:
     ``pending -> in_progress`` on first entry, ``waiting -> in_progress`` on
-    resume — the T-003 status table has no direct ``pending/waiting ->
-    succeeded`` edge, so handlers can complete the stage in one step.
+    resume, ``failed``/``blocked -> in_progress`` on a retry — the T-003 status
+    table has no direct ``pending/waiting -> succeeded`` edge, so handlers can
+    complete the stage in one step.
     """
     active = [
         s for s in run.stages if s.stage == result.stage and s.status not in STAGE_TERMINAL_STATUSES
@@ -586,10 +591,7 @@ def _ensure_stage_run(run: ChangeRun, result: StageResult) -> StageRun:
     if active:
         stage_run = active[-1]
         if stage_run.attempt_number != result.attempt_number:
-            raise FlowStateError(
-                f"stage {result.stage.value} result from attempt {result.attempt_number} "
-                f"does not match active attempt {stage_run.attempt_number}"
-            )
+            _begin_retry(stage_run, result)
     else:
         if result.attempt_number != 1:
             raise FlowStateError(
@@ -601,6 +603,25 @@ def _ensure_stage_run(run: ChangeRun, result: StageResult) -> StageRun:
     if stage_run.status is not StageStatus.IN_PROGRESS:
         stage_run.apply_status(StageStatus.IN_PROGRESS)
     return stage_run
+
+
+def _begin_retry(stage_run: StageRun, result: StageResult) -> None:
+    """Advance an active stage run to a retry attempt, or reject a stale result.
+
+    Only the next attempt of a FAILED/BLOCKED stage run is a retry (ADR-006
+    p.7); every other mismatch — an older attempt, a jump forward, a result for
+    a stage that is not retryable — is a stale or foreign result and is refused
+    as before (ADR-006 p.4). The domain owns the rule (``StageRun.begin_retry``);
+    the flow translates its refusal into a flow error so the surface stays the
+    same for callers.
+    """
+    try:
+        stage_run.begin_retry(result.attempt_number)
+    except InvalidStatusTransition as exc:
+        raise FlowStateError(
+            f"stage {result.stage.value} result from attempt {result.attempt_number} "
+            f"does not match active attempt {stage_run.attempt_number}"
+        ) from exc
 
 
 def _advance(run: ChangeRun, stage_run: StageRun, target: Stage) -> None:

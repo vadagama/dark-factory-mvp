@@ -77,6 +77,33 @@ def test_stage_status_allows_retry_after_failure() -> None:
         stage.apply_status(StageStatus.IN_PROGRESS)  # succeeded is terminal
 
 
+def test_stage_run_retries_only_to_the_next_attempt_of_a_retryable_status() -> None:
+    stage = StageRun(id="stage-1", stage=Stage.CONSTRUCTION)
+    stage.apply_status(StageStatus.IN_PROGRESS)
+    stage.apply_status(StageStatus.FAILED)
+
+    stage.begin_retry(2)
+    assert stage.attempt_number == 2
+
+    # Only the very next attempt is a retry of this logical operation.
+    with pytest.raises(InvalidStatusTransition):
+        stage.begin_retry(4)
+
+
+def test_stage_run_does_not_retry_a_resumed_or_succeeded_attempt() -> None:
+    waiting = StageRun(id="stage-1", stage=Stage.CONSTRUCTION)
+    waiting.apply_status(StageStatus.IN_PROGRESS)
+    waiting.apply_status(StageStatus.WAITING)
+    with pytest.raises(InvalidStatusTransition):
+        waiting.begin_retry(2)  # a waiting attempt is resumed, not retried
+
+    succeeded = StageRun(id="stage-2", stage=Stage.CONSTRUCTION)
+    succeeded.apply_status(StageStatus.IN_PROGRESS)
+    succeeded.apply_status(StageStatus.SUCCEEDED)
+    with pytest.raises(InvalidStatusTransition):
+        succeeded.begin_retry(2)  # a succeeded operation is final
+
+
 def test_stage_status_rejects_pending_to_succeeded() -> None:
     stage = StageRun(id="stage-1", stage=Stage.SPECIFICATION)
     with pytest.raises(InvalidStatusTransition):

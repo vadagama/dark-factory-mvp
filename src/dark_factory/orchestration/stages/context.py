@@ -34,6 +34,14 @@ class StageContext:
     input_revision: str | None
     required_gates: frozenset[Gate]
     budget: BudgetSnapshot
+    attempt_number: int = 1
+    """Physical attempt this context belongs to (ADR-006 p.7).
+
+    The executor puts it on the result, so a retry of the same logical operation
+    produces a result whose attempt matches the active stage run; the flow
+    rejects a stale attempt (ADR-006 p.4). A caller that does not track attempts
+    (a one-shot deterministic run) keeps the default.
+    """
 
 
 def build_context(
@@ -44,12 +52,15 @@ def build_context(
     run_id: str,
     input_revision: str | None,
     budget: BudgetSnapshot,
+    attempt_number: int = 1,
 ) -> StageContext:
     """Assemble the stage context from the validated snapshot and the flow tables.
 
     The machine gate set comes from ``rules.gates`` — the single source of gate
     policy (ADR-005): on the standard route construction additionally carries the
-    UI gate, the quick route skips it.
+    UI gate, the quick route skips it. ``attempt_number`` is the physical attempt
+    of the operation (ADR-006 p.7); it defaults to the first attempt for callers
+    that do not track retries.
     """
     return StageContext(
         change=change,
@@ -59,4 +70,5 @@ def build_context(
         input_revision=input_revision,
         required_gates=required_gates(route, stage),
         budget=budget,
+        attempt_number=attempt_number,
     )

@@ -26,10 +26,11 @@ from dark_factory.changes.enums import (
     RunStatus,
     Stage,
     StageStatus,
+    StopOutcome,
 )
 from dark_factory.changes.findings import GateResult
 from dark_factory.changes.keys import operation_key
-from dark_factory.changes.next_action import ExecuteStageAction
+from dark_factory.changes.next_action import ExecuteStageAction, StopAction
 from dark_factory.changes.run import Change, InvalidStatusTransition, StageResult
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.cli.main import EXIT_OK, EXIT_WAITING, main
@@ -53,8 +54,13 @@ from dark_factory.orchestration.state.models import (
 )
 from dark_factory.orchestration.state.models import Stage as StageRow
 from dark_factory.orchestration.state.models import StageResult as StageResultRow
-from dark_factory.orchestration.state.repositories import StateError
+from dark_factory.orchestration.state.repositories import (
+    ExecutionRepository,
+    LeaseLostError,
+    StateError,
+)
 from dark_factory.orchestration.state.run_store import (
+    DEFAULT_LEASE_TTL,
     STAGE_COMPLETED_CONSUMERS,
     RunStore,
 )
@@ -119,6 +125,7 @@ def _advancing_executor(context: StageContext) -> StageResult:
         stage=context.stage,
         run_id=context.run_id,
         change_id=context.change.id,
+        attempt_number=context.attempt_number,
         input_revision=context.input_revision,
         status=StageStatus.SUCCEEDED,
         next_action=ExecuteStageAction(next_stage=next_stage),
@@ -126,6 +133,20 @@ def _advancing_executor(context: StageContext) -> StageResult:
             GateResult(gate=gate, status=GateStatus.PASSED, sha=context.input_revision or "")
             for gate in sorted(context.required_gates, key=lambda gate: gate.value)
         ],
+        produced_at=NOW,
+    )
+
+
+def _blocking_executor(context: StageContext) -> StageResult:
+    """Scripted executor that ends the attempt ``blocked`` — a retryable status (ADR-006 p.7)."""
+    return StageResult(
+        stage=context.stage,
+        run_id=context.run_id,
+        change_id=context.change.id,
+        attempt_number=context.attempt_number,
+        input_revision=context.input_revision,
+        status=StageStatus.BLOCKED,
+        next_action=StopAction(outcome=StopOutcome.BLOCKED, reason="budget exhausted"),
         produced_at=NOW,
     )
 
@@ -312,6 +333,68 @@ def test_open_attempt_refuses_to_reopen_a_committed_attempt(
         assert attempt_row.finished_at is not None
 
 
+def test_a_blocked_attempt_is_retried_as_the_next_attempt(
+    session_factory: sessionmaker[Session],
+) -> None:
+    change = make_change()
+    _seed_change(session_factory, change)
+    revision = RunStore.stage_input_revision(change)
+    run_id = _create_run(session_factory, change)
+    key = operation_key(run_id, Stage.SPECIFICATION, revision)
+
+    blocked = _advance(session_factory, change, run_id, executor=_blocking_executor)
+    assert blocked.outcome is RunAdvanceOutcome.BLOCKED
+
+    retried = _advance(session_factory, change, run_id, executor=_advancing_executor)
+
+    # FAILED/BLOCKED -> IN_PROGRESS: the repeat is a new physical attempt of the
+    # same logical operation (ADR-006 p.7) — one operation row, two attempts.
+    assert retried.outcome is RunAdvanceOutcome.ADVANCED
+    assert retried.result.attempt_number == 2
+    with session_scope(session_factory) as session:
+        stage_row = session.execute(
+            select(StageRow).where(StageRow.operation_key == key)
+        ).scalar_one()
+        assert stage_row.attempt_count == 2
+        assert stage_row.status == StageStatus.SUCCEEDED.value
+        first_attempt = session.get(Attempt, f"{key}:1")
+        assert first_attempt is not None
+        assert first_attempt.status == StageStatus.BLOCKED.value
+        assert first_attempt.finished_at is not None
+        second_attempt = session.get(Attempt, f"{key}:2")
+        assert second_attempt is not None
+        assert second_attempt.status == StageStatus.SUCCEEDED.value
+        assert session.get(StageResultRow, f"{key}:1") is not None
+        assert session.get(StageResultRow, f"{key}:2") is not None
+        # The successor stage of the retried advance is its own operation.
+        assert len(list(session.execute(select(StageRow)).scalars())) == 2
+        assert len(list(session.execute(select(OutboxEvent)).scalars())) == 2
+        assert session.get(ExecutionLease, ("execution", run_id)) is None
+
+
+def test_a_live_lease_blocks_a_second_advance(
+    session_factory: sessionmaker[Session],
+) -> None:
+    change = make_change()
+    _seed_change(session_factory, change)
+    run_id = _create_run(session_factory, change)
+
+    with session_scope(session_factory) as session:
+        RunStore(session).acquire_lease(
+            run_id=run_id, owner_id="other-owner", ttl=DEFAULT_LEASE_TTL
+        )
+
+    # The lease is the mutual exclusion of one run (ADR-006 p.6): while another
+    # owner holds it the advance refuses and writes nothing, and the attempt row
+    # stays the durable guard against a second execution.
+    with pytest.raises(LeaseLostError):
+        _advance(session_factory, change, run_id)
+
+    with session_scope(session_factory) as session:
+        assert list(session.execute(select(Attempt)).scalars()) == []
+        assert list(session.execute(select(StageResultRow)).scalars()) == []
+
+
 def test_advance_run_chains_into_the_stage_the_decision_created(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -373,6 +456,38 @@ def test_advance_stage_refuses_a_transition_outside_the_domain_table(
         assert stage_row is not None
         assert stage_row.status == StageStatus.SUCCEEDED.value
         assert stage_row.state_revision == 3
+
+
+def test_update_status_refuses_a_transition_outside_the_domain_table(
+    session_factory: sessionmaker[Session],
+) -> None:
+    change = make_change()
+    _seed_change(session_factory, change)
+    run_id = _create_run(session_factory, change)
+
+    with session_scope(session_factory) as session:
+        store = RunStore(session)
+        token = store.acquire_lease(run_id=run_id, owner_id="test-owner", ttl=DEFAULT_LEASE_TTL)
+        repository = ExecutionRepository(session)
+        # pending -> canceled is a legal edge of the domain table.
+        repository.update_status(
+            run_id, RunStatus.CANCELED, expected_revision=1, fencing_token=token
+        )
+        with pytest.raises(InvalidStatusTransition):
+            # canceled is terminal: the table has no outgoing edge for it at all,
+            # so the persisted status can never leave the domain table
+            # (ADR-024, условие 3).
+            repository.update_status(
+                run_id, RunStatus.RUNNING, expected_revision=2, fencing_token=token
+            )
+
+    # The refused transition wrote nothing: the run stays where the last legal
+    # edge left it.
+    with session_scope(session_factory) as session:
+        execution = session.get(Execution, run_id)
+        assert execution is not None
+        assert execution.status == RunStatus.CANCELED.value
+        assert execution.state_revision == 2
 
 
 def test_runner_state_migration_is_reversible(

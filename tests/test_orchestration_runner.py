@@ -7,7 +7,7 @@ driver (rows, outbox, replay) is covered by
 ``tests/integration/test_runner_advance.py``.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -26,7 +26,6 @@ from dark_factory.changes.run import Change, ChangeRun, StageResult, StageRun
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.flow import FlowDecision, FlowStateError, InvalidFlowTransition
 from dark_factory.orchestration.runner import (
-    AttemptAlreadyCommittedError,
     RunAdvance,
     RunAdvanceOutcome,
     RunNotAdvanceableError,
@@ -55,10 +54,12 @@ class FakeStore:
     reaches the same result through its rows. ``committed_result`` reads the
     recorded results back, like ``StageResultRepository.get``, so a second
     advance over the same operation replays exactly as it does against
-    PostgreSQL. ``conflict_result`` models the one thing the fake cannot produce
+    ``conflict_result`` models the one thing the fake cannot produce
     on its own: another writer committing the same attempt *between* the driver's
     replay check and its write, which makes ``persist_decision`` report that it
-    wrote nothing.
+    wrote nothing. ``on_acquire_lease`` models the other race: another advance
+    committing the attempt after the pre-lease read but before the driver re-reads
+    the run under the lease — the case the S2 re-binding exists for.
     """
 
     run: ChangeRun
@@ -70,6 +71,7 @@ class FakeStore:
     lease_ttls: list[timedelta] = field(default_factory=list)
     created_stages: list[StagePlacement] = field(default_factory=list)
     conflict_result: StageResult | None = None
+    on_acquire_lease: Callable[[], None] | None = None
     results_reads: int = 0
     next_token: int = 1
 
@@ -109,6 +111,8 @@ class FakeStore:
     def acquire_lease(self, *, run_id: str, owner_id: str, ttl: timedelta) -> int:
         assert run_id == self.run.id
         self.lease_ttls.append(ttl)
+        if self.on_acquire_lease is not None:
+            self.on_acquire_lease()
         token = self.next_token
         self.next_token += 1
         return token
@@ -191,6 +195,7 @@ def _executor(
             stage=context.stage,
             run_id=context.run_id,
             change_id=context.change.id,
+            attempt_number=context.attempt_number,
             input_revision=context.input_revision,
             status=status,
             next_action=next_action,
@@ -424,6 +429,7 @@ def test_advance_run_builds_the_context_from_the_run_and_the_snapshot() -> None:
             stage=context.stage,
             run_id=context.run_id,
             change_id=context.change.id,
+            attempt_number=context.attempt_number,
             input_revision=context.input_revision,
             status=StageStatus.WAITING,
             next_action=WaitForInputAction(reason="waiting"),
@@ -553,7 +559,7 @@ def test_advance_run_does_not_replay_a_result_of_another_input_revision() -> Non
     assert len(store.attempts) == 1
 
 
-def test_advance_run_refuses_a_committed_result_that_cannot_be_replayed() -> None:
+def test_advance_run_retries_a_blocked_attempt_as_a_new_attempt() -> None:
     run = _fresh_run()
     store = FakeStore(run=run)
 
@@ -565,16 +571,61 @@ def test_advance_run_refuses_a_committed_result_that_cannot_be_replayed() -> Non
         ),
     )
     assert blocked.outcome is RunAdvanceOutcome.BLOCKED
+    assert [attempt.attempt_number for attempt in store.attempts] == [1]
 
-    with pytest.raises(AttemptAlreadyCommittedError):
-        _advance(store, executor=_waiting())
+    resumed = _advance(store, executor=_waiting())
 
-    # A retry is a new attempt (ADR-006 p.7, slice S2): until it lands the driver
-    # refuses before any write, so the committed attempt stays untouched.
-    assert len(store.attempts) == 1
-    assert len(store.decisions) == 1
+    # FAILED/BLOCKED -> IN_PROGRESS: the repeat is a new physical attempt of the
+    # same logical operation (ADR-006 p.7) — not a refusal and not a replay.
+    assert resumed.outcome is RunAdvanceOutcome.WAITING
+    assert [attempt.attempt_number for attempt in store.attempts] == [1, 2]
+    assert store.attempts[-1].attempt_id.endswith(":2")
+    assert store.attempts[-1].input_revision == REVISION
+    assert resumed.result.attempt_number == 2
+    assert run.stages[0].attempt_number == 2
+    assert run.stages[0].status is StageStatus.WAITING
+
+
+def test_advance_run_retries_a_failed_attempt_of_a_running_stage() -> None:
+    run = _fresh_run()
+    run.status = RunStatus.RUNNING
+    run.stages[0].status = StageStatus.FAILED
+    store = FakeStore(run=run)
+
+    advance = _advance(store, executor=_waiting())
+
+    # A rework leaves the stage FAILED while the run keeps running: the next
+    # advance retries the operation as attempt 2 (ADR-006 p.7).
+    assert advance.outcome is RunAdvanceOutcome.WAITING
+    assert [attempt.attempt_number for attempt in store.attempts] == [2]
+    assert advance.result.attempt_number == 2
+
+
+def test_advance_run_rebinds_the_replay_check_to_the_state_under_the_lease() -> None:
+    run = _fresh_run()
+    change = make_change()
+    store = FakeStore(run=run)
+    committed = _committed_result(run, change)
+
+    def commit_elsewhere() -> None:
+        # Another advance wins the race after our pre-lease read but before we
+        # could re-check: it commits the very attempt we were about to execute.
+        store.history.append(committed)
+        run.stages[0].status = StageStatus.WAITING
+
+    store.on_acquire_lease = commit_elsewhere
+
+    advance = _advance(store, executor=_waiting(), change=change)
+
+    # The attempt number and the replay check are derived from the run under the
+    # lease (ADR-024, условие 2): the committed result wins and the stage is not
+    # executed a second time.
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is committed
+    assert advance.decision is None
+    assert store.attempts == []
+    assert store.decisions == []
     assert store.released == [1]
-    assert run.status is RunStatus.BLOCKED
 
 
 def test_advance_run_reports_a_replay_when_the_write_persisted_nothing() -> None:

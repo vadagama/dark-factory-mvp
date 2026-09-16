@@ -37,17 +37,17 @@ that a decision is one atomic commit (ADR-006 p.8), and the caller
 
 Known limitations of slice S1 (T-092), documented rather than hidden:
 
-- **Re-advancing a stage whose attempt already has a committed result.**
-  :meth:`RunStore.open_attempt` never reopens a finalized attempt — it would
-  corrupt ``finished_at`` and overwrite an outcome that is already committed. A
-  ``succeeded``/``waiting`` result is replayed by the driver before any write; a
-  ``failed``/``blocked`` result needs a *new* attempt of the same operation
-  (ADR-006 p.3/p.7), which is the retry/resume protocol of slice S2.
 - **A reworked stage with an unchanged input revision.** Rework that re-enters an
   earlier stage maps onto that stage's existing operation row (ADR-006 p.3 — the
   same revision is the same logical operation), so the reconstruction resumes the
   stage the rework left. A faithful rework needs the SCM-derived revision of
   slice S2, just like the initial stage revision.
+
+The retry protocol is no longer a limitation: a ``failed``/``blocked`` attempt
+is retried as the next physical attempt of the same logical operation
+(ADR-006 p.7). ``open_attempt`` appends attempt N+1 to the same operation row
+(``attempt_count`` follows), and ``RunStore.load`` reconstructs the stage run
+with that number.
 """
 
 import hashlib
@@ -417,10 +417,12 @@ class RunStore:
 
         A finalized attempt is never reopened: neither its status nor its
         ``finished_at`` is touched, so a committed outcome can never be rewritten
-        by a repeat. The caller is expected to have handled the committed result
-        first (replay it, or open a new attempt — the retry protocol of ADR-006
-        p.7, slice S2); reaching a non-``in_progress`` attempt here is a
-        programming error and raises.
+        by a repeat. The caller handles the committed result first: it replays a
+        committed result of this attempt, or — after a ``failed``/``blocked``
+        attempt — asks for the *next* attempt number, which ``append_attempt``
+        inserts as a fresh attempt of the same operation (ADR-006 p.7).
+        Reaching a non-``in_progress`` attempt here is a programming error and
+        raises.
         """
         row = self._executions.get_or_create_stage(
             execution_id=run.id, stage=stage, input_revision=input_revision

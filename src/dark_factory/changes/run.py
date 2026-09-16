@@ -123,6 +123,18 @@ STAGE_TERMINAL_STATUSES: Final[frozenset[StageStatus]] = frozenset(
     status for status, targets in STAGE_STATUS_TRANSITIONS.items() if not targets
 )
 
+RETRYABLE_STAGE_STATUSES: Final[frozenset[StageStatus]] = frozenset(
+    {StageStatus.FAILED, StageStatus.BLOCKED}
+)
+"""Statuses an attempt may be retried from: FAILED/BLOCKED -> IN_PROGRESS (ADR-006 p.7).
+
+A retry is a new *physical* attempt of the same logical operation: the input
+revision does not change, so the operation key is unchanged and only the attempt
+number advances (``changes.keys.attempt_id``). ``waiting`` is not retryable — a
+waiting attempt is resumed with the same number, the result already committed
+(ADR-006 p.8) — and ``succeeded`` is final (ADR-006 p.3).
+"""
+
 # Statuses a StageResult may carry: an attempt still in progress has no result.
 _RESULT_STATUSES: Final[frozenset[StageStatus]] = frozenset(
     {
@@ -178,6 +190,28 @@ class StageRun(BaseModel):
         self.state_revision += 1
         if target in STAGE_TERMINAL_STATUSES:
             self.finished_at = _now()
+
+    def begin_retry(self, attempt_number: int) -> None:
+        """Advance the stage run to a retry attempt of the same logical operation.
+
+        A retry is allowed only from :data:`RETRYABLE_STAGE_STATUSES` and only to
+        the very next attempt number (ADR-006 p.7): the operation identity — the
+        input revision — is deliberately unchanged, so re-entering the stage is a
+        new physical attempt of one logical operation, never a new operation. The
+        status walk that follows (to ``in_progress``) is validated separately by
+        :meth:`apply_status`, which stays the only status transition point.
+        """
+        if self.status not in RETRYABLE_STAGE_STATUSES:
+            raise InvalidStatusTransition(
+                f"Stage status {self.status.value} does not allow a retry"
+            )
+        expected = self.attempt_number + 1
+        if attempt_number != expected:
+            raise InvalidStatusTransition(
+                f"Retry of attempt {self.attempt_number} must be attempt {expected}, "
+                f"got {attempt_number}"
+            )
+        self.attempt_number = attempt_number
 
 
 class ChangeRun(BaseModel):
