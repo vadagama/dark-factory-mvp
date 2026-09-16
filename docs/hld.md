@@ -5,7 +5,7 @@
 - **Дата**: 2026-09-13
 - **Статус**: 🟡 pre-MVP — архитектурные решения приняты (ADR-001…ADR-019), каркас кода и базовый CI готовы (T-002)
 - **Область**: архитектура MVP фабрики (один оператор, один пилотный продукт, локальный контур)
-- **Связанные документы**: `docs/vision-2026-09-13-v1.md` (зачем и что), `docs/plan.md` (задачи и последовательность), `.specify/memory/constitution.md` (принципы и гейты), `docs/adr/` (решения)
+- **Связанные документы**: `docs/vision-2026-09-13-v1.md` (зачем и что), `specs/001-dark-factory-mvp/tasks.md` (задачи и последовательность), `.specify/memory/constitution.md` (принципы и гейты), `docs/adr/` (решения)
 
 ---
 
@@ -13,7 +13,7 @@
 
 **Software Dark Factory** — конвейер агентной разработки ПО: специализированные агентные роли превращают задачу в работающий, протестированный и задокументированный код, доведённый до merge и деплоя в dev-контур, при избирательном участии человека ([ADR-018](adr/ADR-018-human-participation-autonomous-execution.md)).
 
-Документ отвечает на вопросы: из каких частей состоит система, как они связаны, где проходят границы (модули, порты, репозитории, доверие), как обеспечиваются идемпотентность, восстановление и трассируемость. Детали реализации — в задачах `docs/plan.md`; конкретные решения — в ADR.
+Документ отвечает на вопросы: из каких частей состоит система, как они связаны, где проходят границы (модули, порты, репозитории, доверие), как обеспечиваются идемпотентность, восстановление и трассируемость. Детали реализации — в задачах `specs/001-dark-factory-mvp/tasks.md`; конкретные решения — в ADR.
 
 **Вне области MVP:** production-контур и его автоматизация, Temporal/DBOS, Kafka, полный корпоративный observability-стек, Keycloak/Vault/MinIO/Harbor, OKF knowledge graph, Figma/Web Components UIKit, marketplace ([ADR-009](adr/ADR-009-minimal-bootstrap-otel.md), [ADR-015](adr/ADR-015-repository-boundaries.md), vision §5).
 
@@ -123,7 +123,7 @@ flowchart TD
 
 ## 6. Factory Core: модульная структура
 
-Модульный монолит на Python ([ADR-002](adr/ADR-002-python-core-stack.md)). Каркас пакетов создан в T-002 (`src/dark_factory/`); модули наполняются задачами `docs/plan.md`.
+Модульный монолит на Python ([ADR-002](adr/ADR-002-python-core-stack.md)). Каркас пакетов создан в T-002 (`src/dark_factory/`); модули наполняются задачами `specs/001-dark-factory-mvp/tasks.md`.
 
 | Модуль (пакет) | Ответственность | ADR |
 |---|---|---|
@@ -431,7 +431,7 @@ flowchart TD
 
 - Продуктовое видение и скоуп MVP — `docs/vision-2026-09-13-v1.md`
 - Каноническая модель SDD (Native SDD Core) — `docs/sdd-native-core.md`
-- План работ, критические пути, Definition of Done — `docs/plan.md`
+- План работ, критические пути, Definition of Done — `specs/001-dark-factory-mvp/tasks.md`
 - Принципы, гейты и язык документации — `.specify/memory/constitution.md`, `AGENTS.md`
 - Архитектурные решения — `docs/adr/` (реестр — `docs/adr/README.md`)
 - Индекс документации — `docs/README.md`

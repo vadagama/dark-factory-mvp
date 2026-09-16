@@ -2,7 +2,7 @@
 
 **Feature**: `001-dark-factory-mvp` | **Date**: 2026-09-13 | **Plan**: [`plan.md`](./plan.md) | **Spec**: [`spec.md`](./spec.md)
 
-Руководство по проверке, что фича работает end-to-end. Детали контрактов — [`contracts/`](./contracts/), модель — [`data-model.md`](./data-model.md); здесь — воспроизводимые сценарии и ожидаемый результат. Реализация шагов — в задачах `docs/plan.md`, не здесь.
+Руководство по проверке, что фича работает end-to-end. Детали контрактов — [`contracts/`](./contracts/), модель — [`data-model.md`](./data-model.md); здесь — воспроизводимые сценарии и ожидаемый результат. Реализация шагов — в задачах `specs/001-dark-factory-mvp/tasks.md`, не здесь.
 
 ## Предпосылки
 
@@ -116,4 +116,4 @@ uv run factory outbox dispatch --once
 
 ## Дальше
 
-Следующий шаг bootstrap-фазы — `/speckit-tasks` (Phase 2): разбить план на упорядоченные задачи в `specs/001-dark-factory-mvp/tasks.md` поверх `docs/plan.md`.
+Следующий шаг bootstrap-фазы — `/speckit-tasks` (Phase 2): разбить план на упорядоченные задачи в `specs/001-dark-factory-mvp/tasks.md`.

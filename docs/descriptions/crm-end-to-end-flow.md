@@ -8,7 +8,7 @@
 
 **Что это.** Описательный документ: как устроен производственный цикл фабрики, какие роли что производят, где обязателен человек, а где работа идёт без него, какими машинными проверками гарантируется «сделано по стандартам».
 
-**На чём основано.** `docs/hld.md`, `docs/adr/ADR-001…ADR-022`, `docs/sdd-native-core.md`, `docs/plan.md`, `docs/descriptions/*`, `AGENTS.md`, `.agents/skills/*`, код `src/dark_factory/`, `console/`, `deploy/`, `charts/`, `packs/`, `.github/workflows/`.
+**На чём основано.** `docs/hld.md`, `docs/adr/ADR-001…ADR-022`, `docs/sdd-native-core.md`, `specs/001-dark-factory-mvp/tasks.md`, `docs/descriptions/*`, `AGENTS.md`, `.agents/skills/*`, код `src/dark_factory/`, `console/`, `deploy/`, `charts/`, `packs/`, `.github/workflows/`.
 
 **Как читать.** Документ описывает **целевую модель** (как спроектировано) и отдельно помечает **статус реализации** на сегодня. Где что-то ещё не поставлено в код — это указано явно (см. §12). Это важно: спецификация и реализация в репозитории расходятся, и путать их нельзя.
 

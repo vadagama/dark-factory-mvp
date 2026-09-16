@@ -16,7 +16,7 @@
 |---|---|---|
 | `dark-factory` (локальный, `.agents/skills/`) | Оркестратор конвейера: классификация задач, план, координация, приёмка | План работ, отчёт |
 | `speckit-*` (локальные, `.agents/skills/speckit-*`) | SDD-слой bootstrap-фазы (ADR-001, действует до T-020): constitution, specify, clarify, plan, tasks, analyze, implement, converge | `.specify/`, `specs/<фича>/` |
-| `product` | Продуктовое видение, скоуп MVP, требования, user stories, AC | `docs/vision-<дата>-<версия>.md`, `docs/plan.md` |
+| `product` | Продуктовое видение, скоуп MVP, требования, user stories, AC | `docs/vision-<дата>-<версия>.md`, `specs/001-dark-factory-mvp/tasks.md` |
 | `design` | UX-флоу, состояния экранов, UI-кит, accessibility | UX-спецификации, спеки экранов |
 | `architect` | Архитектура, ADR, техдолг, health score | `docs/architecture*.md`, `docs/adr/ADR-NNN-*.md`, `docs/tech-dept.md` |
 | `infrastructure` | Инфраструктура как код: Terraform, Kubernetes/VM, Helm, сеть, IAM (vendor-neutral); окружения, но не пайплайн и не релиз | IaC, конфигурации окружений |
@@ -78,7 +78,7 @@ SDD-слой для фич. Каноническая модель — **Native S
 │   ├── development-workflow.md # git-цикл задачи: ветка → проверка → MR
 │   ├── hld.md                 # актуальная архитектура; связывает все ADR
 │   ├── sdd-native-core.md     # каноническая модель SDD: Native SDD Core (ADR-020)
-│   └── vision-*.md, plan.md   # создаются скиллом product
+│   └── vision-*.md            # создаются скиллом product
 ├── packs/                     # шаблоны для продуктовых репозиториев: Product Baseline + ChangeSet (ADR-020; T-022)
 ├── .factory/                  # Native SDD Core (ADR-020): product baseline + changes; создаётся в T-020
 ├── specs/                     # артефакты фич Spec Kit bootstrap-фазы (до T-020)
