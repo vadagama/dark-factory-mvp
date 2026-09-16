@@ -1,7 +1,11 @@
 """Factory Runner CLI: entry point and command parsing (T007, contract cli.md).
 
 ``factory`` is the entry point of a factory stage (ADR-006 p.1): the same core
-release runs locally and in CI (FR-022), so no always-on service is needed.
+release runs locally and in CI (FR-022), so no always-on service is needed. The
+console script itself is ``dark_factory.runtime.entrypoint:main`` (ADR-025) — the
+composition layer that assembles the runtime and calls this module's ``main`` with
+the assembled seams; ``python -m dark_factory.cli`` runs this module directly and
+is the explicit core path (deterministic executor, no composition).
 This module owns the command tree (``stage run``/``stage resume``,
 ``run advance``/``run status``/``run publish``, ``reconcile``, ``outbox dispatch``/
 ``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
@@ -24,6 +28,10 @@ published into ``dark-factory-runs``, ADR-015 p.4) in
 ``dark_factory.cli.runs``; ``stage resume`` still reports ``not_implemented``
 with exit code 2 until the durable state-store wiring of the resume protocol
 (ADR-006 p.8) lands.
+
+The ``executor``/``revision_of`` seams of ``run advance`` are values, not imports:
+this module is core and may not name ``dark_factory.runtime`` (ADR-024 p.5), so the
+composition root passes the bindings in (``main``/``dispatch``/``_advance_run``).
 """
 
 import argparse
@@ -32,10 +40,15 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import assert_never
+from typing import TYPE_CHECKING, assert_never
 
 from dark_factory.changes.enums import Route, Stage
 from dark_factory.cli import doctor
+
+if TYPE_CHECKING:
+    # Type-only: the CLI is core and must not pull the driver (or anything it
+    # imports) into the import of the command tree. The seams arrive as values.
+    from dark_factory.orchestration.runner import RevisionResolver, StageExecutor
 
 # Exit codes of the CLI (contract cli.md).
 EXIT_OK = 0
@@ -577,11 +590,16 @@ def _show_run_status(args: RunStatusArgs) -> int:
     return runner.run_status_command(args)
 
 
-def _advance_run(args: RunAdvanceArgs) -> int:
+def _advance_run(
+    args: RunAdvanceArgs,
+    *,
+    executor: "StageExecutor | None" = None,
+    revision_of: "RevisionResolver | None" = None,
+) -> int:
     # Imported here for the same reason as ``_show_run_status``.
     from dark_factory.cli import runner
 
-    return runner.run_advance_command(args)
+    return runner.run_advance_command(args, executor=executor, revision_of=revision_of)
 
 
 def _publish_run(args: RunPublishArgs) -> int:
@@ -642,8 +660,21 @@ def _release_verify(args: ReleaseVerifyArgs) -> int:
     return release.run_release_verify_command(args)
 
 
-def dispatch(command: CommandArgs) -> int:
-    """Execute one parsed command via its handler (exhaustive over the tree)."""
+def dispatch(
+    command: CommandArgs,
+    *,
+    executor: "StageExecutor | None" = None,
+    revision_of: "RevisionResolver | None" = None,
+) -> int:
+    """Execute one parsed command via its handler (exhaustive over the tree).
+
+    ``executor`` and ``revision_of`` are the optional binding seams of
+    ``factory run advance`` and are consumed only by that branch. They are values,
+    not imports: this module is core and must not name ``dark_factory.runtime``
+    (ADR-024 p.5), so the composition root (``runtime.entrypoint``) hands the
+    assembled bindings over as arguments. Every other command ignores them, and
+    both default to ``None`` — the deterministic stage path, as before.
+    """
     match command:
         case StageRunArgs():
             return _run_stage_run(command)
@@ -652,7 +683,7 @@ def dispatch(command: CommandArgs) -> int:
         case RunStatusArgs():
             return _show_run_status(command)
         case RunAdvanceArgs():
-            return _advance_run(command)
+            return _advance_run(command, executor=executor, revision_of=revision_of)
         case RunPublishArgs():
             return _publish_run(command)
         case ReconcileArgs():
@@ -673,10 +704,22 @@ def dispatch(command: CommandArgs) -> int:
             assert_never(command)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Console-script entry point (``factory``, pyproject ``[project.scripts]``).
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    executor: "StageExecutor | None" = None,
+    revision_of: "RevisionResolver | None" = None,
+) -> int:
+    """Run one command from ``argv``; return the process exit code.
 
-    Returns the process exit code; the console-script wrapper (and
-    ``python -m dark_factory.cli``) raises ``SystemExit`` with it.
+    Not the console-script target any more: ``factory`` points at
+    ``dark_factory.runtime.entrypoint:main``, the composition root that assembles
+    the runtime and passes ``executor``/``revision_of`` (ADR-025). This function
+    stays the command tree's own entry point, usable without seams — ``python -m
+    dark_factory.cli`` is the explicit core path, and both the wrapper and
+    ``__main__.py`` raise ``SystemExit`` with the returned code.
+
+    Without ``executor``/``revision_of`` the deterministic stage path runs: this
+    module cannot reach the composition root itself (ADR-024 p.5).
     """
-    return dispatch(parse_command(argv))
+    return dispatch(parse_command(argv), executor=executor, revision_of=revision_of)

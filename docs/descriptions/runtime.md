@@ -18,6 +18,7 @@
 | Сборка адаптеров (`PydanticAIHarness`, `GitHubAdapter`, `OtlpTelemetryAdapter`) | Драйвер запуска (`orchestration/runner`) — он зависит только от портов |
 | Привязка инструментов роли к harness (`Runtime.harness_of`) | Реализации инструментов (`orchestration/stages/tools`) — это ядро |
 | Выдача швов рабочего пути: `agent_stage_executor()`, `revision_of()` | Персистентность, идемпотентность, транзакции — это `orchestration/state` |
+| Точка входа процесса `factory` (`runtime.entrypoint:main`, ADR-025): ленивая сборка под команду и передача швов в CLI | Логика команд, разбор аргументов, коды выхода — это `cli/` |
 
 Если `runtime` начнёт принимать решения о том, *что делать*, а не о том, *чем это делать*, — слой вышел за границу.
 
@@ -42,16 +43,24 @@
 
 ## 4. Как собранное связывание попадает в рабочий путь
 
-Ядро не импортирует `runtime`, поэтому привязка приходит **аргументом**:
+Ядро не импортирует `runtime`, поэтому привязка приходит **аргументом**, а не импортом:
 
 ```text
-dark_factory.runtime (build_runtime)          dark_factory.cli / orchestration
-        │                                              │
-        │  executor, revision_of                       │
-        └──────────────► run_advance_command ──► advance_run ──► StageExecutor
+dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
+        │  build_runtime()                             │
+        │  executor, revision_of                        │
+        └─────► cli.main.main(argv, …) ──► run_advance_command ──► advance_run ──► StageExecutor
 ```
 
-`advance_run` и `cli.runner.run_advance_command` имеют необязательные швы `executor` и `revision_of`; без них работает детерминированный путь (`waiting`/`blocked`) и digest снапшота как ревизия — поведение среза S1 не меняется. Кто именно вызывает `run_advance_command` с собранными швами (консольный entry point) — открытый вопрос TD-023: ре-поинт `[project.scripts]` это структурное решение.
+Точка входа процесса — `dark_factory.runtime.entrypoint:main` (console-script `factory` в `pyproject [project.scripts]`, ADR-025). Модуль — **связывание, а не логика** (ADR-024 п.5): он разбирает команду через `cli.main.parse_command` и только для `run advance` собирает runtime из окружения процесса (`build_runtime()`), после чего вызывает `cli.main.main(argv, executor=…, revision_of=…)`. Швы протащены значениями: `cli.main.main` → `dispatch` → `_advance_run` → `cli.runner.run_advance_command`. Типы `StageExecutor`/`RevisionResolver` живут в `orchestration.runner` и подключены в CLI под `TYPE_CHECKING`: модуль остаётся core и не тянет драйвер в свой импорт.
+
+Композиция **ленивая по команде**:
+
+- `run advance` — единственная команда, чей рабочий путь потребляет швы. Runtime собирается, швы передаются, а собранные адаптеры освобождаются в `finally` (`asyncio.run(runtime.aclose())`) — в том числе когда команда завершилась ошибкой;
+- `doctor`, `stage run`, `run status`, `reconcile`, outbox-команды, `api serve`, `release verify` — зависят только от core: runtime не собирается, окружение сверх нужного самой команде не читается, поведение — ровно как у CLI;
+- `python -m dark_factory.cli` — **явный core-путь**: та же команда без сборки процесса (`executor`/`revision_of` = `None`, детерминированный исполнитель).
+
+`advance_run` и `cli.runner.run_advance_command` имеют необязательные швы `executor` и `revision_of`; без них работает детерминированный путь (`waiting`/`blocked`) и digest снапшота как ревизия — поведение среза S1 не меняется, и `run_advance_command` остаётся вызываемым напрямую.
 
 ## 5. Граничные случаи
 
@@ -59,15 +68,21 @@ dark_factory.runtime (build_runtime)          dark_factory.cli / orchestration
 - `harness_of` без конфигурации — `RuntimeNotConfiguredError`, а не `None`-harness: запрос на несуществующее обязан быть громким.
 - Сломанная telemetry-конфигурация — `ValueError` из `build_runtime`, не «telemetry отключена».
 - Инструменты не собираются без workspace: `Runtime.harness_of` принимает уже разрешённые callables, а не имена.
+- Команда, которой связывание не нужно (`doctor`, `stage run`, `run status`, …), — runtime не собирается, `build_runtime` не вызывается.
+- Ошибка разбора команды (`factory bogus`, недопустимое значение, `--help`) — argparse выходит с кодом 2/0 **до** решения о сборке: runtime не собирается.
+- Сбой внутри `run advance` (исключение из CLI) — runtime всё равно закрыт (`finally`), ресурсы адаптеров не утекают.
+- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of` = `None`, и команда идёт детерминированным путём (TD-022: реального адаптера `ExecutionPort` пока нет).
 
 ## 6. Где искать проверки
 
+- [`test_runtime_entrypoint.py`](../../tests/test_runtime_entrypoint.py) — точка входа процесса: `run advance` собирает runtime и передаёт швы в CLI, runtime закрывается (в том числе при ошибке команды), команда без швов runtime не собирает и швов не передаёт, ошибка разбора не собирает runtime, `cli.main` доносит швы до `runner.run_advance_command`, а без швов ведёт себя как раньше;
 - [`test_runtime_composition.py`](../../tests/test_runtime_composition.py) — пустая и полная конфигурация, сборка исполнителя и её отсутствие без `ExecutionPort`, привязка инструментов роли к harness, громкий отказ `harness_of`, fail-closed telemetry, `aclose`;
 - [`test_import_boundaries.py`](../../tests/test_import_boundaries.py) — allowlist `runtime` в правиле A, запрет обратного ребра (правило D: ядро вне `runtime` — `dark_factory.cli`, `dark_factory.orchestration` и т.п. — не импортирует `runtime` и его подпакеты; `adapters → runtime` — правило B) и запрет соседям (`dark_factory.cli` и т.п.) импортировать адаптеры;
 - [`test_orchestration_agent_stage.py`](../../tests/test_orchestration_agent_stage.py) — агентный исполнитель и инструменты, которые `runtime` связывает.
 
 ## 7. Связанные решения
 
+- [ADR-025](../adr/ADR-025-process-entry-point-and-lazy-composition.md) — точка входа процесса и ленивая композиция: `factory` → `runtime.entrypoint:main`, сборка только для `run advance`, `python -m dark_factory.cli` как core-путь;
 - [ADR-024](../adr/ADR-024-durable-run-driver-and-composition-root.md) — durable-драйвер и composition root (п.5 — границы слоя, allowlist, запрет обратного ребра);
 - [ADR-015](../adr/ADR-015-repository-boundaries.md) п.3 — правила границ импортов и versioned-контракты;
 - [ADR-007](../adr/ADR-007-nine-role-catalog.md) п.3 — контракт `AgentProfile → TaskEnvelope → AgentResult` и привязка инструментов;
