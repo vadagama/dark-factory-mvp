@@ -38,9 +38,12 @@
 | review | человеческое approve продуктового MR; merge — только человек (ADR-011) | продуктовый репозиторий |
 | verification | release evidence: digest образа, smoke в dev, GateDecision | пилотный прогон фабрики (T-045) |
 
-- UI-гейты (UIKit-policy ESLint с запретом импортов вне `@small/ui`, stylelint,
-  axe/WCAG 2.2 AA, visual regression) и Storybook приходят с пака `packs/ui`
-  (T-071, ADR-014). В T041 `@small/ui` — слой-заготовка: гейтов на него нет,
-  импортировать его из страниц продукта — уже норма шаблона.
+- UI-гейты входят в blueprint: workspace-пак `@small/ui` — реальный Small UIKit
+  из пака `packs/ui` (T042, ADR-014) с UIKit-policy ESLint (запрет импортов вне
+  `@small/ui`), stylelint, axe-тестами, Storybook-сборкой и самотестом гейтов
+  (`npm run ui:*` в `frontend`, джоба `frontend-ui-gates` продуктового CI).
+  Visual regression исполняется в фабричном CI на паке `packs/ui` в закреплённом
+  браузерном контейнере (контракт детерминизма — `packs/ui/rules.md`);
+  неавтоматизируемые критерии WCAG 2.2 AA подтверждает человек как UI evidence.
 - Продукт не зависит от внутреннего Python API фабрики (ADR-015 п.6):
   интеграция — через схемы, CLI и этот версионированный пак.

@@ -7,9 +7,11 @@ PostgreSQL), продуктовый CI, Helm chart приложения и те�
 а «уплывший» шаблон ловится тестами фабрики (`tests/test_packs_web_app.py`),
 не падением в продукте.
 
-UI-слой в T041 — заготовка (`@small/ui`: tokens + Button на воркспейс-алиасе);
-реальный Small UIKit, Storybook и UI-гейты приходят отдельным паком `packs/ui`
-(T-071, ADR-014). Console фабрики UI-кит продуктов не определяет.
+UI-слой — реальный Small UIKit из пака `packs/ui` (T042, ADR-014): workspace-пак
+`@small/ui` в blueprint содержит 12 компонентов и 5 паттернов поверх Radix,
+DTCG-токены, Storybook как исполняемую спеку и UI-гейты (UIKit-policy ESLint,
+stylelint, axe, Storybook-сборка в продуктовом CI; visual regression —
+закреплён за фабричным CI). Console фабрики UI-кит продуктов не определяет.
 
 ## Структура
 
@@ -23,7 +25,7 @@ web-app/
     ├── README.md              # как запустить локально и как деплоится
     ├── .github/workflows/ci.yml  # CI продукта: гейты + публикация образов
     ├── backend/               # FastAPI: src-layout, Alembic, async SQLAlchemy
-    ├── frontend/              # React + Vite + TS, воркспейс-слой @small/ui
+    ├── frontend/              # React + Vite + TS, воркспейс-пак @small/ui (Small UIKit из packs/ui)
     └── deploy/                # Dockerfile.backend/.frontend + Helm chart
 ```
 

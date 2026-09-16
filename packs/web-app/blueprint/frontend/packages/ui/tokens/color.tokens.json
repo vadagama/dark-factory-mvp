@@ -1,0 +1,27 @@
+{
+  "color": {
+    "$type": "color",
+    "bg": { "$value": "#f9fafb" },
+    "surface": { "$value": "#ffffff" },
+    "text": { "$value": "#111827" },
+    "text-muted": { "$value": "#4b5563" },
+    "accent": { "$value": "#2563eb" },
+    "accent-strong": { "$value": "#1e40af" },
+    "accent-soft": { "$value": "#dbeafe" },
+    "on-accent": { "$value": "#ffffff" },
+    "success": { "$value": "#15803d" },
+    "success-strong": { "$value": "#166534" },
+    "success-soft": { "$value": "#dcfce7" },
+    "warning": { "$value": "#b45309" },
+    "warning-strong": { "$value": "#92400e" },
+    "warning-soft": { "$value": "#fef3c7" },
+    "danger": { "$value": "#dc2626" },
+    "danger-strong": { "$value": "#991b1b" },
+    "danger-soft": { "$value": "#fee2e2" },
+    "neutral-soft": { "$value": "#f3f4f6" },
+    "border": { "$value": "#d1d5db" },
+    "border-strong": { "$value": "#9ca3af" },
+    "focus-ring": { "$value": "#2563eb" },
+    "overlay": { "$value": "rgba(17, 24, 39, 0.55)" }
+  }
+}

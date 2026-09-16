@@ -1,4 +1,4 @@
-# Пак `packs/web-app` — engineering pack пилотного продукта (T-070, T041)
+# Пак `packs/web-app` — engineering pack пилотного продукта (T-070, T041, T042)
 
 Engineering pack для веб-приложений: шаблон продуктового репозитория (blueprint),
 продуктовый CI, Helm chart приложения и тестовые конвенции. Стек зафиксирован
@@ -16,7 +16,7 @@ blueprint собирается и деплоится самостоятельн�
 
 ```
 packs/web-app/
-├── pack.yaml            # манифест: schema dark-factory.dev/pack/v1, id pack:web-app, version 0.1.0
+├── pack.yaml            # манифест: schema dark-factory.dev/pack/v1, id pack:web-app, version 0.2.0
 ├── CHANGELOG.md         # история версий пака (SemVer; версия = pack.yaml.version)
 ├── README.md            # назначение, применение, версионирование
 ├── rules.md             # правила пака + тестовые конвенции продукта
@@ -24,7 +24,7 @@ packs/web-app/
     ├── README.md        # локальный запуск и деплой нового продукта
     ├── .github/workflows/ci.yml   # CI продукта: гейты + доверенная сборка образов
     ├── backend/         # FastAPI: src/app, /api/healthz, Alembic, pytest, uv.lock
-    ├── frontend/        # React+Vite+TS; packages/ui = @small/ui workspace-заготовка
+    ├── frontend/        # React+Vite+TS; packages/ui = Small UIKit (@small/ui)
     └── deploy/
         ├── Dockerfile.backend / Dockerfile.frontend
         └── chart/       # Helm chart: backend + frontend + in-chart PostgreSQL
@@ -40,10 +40,14 @@ packs/web-app/
   integration с skip без `APP_TEST_DATABASE_URL`.
 - **Frontend**: одна страница `HealthPage` (loading/ready/error, retry),
   типизированный клиент `fetchHealth`, тесты vitest + testing-library;
-  `@small/ui` — workspace-заготовка UIKit (tokens + Button); реальный Small
-  UIKit (Radix + shadcn, Storybook, UI-гейты) — T-071.
+  `packages/ui` — реальный Small UIKit `@small/ui` (12 компонентов + 5
+  паттернов, токены DTCG, Storybook, UI-гейты —
+  `docs/descriptions/ui-kit.md`), подключенный скриптами `ui:*` и
+  ESLint-политикой кита.
 - **CI продукта**: ruff + mypy strict + pytest (с service-PostgreSQL) и
-  eslint + tsc + vitest; OCI-образы backend+frontend — multi-arch
+  eslint + tsc + vitest; гейты Small UIKit (`ui:lint`, `ui:typecheck`,
+  `ui:test`, `ui:gates`, `ui:storybook:build` — джоба `frontend-ui-gates`,
+  блокирует сборку frontend-образа); OCI-образы backend+frontend — multi-arch
   linux/amd64+arm64, тег только immutable `sha-<sha>`, публикация только из
   main (fork-PR и обычные ветки собирают, но не публикуют — CAN_PUSH),
   gitleaks и fail-closed trivy, digest-evidence артефактом; checkout всегда
@@ -68,12 +72,13 @@ packs/web-app/
 ## Как применить
 
 1. Скопировать `blueprint/` в новый продуктовый репозиторий; переименовать
-   placeholder'ы (`example-product`, `example-org`, `@small/ui`).
-2. Заменить заготовку `@small/ui` реальным Small UIKit после T-071.
-3. CI продукта на main публикует `sha-<sha>` в ghcr; GitOps-MR подставляет
+   placeholder'ы (`example-product`, `example-org`). Small UIKit уже внутри
+   blueprint (`frontend/packages/ui`) — при обновлении кита брать актуальную
+   копию из `packs/ui/blueprint/ui/` (паритет проверяют тесты фабрики).
+2. CI продукта на main публикует `sha-<sha>` в ghcr; GitOps-MR подставляет
    digest в chart values (пример формы MR —
    `deploy/argocd/gitops-seed/examples/gitops-mr-digest-change.md`).
-4. Релиз: `helm upgrade --install example-product deploy/chart -n apps-dev -f
+3. Релиз: `helm upgrade --install example-product deploy/chart -n apps-dev -f
    deploy/chart/values-apps-dev.yaml` (через Argo CD); секрет
    `example-product-db` создаётся вне git.
 

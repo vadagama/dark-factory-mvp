@@ -11,7 +11,8 @@
 | [orchestration-flow-and-state.md](orchestration-flow-and-state.md) | Межстадийный автомат `flow.py`, PostgreSQL state store, идемпотентность, merge policy и эскалации в Flow |
 | [orchestration-execution.md](orchestration-execution.md) | Внутристадийное исполнение: snapshot, контекст, taskgraph, детерминированный executor, bounded rework |
 | [budget.md](budget.md) | Бюджет-координатор `orchestration/budget/`: run/role-лимиты и allowance, резервации, вердикт Awaiting Decision и его отображение в `BLOCKED` и Console |
-| [web-app-pack.md](web-app-pack.md) | Engineering pack `packs/web-app`: blueprint продуктового репозитория (FastAPI+PostgreSQL, React+Vite+TS с заготовкой `@small/ui`), продуктовый CI, Dockerfile'ы, Helm chart с in-chart PostgreSQL и правила применения |
+| [web-app-pack.md](web-app-pack.md) | Engineering pack `packs/web-app`: blueprint продуктового репозитория (FastAPI+PostgreSQL, React+Vite+TS с Small UIKit `@small/ui`), продуктовый CI, Dockerfile'ы, Helm chart с in-chart PostgreSQL и правила применения |
+| [ui-kit.md](ui-kit.md) | Small UIKit `packs/ui` (ADR-014): 12 компонентов + 5 паттернов, токены DTCG, Storybook как исполняемая спека, четыре UI-гейта и детерминизм visual regression |
 | [orchestration-operations.md](orchestration-operations.md) | Эксплуатационные подсистемы: outbox events, reconciler, policy (decision class, escalation, merge, participation, risk) |
 | [ports.md](ports.md) | Порты гексагональной архитектуры, DTO, ошибки и правила реализации адаптеров |
 | [agents.md](agents.md) | Контракт агента (envelope), профили ролей, скиллы и подключение к HarnessPort |

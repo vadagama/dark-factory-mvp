@@ -81,10 +81,9 @@ BLUEPRINT_FILES = (
     "frontend/src/pages/HealthPage.tsx",
     "frontend/src/pages/HealthPage.test.tsx",
     "frontend/src/test/setup.ts",
-    "frontend/packages/ui/package.json",
-    "frontend/packages/ui/src/index.ts",
-    "frontend/packages/ui/src/Button.tsx",
-    "frontend/packages/ui/src/tokens.ts",
+    # frontend/packages/ui is the vendored Small UIKit (packs/ui): its file set
+    # and byte parity with the pack blueprint are asserted in
+    # tests/test_packs_ui.py, so they are not enumerated here.
     "deploy/Dockerfile.backend",
     "deploy/Dockerfile.frontend",
     "deploy/chart/Chart.yaml",
@@ -244,14 +243,21 @@ def test_frontend_package_json_is_valid() -> None:
     assert {"react", "react-dom"} <= set(pkg["dependencies"])
     for script in ("dev", "build", "test", "lint", "typecheck"):
         assert script in pkg["scripts"]
+    # Small UIKit gates run through the workspace scripts (packs/ui, ADR-014).
+    for script in ("ui:lint", "ui:typecheck", "ui:test", "ui:gates", "ui:storybook:build"):
+        assert script in pkg["scripts"]
     assert (FRONTEND / "package-lock.json").stat().st_size > 1000, "lockfile must be committed"
     assert "npm ci" in _read(WORKFLOW)
 
 
-def test_small_ui_workspace_stub_exists() -> None:
+def test_small_ui_workspace_package_is_the_real_kit() -> None:
     ui_pkg = json.loads(_read(FRONTEND / "packages" / "ui" / "package.json"))
     assert ui_pkg["name"] == "@small/ui"
-    assert ui_pkg["exports"] == {".": "./src/index.ts"}
+    assert ui_pkg["exports"] == {
+        ".": "./src/index.ts",
+        "./styles.css": "./src/styles.css",
+        "./tokens.css": "./src/tokens.css",
+    }
     index = _read(FRONTEND / "packages" / "ui" / "src" / "index.ts")
     assert "Button" in index
     assert "tokens" in index
@@ -337,6 +343,13 @@ def test_product_workflow_runs_the_release_rules() -> None:
     _assert_run_contains(jobs["frontend-typecheck"], "npm run typecheck")
     _assert_run_contains(jobs["frontend-test"], "npm run test")
     _assert_run_contains(jobs["image-frontend"], "npm run build")
+    # Small UIKit gates run through the workspace scripts (packs/ui, ADR-014);
+    # the visual gate is NOT in product CI — it is owned by the factory CI in
+    # the pinned Playwright container (packs/ui rules.md determinism contract).
+    ui_gates = jobs["frontend-ui-gates"]
+    for script in ("ui:lint", "ui:typecheck", "ui:test", "ui:gates", "ui:storybook:build"):
+        _assert_run_contains(ui_gates, f"npm run {script}")
+    assert "frontend-ui-gates" in jobs["image-frontend"]["needs"]
     for name in ("image-backend", "image-frontend"):
         job = jobs[name]
         assert job["permissions"]["packages"] == "write", name

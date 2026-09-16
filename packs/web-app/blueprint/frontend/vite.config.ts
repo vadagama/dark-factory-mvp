@@ -17,5 +17,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // App scope only: the @small/ui workspace package runs its own vitest
+    // (ui:test) and Playwright suites from packages/ui with its own configs.
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
 });

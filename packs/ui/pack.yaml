@@ -1,0 +1,23 @@
+# Manifest of the Small UIKit pack (T042, docs plan T-071, ADR-014).
+# The pack is data, not code: its blueprint is copied into product
+# repositories as the @small/ui workspace package and validated by factory
+# tests (tests/test_packs_ui.py), so a drifted template fails CI in the
+# factory, not in a product repository.
+schema: dark-factory.dev/pack/v1
+id: pack:ui
+name: ui
+version: 0.1.0
+description: >-
+  Small UIKit pack (ADR-014): React primitives over Radix with an adapted
+  shadcn layer, DTCG design tokens, Storybook as the executable UI spec and
+  UI gates (UIKit-policy ESLint, stylelint, axe, Playwright visual
+  regression).
+contents:
+  - path: README.md
+    kind: doc
+  - path: rules.md
+    kind: doc
+  - path: CHANGELOG.md
+    kind: doc
+  - path: blueprint
+    kind: template

@@ -16,23 +16,36 @@ type PageState =
 export function HealthPage() {
   const [state, setState] = useState<PageState>({ phase: "loading" });
 
-  const load = useCallback(async () => {
-    setState({ phase: "loading" });
+  // Pure fetcher: it returns the next page state instead of setting it, so no
+  // setState is reachable synchronously from the effect below (eslint-plugin
+  // react-hooks set-state-in-effect). Reloads reset the phase in the handlers.
+  const fetchPage = useCallback(async (): Promise<PageState> => {
     try {
       const health = await fetchHealth();
-      setState({ phase: "ready", health });
+      return { phase: "ready", health };
     } catch (error) {
       const message =
         error instanceof ApiError
           ? `Backend unavailable: ${error.message} (status ${error.status})`
           : `Backend unavailable: ${String(error)}`;
-      setState({ phase: "error", message });
+      return { phase: "error", message };
     }
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let alive = true;
+    void fetchPage().then((next) => {
+      if (alive) setState(next);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [fetchPage]);
+
+  const reload = useCallback(() => {
+    setState({ phase: "loading" });
+    void fetchPage().then(setState);
+  }, [fetchPage]);
 
   if (state.phase === "loading") {
     return <p>Loading…</p>;
@@ -43,7 +56,7 @@ export function HealthPage() {
       <main>
         <h1>example-product</h1>
         <p role="alert">{state.message}</p>
-        <Button onClick={() => void load()}>Retry</Button>
+        <Button onClick={reload}>Retry</Button>
       </main>
     );
   }
@@ -57,7 +70,7 @@ export function HealthPage() {
       <p>
         Database: <strong>{state.health.database}</strong>
       </p>
-      <Button onClick={() => void load()}>Refresh</Button>
+      <Button onClick={reload}>Refresh</Button>
     </main>
   );
 }
