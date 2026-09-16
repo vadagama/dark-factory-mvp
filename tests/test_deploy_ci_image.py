@@ -225,6 +225,23 @@ def test_dockerfile_installs_git_from_fixed_snapshot() -> None:
     assert text.count(f"https://snapshot.debian.org/archive/debian-security/{SNAPSHOT_DATE}") == 1
 
 
+def test_dockerfile_installs_libpq_for_pure_psycopg() -> None:
+    # psycopg is used WITHOUT the [binary] extra (pyproject.toml): the wheel
+    # vendors its own native libraries (pcre2 10.32, an EOL OpenSSL 1.1.1k),
+    # which the fail-closed trivy gate rejects and apt cannot patch. The pure
+    # implementation links against the distribution's libpq at runtime, and the
+    # slim base image does not ship it — so the layer must install libpq5 from
+    # the same frozen snapshot as everything else in that one apt layer.
+    apt_layers = [
+        instruction
+        for instruction in _dockerfile_run_instructions()
+        if "apt-get install" in instruction
+    ]
+    assert len(apt_layers) == 1, "expected exactly one apt layer"
+    assert "libpq5" in apt_layers[0], "pure psycopg needs the distribution libpq"
+    assert SNAPSHOT_DATE in apt_layers[0], "libpq5 must come from the same pinned snapshot as git"
+
+
 def test_dockerfile_runtime_posture() -> None:
     text = _dockerfile_text()
     assert "USER 65532:65532" in text, "uid/gid of the agent job (T030) and chart API pod (T031)"

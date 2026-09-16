@@ -31,10 +31,10 @@
 #     invocation parameters and break digest stability); SBOM is produced as a
 #     CI artifact by the factory-image workflow instead;
 #   - the runtime OS packages are refreshed from a fixed snapshot.debian.org
-#     date (`apt-get upgrade`, plus `git` itself) so their versions do not
-#     drift. The date is deliberately NOT the base image's own build date: it
-#     was moved forward to 20260906T000000Z so the snapshot carries the security
-#     updates the fail-closed trivy gate demands — libpcre2-8-0
+#     date (`apt-get upgrade`, plus `git` and `libpq5`) so their versions do
+#     not drift. The date is deliberately NOT the base image's own build date:
+#     it was moved forward to 20260906T000000Z so the snapshot carries the
+#     security updates the fail-closed trivy gate demands — libpcre2-8-0
 #     10.42-1+deb12u1 and libssh2-1 1.10.0-3+deb12u1 — which the base image
 #     predates. Upgrading from ONE frozen snapshot keeps the layer
 #     deterministic; naming packages one by one does not scale (patching only
@@ -105,10 +105,12 @@ ARG SOURCE_DATE_EPOCH
 ARG GIT_SHA
 
 # git for the agent role (anonymous HTTPS clone, public pilot repository) and
-# runtime libs it needs; versions come from the fixed snapshot date, not from
-# a moving mirror. ca-certificates ships with the slim base image. The upgrade
-# below lifts the base image's OS packages to that same snapshot — see the
-# header and deploy/ci/README.md.
+# libpq5 for the pure-Python psycopg: the dependency is deliberately NOT the
+# psycopg[binary] wheel, whose vendored libraries (pcre2, an EOL OpenSSL) the
+# fail-closed trivy gate rejects and apt cannot patch. `libpq5` comes from the
+# same fixed snapshot date, not from a moving mirror. ca-certificates ships with
+# the slim base image. The upgrade below lifts the base image's OS packages to
+# that same snapshot — see the header and deploy/ci/README.md.
 RUN set -eux; \
     sed -i \
       -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260906T000000Z|g" \
@@ -120,7 +122,7 @@ RUN set -eux; \
     # and patches every package the base image ships stale — which is what the
     # trivy gate measures. A per-package list cannot keep up with new advisories.
     apt-get upgrade -y; \
-    apt-get install --no-install-recommends -y git; \
+    apt-get install --no-install-recommends -y git libpq5; \
     rm -rf /var/lib/apt/lists/*; \
     # apt/dpkg embed wall-clock timestamps INSIDE log file contents (dpkg.log,
     # apt history/term) — mtime normalization does not help; the logs are
