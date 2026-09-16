@@ -18,6 +18,7 @@
 | [execution.md](execution.md) | Слой Execution: публикацию run-записей в `dark-factory-runs` — разметка, идемпотентность, immutability, screening, индекс evidence |
 | [cli.md](cli.md) | Команды CLI: stage, doctor, ci_job, outbox, reconcile, run records, api serve, release verify |
 | [api.md](api.md) | HTTP API: аутентификация, эндпоинты, агрегаты, аудит |
+| [crm-end-to-end-flow.md](crm-end-to-end-flow.md) | Сквозной сценарий работы фабрики на примере создания CRM: фазы, роли, гейты, точки участия человека, автономная реализация, доставка |
 
 ## Как читать вместе
 
