@@ -156,6 +156,8 @@ flowchart TD
 
 `PydanticAIHarness(HarnessPort)` строит PydanticAI `Agent` на каждый вызов — import и конструкция не зависят от конфигурации. `instruction` конверта уходит и системным, и пользовательским промптом; инструменты берутся из `role_tools: Mapping[Role, Sequence[ToolFunction]]` по `envelope.role` (по умолчанию пусто — агент без инструментов). `run_stage(envelope, /, *, output_type=None)`: `output_type` — pydantic-модель структурного ответа, сериализуется в `output` через `model_dump_json`; параметр расширяет протокол, не меняя его. Параметр `model` — подмена эндпоинта для тестов (`TestModel`/`FunctionModel`), не для production.
 
+Структурный ответ запрашивается в **prompted-режиме** (`PromptedOutput(output_type)`): модель отвечает JSON в тексте ответа (`response_format: json_object`), а не вызывает output tool. Дефолтный `ToolOutput` заставляет `tool_choice: "required"`, который эндпоинт с активным thinking mode отвергает (`400 Thinking mode does not support this tool_choice`), а у DeepSeek thinking включён по умолчанию; prompted-режим оставляет thinking включённым, не требует вендорских профилей и дешевле по промпту (без схемы инструмента). Ограничения и альтернативы (в т.ч. `NativeOutput` — недоступен, `json_schema` эндпоинт не принимает) — TD-015.
+
 Политика ошибок — `run_stage` **не бросает исключений**:
 
 | Ситуация | Результат |
