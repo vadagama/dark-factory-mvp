@@ -53,3 +53,5 @@ uv run mypy .                   # строгая типизация core
 ```
 
 CI повторяет эти шаги в GitHub Actions (push в `main` и PR).
+
+Интеграционные тесты с PostgreSQL (`tests/integration/`) включаются переменной `DARK_FACTORY_TEST_DATABASE_URL`; без неё они пропускаются, и обычный `uv run pytest` базы не требует. Сам драйвер — чистый `psycopg` без бинарного колеса (вендоренные нативные библиотеки `psycopg[binary]` не проходят fail-closed trivy-гейт образа фабрики), поэтому для прогона этих тестов нужна системная `libpq`: на macOS — `brew install libpq` и её `bin`-каталог в `PATH` (формула keg-only; `psycopg` ищет библиотеку через `pg_config`).

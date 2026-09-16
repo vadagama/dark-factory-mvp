@@ -41,6 +41,21 @@ SMOKE_PROBE_RETRY_DELAY_SECONDS: Final[float] = 1.0
 e.g. the pod still settling right after the Argo sync)."""
 
 
+def _validated_attempts(attempts: int) -> int:
+    """The probe attempt count, validated to leave at least one attempt.
+
+    A probe reports the last recorded failure as its outcome, so the retry loop
+    needs at least one attempt to run; :data:`SMOKE_PROBE_ATTEMPTS` satisfies
+    that by construction, but the count is injectable, hence the check.
+
+    Raises:
+        ValueError: If ``attempts`` is below 1.
+    """
+    if attempts < 1:
+        raise ValueError(f"attempts must be >= 1, got {attempts}")
+    return attempts
+
+
 @runtime_checkable
 class SmokeProbe(Protocol):
     """One smoke probe against the deployed release (I/O seam, T034).
@@ -103,7 +118,7 @@ class HttpHealthProbe:
         self._url = url
         self._name = name
         self._transport = transport
-        self._attempts = attempts
+        self._attempts = _validated_attempts(attempts)
         self._timeout_seconds = timeout_seconds
         self._retry_delay_seconds = retry_delay_seconds
 
@@ -134,7 +149,10 @@ class HttpHealthProbe:
                     last_error = f"attempt {attempt}: HTTP {response.status_code}"
                 if attempt < self._attempts:
                     await asyncio.sleep(self._retry_delay_seconds)
-        assert last_error is not None  # at least one attempt always ran
+        # attempts >= 1 is enforced in __init__, so a failure was always
+        # recorded; the guard is explicit (an assert vanishes under python -O).
+        if last_error is None:
+            raise RuntimeError("smoke probe ran no attempt: attempts must be >= 1")
         return SmokeProbeEvidence(name=self._name, passed=False, detail=last_error)
 
 
@@ -165,7 +183,7 @@ class HttpDigestProbe:
         self._header = header
         self._name = name
         self._transport = transport
-        self._attempts = attempts
+        self._attempts = _validated_attempts(attempts)
         self._timeout_seconds = timeout_seconds
         self._retry_delay_seconds = retry_delay_seconds
 
@@ -198,7 +216,10 @@ class HttpDigestProbe:
                         )
                 if attempt < self._attempts:
                     await asyncio.sleep(self._retry_delay_seconds)
-        assert last_error is not None  # at least one attempt always ran
+        # attempts >= 1 is enforced in __init__, so a failure was always
+        # recorded; the guard is explicit (an assert vanishes under python -O).
+        if last_error is None:
+            raise RuntimeError("smoke probe ran no attempt: attempts must be >= 1")
         return SmokeProbeEvidence(name=self._name, passed=False, detail=last_error)
 
     def _digest_found(self, response: httpx2.Response) -> bool:

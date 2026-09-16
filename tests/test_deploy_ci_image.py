@@ -14,7 +14,9 @@ Two layers are validated without building anything:
    (the image is built only after every deterministic check is green).
 
 The helper script (``deploy/ci/scripts/build-image.sh``) is checked with
-``bash -n``/``shellcheck`` when available, following the T032 convention.
+``bash -n``, ``sh -n`` and ``shellcheck`` when available, following the T032
+convention. The POSIX check is the one that rejects a bash-ism in a
+``#!/bin/sh`` script: ``bash -n`` accepts bash arrays happily.
 """
 
 import re
@@ -40,10 +42,13 @@ BUILD_SCRIPT = REPO_ROOT / "deploy" / "ci" / "scripts" / "build-image.sh"
 # is a reproducibility regression.
 PINNED_DIGEST_RE = r"@sha256:[0-9a-f]{64}"
 
-# The exact snapshot date the base image was built against (its own
-# debian.sources comment); installing git from a fixed snapshot keeps apt
-# packages from drifting the digest.
-SNAPSHOT_DATE = "20260824T000000Z"
+# The fixed snapshot date the apt layer installs from. Deliberately NOT the
+# base image's own debian.sources date: it was moved forward so the snapshot
+# carries the security updates the fail-closed trivy gate demands
+# (libpcre2-8-0 10.42-1+deb12u1, libssh2-1 1.10.0-3+deb12u1) — see
+# deploy/ci/README.md, "сознательные отклонения". One date for both archive
+# roots keeps the layer a single deterministic snapshot.
+SNAPSHOT_DATE = "20260906T000000Z"
 
 
 def _dockerfile_text() -> str:
@@ -208,11 +213,33 @@ def test_dockerfile_installs_git_from_fixed_snapshot() -> None:
     assert "snapshot.debian.org" in text
     assert SNAPSHOT_DATE in text
     assert "apt-get install" in text and "git" in text
+    # The layer must upgrade the whole OS layer from that one snapshot, not just
+    # a hand-picked package: the base image ships several stale packages the
+    # fail-closed trivy gate flags (libpcre2-8-0, libssh2-1, …) and a named list
+    # silently leaves some of them behind.
+    assert "apt-get upgrade" in text, "the snapshot's security updates must be applied"
     # The sed rewrite covers both archive roots (main and security); the
     # moving mirror survives only inside the sed pattern itself, never as a
     # live source line.
     assert text.count(f"https://snapshot.debian.org/archive/debian/{SNAPSHOT_DATE}") == 1
     assert text.count(f"https://snapshot.debian.org/archive/debian-security/{SNAPSHOT_DATE}") == 1
+
+
+def test_dockerfile_installs_libpq_for_pure_psycopg() -> None:
+    # psycopg is used WITHOUT the [binary] extra (pyproject.toml): the wheel
+    # vendors its own native libraries (pcre2 10.32, an EOL OpenSSL 1.1.1k),
+    # which the fail-closed trivy gate rejects and apt cannot patch. The pure
+    # implementation links against the distribution's libpq at runtime, and the
+    # slim base image does not ship it — so the layer must install libpq5 from
+    # the same frozen snapshot as everything else in that one apt layer.
+    apt_layers = [
+        instruction
+        for instruction in _dockerfile_run_instructions()
+        if "apt-get install" in instruction
+    ]
+    assert len(apt_layers) == 1, "expected exactly one apt layer"
+    assert "libpq5" in apt_layers[0], "pure psycopg needs the distribution libpq"
+    assert SNAPSHOT_DATE in apt_layers[0], "libpq5 must come from the same pinned snapshot as git"
 
 
 def test_dockerfile_runtime_posture() -> None:
@@ -343,6 +370,35 @@ def test_build_script_is_valid_shell() -> None:
     result = _run_bash_n()
     if result is None:
         pytest.skip("bash is not installed")
+    assert result.returncode == 0, result.stderr
+
+
+def _run_sh_n() -> subprocess.CompletedProcess[str] | None:
+    """``sh -n`` on the helper script, which declares ``#!/bin/sh``.
+
+    ``bash -n`` accepts bash-only syntax silently, so it cannot guard a
+    script that declares POSIX ``sh`` but uses bash arrays. On Debian/Ubuntu
+    ``/bin/sh`` is dash, where an array is a syntax error; that is what the
+    CI runner provides. macOS ships bash as ``/bin/sh`` (POSIX mode keeps
+    arrays), so here the check is only as strict as the local ``sh`` — the
+    test still runs, it never silently skips when ``sh`` exists.
+    """
+    sh = shutil.which("sh")
+    if sh is None:
+        return None
+    return subprocess.run(
+        [sh, "-n", str(BUILD_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def test_build_script_is_valid_posix_sh() -> None:
+    result = _run_sh_n()
+    if result is None:
+        pytest.skip("sh is not installed")
     assert result.returncode == 0, result.stderr
 
 

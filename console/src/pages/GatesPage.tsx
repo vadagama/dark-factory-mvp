@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { createApiClient, ApiError } from "../api/client";
@@ -236,15 +236,21 @@ export function ApprovalForm({ changeId, decisionsCount, onTokenRequired, onReco
   const [subjectRevision, setSubjectRevision] = useState("");
   const [comment, setComment] = useState("");
   const [expectedRevision, setExpectedRevision] = useState<string>(String(deriveExpectedStateRevision(decisionsCount)));
+  const [syncedDecisionsCount, setSyncedDecisionsCount] = useState(decisionsCount);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // The card reloads after each recorded decision; keep the optimistic lock
   // in sync with the fresh decisions_count without remounting the form.
-  useEffect(() => {
+  // Adjusting the state during render — the pattern react.dev documents in
+  // "You Might Not Need an Effect" — refreshes the displayed value on a new
+  // count while leaving the field editable afterwards (the guard keeps the
+  // user's own edits from being overwritten on unrelated re-renders).
+  if (syncedDecisionsCount !== decisionsCount) {
+    setSyncedDecisionsCount(decisionsCount);
     setExpectedRevision(String(deriveExpectedStateRevision(decisionsCount)));
-  }, [decisionsCount]);
+  }
 
   const hasToken = getToken() !== null;
 

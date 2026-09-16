@@ -175,8 +175,13 @@ def run_release_verify_command(args: ReleaseVerifyArgs) -> int:
 
     evidence_path: str | None = None
     if inputs.evidence_dir is not None:
-        assert inputs.change_snapshot is not None  # pairing validated in _resolve_inputs
-        assert inputs.manifest is not None
+        # The pairing is validated in _resolve_inputs; the explicit guard keeps
+        # the invariant enforced for real (an assert vanishes under python -O).
+        if inputs.change_snapshot is None or inputs.manifest is None:
+            raise RuntimeError(
+                "release verification is missing its evidence inputs:"
+                " --evidence-dir and --change are paired in _resolve_inputs"
+            )
         record = build_release_run_record(
             change=inputs.change_snapshot.change,
             run_id=inputs.run_id,
