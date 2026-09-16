@@ -368,6 +368,173 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # Small UIKit gates (T042, ADR-014): the kit runs its own machine checks on
+  # the pinned Node (packs/ui/blueprint/ui/.nvmrc), mirroring the console jobs
+  # above. Checkouts are pinned to the final SHA of the change. The uikit-*
+  # jobs are independent of the trusted image builds and are NOT part of their
+  # needs chains.
+  uikit-lint:
+    name: UIKit ESLint + stylelint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: packs/ui/blueprint/ui/.nvmrc
+          cache: npm
+          cache-dependency-path: packs/ui/blueprint/ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint (kit + product policy) and stylelint (token discipline)
+        run: npm run lint
+
+  uikit-typecheck:
+    name: UIKit tsc --noEmit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: packs/ui/blueprint/ui/.nvmrc
+          cache: npm
+          cache-dependency-path: packs/ui/blueprint/ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+  uikit-test:
+    name: UIKit vitest (components + axe + tokens)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: packs/ui/blueprint/ui/.nvmrc
+          cache: npm
+          cache-dependency-path: packs/ui/blueprint/ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit, a11y and tokens tests (vitest)
+        run: npm run test
+
+  uikit-gates:
+    name: UIKit gate self-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: packs/ui/blueprint/ui/.nvmrc
+          cache: npm
+          cache-dependency-path: packs/ui/blueprint/ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Gate self-test (violations are blocked, clean code passes)
+        run: npm run test:gates
+
+  # Storybook is the executable UI spec (ADR-014 p.2): the DoD requires it to
+  # build in CI as an artifact of the factory pipeline.
+  uikit-storybook:
+    name: UIKit Storybook build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: packs/ui/blueprint/ui/.nvmrc
+          cache: npm
+          cache-dependency-path: packs/ui/blueprint/ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Storybook (executable UI spec)
+        run: npm run storybook:build
+
+  # Visual regression in the pinned browser container (packs/ui/rules.md):
+  # the container tag equals @playwright/test in package-lock.json; the
+  # orchestrator pins the digest. Baselines are committed and updated only via
+  # review. Red until the baselines land in the repository — expected for the
+  # first runs after the kit is introduced.
+  uikit-visual:
+    name: UIKit visual regression (pinned browser)
+    runs-on: ubuntu-latest
+    # Tag = @playwright/test version (package-lock.json); digest pinning is
+    # added by the orchestrator (factory-image pattern).
+    container: mcr.microsoft.com/playwright:v1.63.0-noble
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Visual regression over every Storybook story
+        run: npm run test:visual
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uikit-visual-report-${{ github.run_id }}
+          path: packs/ui/blueprint/ui/playwright-report
+          retention-days: 14
+          if-no-files-found: warn
+
   # Trusted console OCI image build (T036, ADR-021 p.7): only of a fully
   # green final SHA (factory-image pattern). Publishes the immutable sha-<sha>
   # tag to ghcr.io/vadagama/dark-factory-console with scan/SBOM/digest

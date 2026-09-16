@@ -1,0 +1,66 @@
+name: UIKit baselines
+
+# Regeneration of the Small UIKit visual baselines (T042, ADR-014 п.3,
+# packs/ui/rules.md). The visual gate compares screenshots against committed
+# baselines, which are only valid for the pinned browser image
+# (mcr.microsoft.com/playwright, tag = @playwright/test in the kit lockfile).
+# Instead of requiring a local container, add the `uikit-baselines` label to a
+# pull request: the job regenerates every baseline in the pinned container and
+# uploads them as a run artifact. The reviewer inspects the diff and commits
+# the baselines to the same PR — the pull request IS the review required by
+# the baseline-update contract.
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The image digest is printed as evidence for pinning it in ci.yml
+  # (uikit-visual) — the factory-image pattern: no floating tags.
+  image-digest:
+    name: Print pinned browser image digest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve digest of the pinned Playwright image
+        run: |
+          docker pull mcr.microsoft.com/playwright:v1.63.0-noble
+          docker image inspect --format '{{index .RepoDigests 0}}' mcr.microsoft.com/playwright:v1.63.0-noble
+
+  # Runs in the pinned container so the produced baselines match the visual
+  # gate byte-for-byte. The label guard keeps this off routine PR runs.
+  regenerate:
+    name: Regenerate visual baselines (pinned browser)
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'uikit-baselines'
+    container: mcr.microsoft.com/playwright:v1.63.0-noble
+    defaults:
+      run:
+        working-directory: packs/ui/blueprint/ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Regenerate against the exact final SHA of the PR head.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Storybook (executable UI spec)
+        run: npm run storybook:build
+
+      - name: Regenerate every visual baseline in the pinned container
+        run: npx playwright test --update-snapshots
+
+      - name: Upload regenerated baselines
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uikit-baselines-${{ github.run_id }}
+          path: packs/ui/blueprint/ui/tests/visual/uikit.spec.ts-snapshots
+          retention-days: 14
+          if-no-files-found: error
