@@ -1,0 +1,4 @@
+.small-gate-named {
+  color: red;
+  background-color: var(--small-color-surface);
+}

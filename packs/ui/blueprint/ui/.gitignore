@@ -1,0 +1,6 @@
+# Working-tree artifacts of the UI kit blueprint — never committed.
+node_modules/
+storybook-static/
+test-results/
+playwright-report/
+*.tsbuildinfo

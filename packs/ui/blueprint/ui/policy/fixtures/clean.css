@@ -1,0 +1,8 @@
+.small-gate-clean {
+  display: flex;
+  gap: var(--small-space-xs);
+  color: var(--small-color-text);
+  background-color: var(--small-color-surface);
+  border: 1px solid var(--small-color-border);
+  border-radius: var(--small-radius-md);
+}
