@@ -178,7 +178,18 @@ class ExecutionPort(Protocol):
     async def collect_evidence(self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str) -> EvidenceFile: ...
 ```
 
-Изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; повтор `prepare_workspace` с тем же `idempotency_key` возвращает тот же handle и не создаёт второй workspace (FR-017). `write_file` кладёт содержимое в рабочее дерево идемпотентно по состоянию (тот же путь после повтора держит те же байты) — это write-половина `collect_evidence`, через неё инструменты роли правят изолированный workspace (T-092 S2). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. В P0 реализация — in-memory фейк.
+Изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; `write_file` кладёт содержимое в рабочее дерево — это write-половина `collect_evidence`, через неё инструменты роли правят изолированный workspace (T-092 S2). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. В P0 реализация — in-memory фейк.
+
+`idempotency_key` имеет **разную роль по методам**: replay-дедуп верен только там, где вызов минтует внешний ресурс (FR-017).
+
+| Метод | Что адресует ключ | Роль ключа |
+|---|---|---|
+| `prepare_workspace` | запрос workspace-а | replay-дедуп: тот же ключ → тот же handle, второй workspace не создаётся |
+| `write_file` | путь + содержимое | состояние: после вызова путь держит записанные байты (last write wins); ключ не должен пропускать запись |
+| `run_command` | команда (`argv`) | только адрес в effect ledger/аудите: команда исполняется на **текущем** состоянии workspace |
+| `collect_evidence` | путь | только адрес в effect ledger/аудите: читается **текущее** содержимое |
+
+Причина несимметричности — цикл агента «правка → прогон тестов → правка → прогон тестов»: инструменты шлют стабильный ключ на прогон, и адаптер, дедуплицирующий по ключу все методы буквально, вернул бы агентy первый (падающий) результат навсегда. Поэтому дедуп по ключу обязателен только для `prepare_workspace`; `run_command`/`collect_evidence` никогда не возвращают закэшированный по ключу результат, а `write_file` не пропускается по ключу.
 
 ## Порты, вводимые позже (не авансом)
 

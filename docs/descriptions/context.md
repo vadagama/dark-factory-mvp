@@ -84,11 +84,14 @@ DTO портов — frozen pydantic-модели; `RepositoryRef` — общи�
 |---|---|
 | `KnowledgePort` | `async collect(self, request: ContextRequest, /) -> ContextBundle` |
 | `ExecutionPort` | `async prepare_workspace(self, request: WorkspaceRequest, /, *, idempotency_key: str) -> WorkspaceHandle` |
+| `ExecutionPort` | `async write_file(self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str) -> None` |
 | `ExecutionPort` | `async run_command(self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str) -> ExecutionResult` |
 | `ExecutionPort` | `async collect_evidence(self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str) -> EvidenceFile` |
 | `SDDPort` | `async create_change(self, change: ChangeSet, /) -> str` |
 | `SDDPort` | `async read_requirements(self, change_id: str, /) -> RequirementsSnapshot` |
 | `SDDPort` | `async apply_delta(self, change_id: str, /, *, expected_revision: str) -> str` |
+
+Роль `idempotency_key` различается по методам `ExecutionPort`: replay-дедуп — только у `prepare_workspace` (тот же ключ → тот же handle, второй workspace не создаётся); `write_file` идемпотентен по состоянию (last write wins на пути) и не пропускается по ключу; у `run_command`/`collect_evidence` ключ — только адрес в effect ledger/аудите, они читают текущее состояние и никогда не возвращают закэшированный результат.
 
 DTO (`ports/context.py`): `ContextRequest(change_id, run_id)`; `WorkspaceRequest(repository: RepositoryRef, revision, change_id)`; `WorkspaceHandle(workspace_id, repository, revision)`; `ExecutionResult(ok, exit_code, stdout="", stderr="")`; `EvidenceFile(path, content_hash, content: bytes)`.
 
@@ -99,7 +102,7 @@ DTO (`ports/context.py`): `ContextRequest(change_id, run_id)`; `WorkspaceRequest
 Адаптеры-фейки:
 
 - `FakeKnowledge` — `seed(kind, location, revision, content)` наполняет store; sha256 по содержимому; `RETRIEVED_AT = datetime(2026, 1, 1, tzinfo=UTC)` фиксирует временной штамп, поэтому равные seed дают байт-в-байт равные bundle. Пустой seed даёт детерминированный пустой bundle (`sources == ()`) — пустой контекст валиден, это не ошибка. Повторный seed того же `(kind, location)` перезаписывает.
-- `FakeExecution` — `prepare_workspace` идемпотентен по `idempotency_key` (replay возвращает тот же handle), id — детерминированные `ws-NNNN`; результат `run_command` выводится только из `argv` (засеянные через `seed_failure(argv, exit_code=1)` падают детерминированно); evidence выдаётся из `seed_file(handle, path, content)`; неизвестный workspace или путь → `KeyError`. Ключи `run_command`/`collect_evidence` принимаются по контракту, но ledger replay не ведётся.
+- `FakeExecution` — `prepare_workspace` идемпотентен по `idempotency_key` (replay возвращает тот же handle), id — детерминированные `ws-NNNN`; `write_file` идемпотентен по состоянию (тот же путь держит записанные байты, ключ запись не пропускает); результат `run_command` выводится только из `argv` (засеянные через `seed_failure(argv, exit_code=1)` падают детерминированно); evidence выдаётся из `seed_file(handle, path, content)`; неизвестный workspace или путь → `KeyError`. Ключи `run_command`/`collect_evidence` принимаются по контракту, но ledger replay не ведётся и ключ не влияет на результат (per-key cache отсутствует).
 
 ## 4. Модели SDD (`sdd/models.py`)
 

@@ -205,6 +205,7 @@ publish(event) -> None
 collect(request) -> ContextBundle
 # --- ExecutionPort ---
 prepare_workspace(request, *, idempotency_key) -> WorkspaceHandle
+write_file(workspace, path, content, *, idempotency_key) -> None
 run_command(workspace, argv, *, idempotency_key) -> ExecutionResult
 collect_evidence(workspace, path, *, idempotency_key) -> EvidenceFile
 # --- SDDPort ---
@@ -213,7 +214,7 @@ read_requirements(change_id) -> RequirementsSnapshot
 apply_delta(change_id, *, expected_revision) -> str
 ```
 
-`KnowledgePort` собирает источники контекста изменения в версионированный `ContextBundle` (T-012, FR-001); вход — `ContextRequest(change_id, run_id)`. Порт сознательно минимален: поиск и traversal источников придут вместе с реальными source providers, не раньше (YAGNI). В P0 реализация — `FakeKnowledge`: seed-хранилище, sha256 по содержимому, фиксированный `retrieved_at`; пустой bundle — валидный детерминированный результат, а не ошибка. `ExecutionPort` — изолированный worktree от закреплённой ревизии, исполнение команд и сбор evidence (T-012): `prepare_workspace` идемпотентен по ключу (replay возвращает тот же handle, FR-017), `collect_evidence` возвращает файл с sha256-хешем содержимого. В P0 реализация — `FakeExecution` (результат команды детерминирован по `argv`, evidence из seed-файлов); реальный worktree-адаптер появится позже.
+`KnowledgePort` собирает источники контекста изменения в версионированный `ContextBundle` (T-012, FR-001); вход — `ContextRequest(change_id, run_id)`. Порт сознательно минимален: поиск и traversal источников придут вместе с реальными source providers, не раньше (YAGNI). В P0 реализация — `FakeKnowledge`: seed-хранилище, sha256 по содержимому, фиксированный `retrieved_at`; пустой bundle — валидный детерминированный результат, а не ошибка. `ExecutionPort` — изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (T-012): `prepare_workspace` идемпотентен по ключу (replay возвращает тот же handle, FR-017), `write_file` — write-половина `collect_evidence` (T-092 S2), `collect_evidence` возвращает файл с sha256-хешем содержимого. Роль `idempotency_key` различается по методам (см. §6): replay-дедуп — только у `prepare_workspace`; `write_file` идемпотентен по состоянию, а у `run_command`/`collect_evidence` ключ — только адрес в effect ledger/аудите. В P0 реализация — `FakeExecution` (результат команды детерминирован по `argv`, evidence из seed-файлов); реальный worktree-адаптер появится позже.
 
 `SDDPort` — жизненный цикл ChangeSet над product baseline, Native SDD Core (ADR-020 p.8). Адаптеры: `NativeChangeSetAdapter` (основной), `SpecKitAdapter` (bootstrap-импорт legacy-артефактов `specs/`), `OpenSpecAdapter` (compatibility import/export). Все три реализуют Protocol **структурно** из `dark_factory.context.sdd` и не импортируют `dark_factory.ports` — runtime-checkable валидация работает и без этого импорта. `apply_delta` оптимистична: `expected_revision` закрепляет baseline, расхождение — `BaselineMismatchError` с expected/actual.
 
@@ -296,12 +297,12 @@ State-changing операции используют один из четырё�
 
 | Механизм | Где применяется |
 |---|---|
-| Явный `idempotency_key` | branch, CR, comment, tracker update, CI job dispatch, workspace prepare, workflow start/resume/cancel |
+| Явный `idempotency_key` | branch, CR, comment, tracker update, CI job dispatch, workspace prepare (replay-дедуп), workflow start/resume/cancel |
 | Content hash | artifact `put` |
 | `expected_revision` | SDD `apply_delta` — optimistic concurrency |
 | `event_id` | event publication |
 
-`run_command`/`collect_evidence` принимают ключ по контракту, но в P0-фейке остаются детерминированными чтениями без replay ledger. Порт принимает ключ, но durable effect ledger находится в state/application слое; сам Protocol не гарантирует хранение ключа между рестартами — это обязанность адаптера.
+`run_command`/`collect_evidence` принимают ключ по контракту, но он служит **только адресом в effect ledger/аудите**: оба обязаны исполнять/читать **текущее** состояние workspace и никогда не возвращать результат, закэшированный по ключу. Причина — цикл агента «правка → прогон тестов → правка → прогон тестов»: инструменты шлют стабильный ключ на прогон, и дедуп по ключу вернул бы первый (падающий) результат навсегда. Поэтому replay-дедуп по ключу обязателен только для `prepare_workspace` (минт внешнего ресурса), а `write_file` идемпотентен **по состоянию** (last write wins на пути) и не должен пропускаться по ключу. Порт принимает ключ, но durable effect ledger находится в state/application слое; сам Protocol не гарантирует хранение ключа между рестартами — это обязанность адаптера.
 
 ## 7. Правила реализации адаптера
 

@@ -14,19 +14,22 @@ from dark_factory.ports import (
 class FakeExecution(ExecutionPort):
     """In-memory ``ExecutionPort`` keeping all workspace state in memory.
 
-    ``prepare_workspace`` is idempotent by ``idempotency_key`` — a replay
-    returns the same handle and mints no second workspace; ids are
-    deterministic ``ws-NNNN``. ``write_file`` puts content into the workspace
-    (idempotent by state: the same path holds the same bytes after a replay) and
-    is the write half of ``collect_evidence``: both address the seeded file
-    store, so content written by an agent tool is readable back as evidence.
-    ``run_command`` derives its result from
-    ``argv`` only: commands seeded through ``seed_failure`` fail
-    deterministically, everything else succeeds with a deterministic stdout
-    line. Evidence is served from files seeded through ``seed_file``; an
-    unknown workspace or path raises ``KeyError``. The ``idempotency_key`` of
-    ``run_command``/``collect_evidence`` is accepted per the contract; both are
-    deterministic reads of the seeded state and keep no replay ledger.
+    ``idempotency_key`` follows the per-method contract of ``ExecutionPort``:
+
+    * ``prepare_workspace`` is idempotent by ``idempotency_key`` — a replay
+      returns the same handle and mints no second workspace; ids are
+      deterministic ``ws-NNNN``;
+    * ``write_file`` puts content into the workspace and is idempotent by
+      *state*, not by key: the path holds exactly the last written bytes
+      afterwards, and a repeated key never turns the write into a no-op. It is
+      the write half of ``collect_evidence``: both address the seeded file
+      store, so content written by an agent tool is readable back as evidence;
+    * ``run_command`` derives its result from ``argv`` only and
+      ``collect_evidence`` from the seeded files only, so both read the *current*
+      state. Neither keeps a per-key result ledger: a replay with the same key
+      still reports the state as it is now (an agent edits and re-runs).
+
+    An unknown workspace or path raises ``KeyError``.
     """
 
     def __init__(self) -> None:

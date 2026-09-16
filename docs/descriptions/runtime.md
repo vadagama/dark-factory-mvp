@@ -6,7 +6,7 @@
 
 До T-092 такого места не было, и это не «недостающая деталь», а разрыв (ADR-024, контекст): ядро (всё вне `dark_factory.adapters`) не имеет права импортировать адаптеры (правило A теста границ), а адаптеры — импортировать ядро за пределами `dark_factory.ports` (правило B). Значит, ни один модуль не мог соединить сервисы ядра с реализациями портов, и harness/SCM не были подключены к рабочему пути ни в одной задаче реестра.
 
-`dark_factory.runtime` — **один именованный слой-исключение**: только ему правило A разрешает импорт `dark_factory.adapters` (allowlist в `tests/test_import_boundaries.py`, ADR-024 п.5). Обратного ребра нет: ни `adapters/`, ни core не импортируют `runtime` — это проверяется тем же тестом.
+`dark_factory.runtime` — **один именованный слой-исключение**: только ему правило A разрешает импорт `dark_factory.adapters` (allowlist в `tests/test_import_boundaries.py`, ADR-024 п.5). Обратного ребра нет: правило D того же теста запрещает любому модулю вне `dark_factory.runtime` — ядру и соседям по имени вроде `dark_factory.runtimes` — импортировать `runtime` или его подпакеты, а `adapters → runtime` ловит правило B. Сам `runtime` и его подпакеты себя импортировать могут. Запрет действительно проверяется тестом границ, а не остаётся декларацией.
 
 ## 2. Границы слоя
 
@@ -63,7 +63,7 @@ dark_factory.runtime (build_runtime)          dark_factory.cli / orchestration
 ## 6. Где искать проверки
 
 - [`test_runtime_composition.py`](../../tests/test_runtime_composition.py) — пустая и полная конфигурация, сборка исполнителя и её отсутствие без `ExecutionPort`, привязка инструментов роли к harness, громкий отказ `harness_of`, fail-closed telemetry, `aclose`;
-- [`test_import_boundaries.py`](../../tests/test_import_boundaries.py) — allowlist `runtime` в правиле A, запрет обратного ребра (правило B) и запрет соседям (`dark_factory.cli` и т.п.) импортировать адаптеры;
+- [`test_import_boundaries.py`](../../tests/test_import_boundaries.py) — allowlist `runtime` в правиле A, запрет обратного ребра (правило D: ядро вне `runtime` — `dark_factory.cli`, `dark_factory.orchestration` и т.п. — не импортирует `runtime` и его подпакеты; `adapters → runtime` — правило B) и запрет соседям (`dark_factory.cli` и т.п.) импортировать адаптеры;
 - [`test_orchestration_agent_stage.py`](../../tests/test_orchestration_agent_stage.py) — агентный исполнитель и инструменты, которые `runtime` связывает.
 
 ## 7. Связанные решения
