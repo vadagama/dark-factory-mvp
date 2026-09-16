@@ -94,9 +94,11 @@ from dark_factory.cli.main import (
     RunStatusArgs,
 )
 from dark_factory.orchestration.runner import (
+    RevisionResolver,
     RunAdvance,
     RunAdvanceOutcome,
     RunnerError,
+    StageExecutor,
     advance_run,
 )
 from dark_factory.orchestration.state.change_store import ChangeRepository
@@ -178,17 +180,29 @@ def run_advance_command(
     session_factory: sessionmaker[Session] | None = None,
     owner_id: str | None = None,
     now: datetime | None = None,
+    executor: StageExecutor | None = None,
+    revision_of: RevisionResolver | None = None,
 ) -> int:
     """Handle ``factory run advance``; return the process exit code (contract cli.md).
 
-    ``session_factory``, ``owner_id`` and ``now`` are injection seams for tests;
-    by default the state store is reached through ``DATABASE_URL`` and probed
-    with a connection first, so an unreachable store fails fast with exit code 2
-    instead of a traceback.
+    ``session_factory``, ``owner_id``, ``now``, ``executor`` and ``revision_of``
+    are injection seams. The first three are for tests; ``executor`` and
+    ``revision_of`` are how the composition root (``dark_factory.runtime``)
+    plugs the harness-backed executor and the SCM-derived revision into the
+    working path: this module is core and may not import ``runtime`` (ADR-024
+    p.5), so the binding arrives as an argument. Without them the deterministic
+    stage path runs, exactly as before.
     """
     resolved_owner = owner_id if owner_id is not None else _default_owner_id()
     if session_factory is not None:
-        return _advance(session_factory, args, owner_id=resolved_owner, now=now)
+        return _advance(
+            session_factory,
+            args,
+            owner_id=resolved_owner,
+            now=now,
+            executor=executor,
+            revision_of=revision_of,
+        )
     try:
         engine = create_state_engine(_database_url())
         with engine.connect():
@@ -197,7 +211,14 @@ def run_advance_command(
         return _unreachable("run advance", args.json_output)
     factory = create_session_factory(engine)
     try:
-        return _advance(factory, args, owner_id=resolved_owner, now=now)
+        return _advance(
+            factory,
+            args,
+            owner_id=resolved_owner,
+            now=now,
+            executor=executor,
+            revision_of=revision_of,
+        )
     finally:
         engine.dispose()
 
@@ -300,12 +321,25 @@ def render_status_json(run: ChangeRun) -> str:
 
 
 def _advance(
-    factory: sessionmaker[Session], args: RunAdvanceArgs, *, owner_id: str, now: datetime | None
+    factory: sessionmaker[Session],
+    args: RunAdvanceArgs,
+    *,
+    owner_id: str,
+    now: datetime | None,
+    executor: StageExecutor | None,
+    revision_of: RevisionResolver | None,
 ) -> int:
     """Advance one stage in one transaction and emit the outcome (contract cli.md)."""
     try:
         with session_scope(factory) as session:
-            advance = _advance_in_session(session, args, owner_id=owner_id, now=now)
+            advance = _advance_in_session(
+                session,
+                args,
+                owner_id=owner_id,
+                now=now,
+                executor=executor,
+                revision_of=revision_of,
+            )
     except InvalidRunnerInput as exc:
         return _report(
             "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
@@ -335,12 +369,26 @@ def _advance(
 
 
 def _advance_in_session(
-    session: Session, args: RunAdvanceArgs, *, owner_id: str, now: datetime | None
+    session: Session,
+    args: RunAdvanceArgs,
+    *,
+    owner_id: str,
+    now: datetime | None,
+    executor: StageExecutor | None,
+    revision_of: RevisionResolver | None,
 ) -> RunAdvance:
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
     run_id, change = _resolve_run(session, store, args)
-    return advance_run(store=store, change=change, run_id=run_id, owner_id=owner_id, now=now)
+    return advance_run(
+        store=store,
+        change=change,
+        run_id=run_id,
+        owner_id=owner_id,
+        executor=executor,
+        revision_of=revision_of,
+        now=now,
+    )
 
 
 def _resolve_run(session: Session, store: RunStore, args: RunAdvanceArgs) -> tuple[str, Change]:
