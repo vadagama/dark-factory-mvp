@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-factory = "dark_factory.cli.main:main"
+factory = "dark_factory.runtime.entrypoint:main"
 
 [dependency-groups]
 dev = [
