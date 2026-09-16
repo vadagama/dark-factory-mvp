@@ -153,6 +153,8 @@ Flow использует run-level snapshot (`changes/usage.py`):
 - ровно в момент deadline продолжение ещё разрешено;
 - в Flow несколько нарушений объединяются в одну строку причины через `; `.
 
+Run-level правила этого раздела переиспользует бюджет-координатор ([`orchestration/budget/`](../../src/dark_factory/orchestration/budget/), T-062): там живут run/role-allowance, резервации вызовов и вердикт `AWAITING_DECISION`, который stage-путь отображает в `Blocked`. Пороги и тексты причин не дублируются: координатор складывает свой журнал в `BudgetSnapshot` и вызывает те же `continuation_violations`. Подробности — [budget.md](budget.md).
+
 ## 4. Merge protection policy
 
 `merge_protection.py` (T-026, T-032) описывает **требования к настройкам branch protection провайдера** — данные, а не сетевые вызовы. Это провайдерская сторона merge policy (GitHub rulesets / GitLab protected branches).

@@ -19,7 +19,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from dark_factory.changes.run import SCHEMA_VERSION, SchemaVersion
-from dark_factory.changes.usage import BudgetSnapshot, Usage
+from dark_factory.changes.usage import BudgetSnapshot, RoleUsage, Usage
 
 
 class RetentionClass(StrEnum):
@@ -89,6 +89,12 @@ class RunUsageSummary(BaseModel):
 
     Aggregates are derived from the immutable ``StageResult``s; the budget
     snapshot is carried along because it survives between CI jobs (hld-mvp 8).
+
+    ``roles`` is the additional per-role aggregate of the budget coordinator
+    (T-062): the additive optional field carries the combined budget without
+    breaking records written before it — an absent section validates as empty,
+    so ``schema_version`` stays put (ADR-015 p.3: additive fields are not a
+    breaking contract change).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -98,6 +104,7 @@ class RunUsageSummary(BaseModel):
     budget: BudgetSnapshot
     stages: tuple[RunStageUsage, ...] = ()
     totals: Usage = Field(default_factory=Usage)
+    roles: tuple[RoleUsage, ...] = ()
 
 
 class RunRecordRef(BaseModel):

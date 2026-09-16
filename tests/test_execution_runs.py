@@ -15,7 +15,7 @@ from typing import Final
 
 import pytest
 
-from dark_factory.changes.enums import EvidenceType, RunStatus, StageStatus
+from dark_factory.changes.enums import EvidenceType, Role, RunStatus, StageStatus
 from dark_factory.changes.refs import ArtifactRef
 from dark_factory.changes.run_records import RunRecord, from_json, to_json
 from dark_factory.changes.usage import Usage
@@ -31,6 +31,7 @@ from dark_factory.execution.runs import (
     RunRecordStore,
     RunRecordStoreError,
     RunRecordTooLargeError,
+    RunUsageSummary,
     UnsafeRunRecordError,
     build_usage_summary,
     check_payload_size,
@@ -42,6 +43,7 @@ from dark_factory.execution.runs import (
     run_dir,
     slug,
 )
+from dark_factory.orchestration.budget import RoleUsage
 from tests.changes_factories import (
     NOW,
     make_change,
@@ -480,6 +482,28 @@ def test_usage_summary_keeps_unreported_totals_absent() -> None:
     assert summary.totals.prompt_tokens == 0
     assert summary.totals.total_tokens is None
     assert summary.totals.cost is None
+
+
+def test_usage_summary_carries_the_per_role_aggregate() -> None:
+    """T-062: the per-role budget rides along as an additive, optional section."""
+    record = make_record(RunStatus.RUNNING, [make_stage_result(status=StageStatus.SUCCEEDED)])
+    roles = (
+        RoleUsage(role=Role.DEVELOP, usage=Usage(total_tokens=15, cost=Decimal("0.10")), calls=1),
+        RoleUsage(role=Role.QUALITY, reserved=Usage(total_tokens=5)),
+    )
+
+    summary = build_usage_summary(record, roles=roles)
+    baseline = build_usage_summary(record)
+
+    # Present only when the caller has a coordinator aggregate: the field defaults to empty,
+    # so a summary written before T-062 still validates (ADR-015 p.3, additive change).
+    assert baseline.roles == ()
+    assert summary.roles == roles
+    assert [item.role for item in summary.roles] == [Role.DEVELOP, Role.QUALITY]
+    assert summary.budget == baseline.budget
+    assert summary.stages == baseline.stages
+    assert summary.totals == baseline.totals
+    assert RunUsageSummary.model_validate_json(summary.model_dump_json()) == summary
 
 
 def test_render_decisions_renders_an_escaped_table() -> None:

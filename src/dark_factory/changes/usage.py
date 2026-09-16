@@ -1,9 +1,11 @@
-"""Usage accounting and budget snapshots (hld-mvp 6-7)."""
+"""Usage accounting, per-role usage and budget snapshots (hld-mvp 6-7)."""
 
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from dark_factory.changes.enums import Role
 
 
 class Usage(BaseModel):
@@ -13,6 +15,23 @@ class Usage(BaseModel):
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     cost: Decimal | None = None
+
+
+class RoleUsage(BaseModel):
+    """Settled usage of one role plus what it committed but has not accounted yet.
+
+    A role the ledger knows nothing about reports zero spend, known exactly:
+    ``total_tokens`` is ``0``, never ``None``, so an empty section is not
+    misread as *unknown* spend (FR-018); ``cost`` stays ``None`` until a call
+    reports one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Role
+    usage: Usage = Field(default_factory=lambda: Usage(total_tokens=0))
+    calls: int = Field(default=0, ge=0)
+    reserved: Usage = Field(default_factory=lambda: Usage(total_tokens=0))
 
 
 class BudgetSnapshot(BaseModel):
