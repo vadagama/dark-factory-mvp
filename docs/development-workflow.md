@@ -16,7 +16,7 @@
 
 ## Именование веток
 
-`<type>/t-<NNN>-<slug>`, где `<NNN>` — номер задачи из `docs/plan.md`, `<slug>` — краткий английский идентификатор:
+`<type>/t-<NNN>-<slug>`, где `<NNN>` — номер задачи из `specs/001-dark-factory-mvp/tasks.md`, `<slug>` — краткий английский идентификатор:
 
 - `feat/t-003-domain-model` — новая функциональность;
 - `fix/t-042-fix-gate-status` — исправление;

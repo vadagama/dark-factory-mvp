@@ -15,7 +15,7 @@ Modified sections:
     контракта ChangeSet с фиксацией GateDecision (ADR-020).
 Added sections: нет
 Removed sections: нет
-Follow-up TODOs: задачи T-020/T-021/T-022 переформулированы в docs/plan.md.
+Follow-up TODOs: задачи T-020/T-021/T-022 переформулированы в `specs/001-dark-factory-mvp/tasks.md`.
 -->
 
 # Software Dark Factory Constitution

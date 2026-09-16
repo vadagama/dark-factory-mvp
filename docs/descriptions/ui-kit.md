@@ -1,7 +1,7 @@
 # Small UIKit (`packs/ui`) — React-кит с UI-гейтами
 
 Small UIKit — версионированный UI-слой пилотных продуктов (ADR-014, задача
-T042 / `docs/plan.md` T-071): React-примитивы поверх Radix с адаптированным
+T042 / исторический T-071): React-примитивы поверх Radix с адаптированным
 shadcn-слоем, токены DTCG, Storybook как исполняемая UI-спека и четыре
 машиночитаемых гейта качества. Пак живёт в `packs/ui/` (манифест `pack.yaml`,
 правила `rules.md`, blueprint `blueprint/ui/`); Figma и Web Components — вне

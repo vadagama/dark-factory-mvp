@@ -32,4 +32,4 @@ product-baseline/
 
 ChangeSet проверяется через `NativeChangeSetAdapter` (`dark_factory.context.sdd.native`): `read_change` + `evaluate_specification_gate` (спецификационный гейт T-021), применение принятой дельты — `apply_delta` с guard ревизии от параллельных изменений. Канонический e2e-пример применения пака — `tests/test_packs_product_baseline.py`.
 
-> Примечание: применение пака к пилотному репозиторию — отдельная задача T041 (`docs/plan.md` T-070).
+> Примечание: применение пака к пилотному репозиторию — отдельная задача T041 (исторический T-070).

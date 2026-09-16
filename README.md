@@ -14,7 +14,7 @@ Pre-MVP. Каркас кода и базовый CI настроены (T-002); 
 | `.agents/skills/dark-factory/` | Локальный скилл-оркестратор конвейера (в git — общий для команды) |
 | `~/.agents/skills/` | Глобальные скиллы-роли: `product`, `design`, `architect`, `infrastructure`, `security`, `develop`, `quality`, `ci-cd`, `operation`, `yandex-cloud-engineer` |
 | `.zed/settings.json` | Настройки редактора Zed (форматирование, сканирование файлов) |
-| `docs/` | Проектная документация: индекс, ADR; `vision-*.md`, `plan.md`, `hld.md` создаются ролями |
+| `docs/` | Проектная документация: индекс, ADR; `vision-*.md`, `hld.md` создаются ролями |
 | `.editorconfig`, `.gitignore` | Гигиена репозитория |
 
 ## Как устроен конвейер

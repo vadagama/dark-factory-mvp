@@ -7,7 +7,6 @@
 | Файл / папка | Назначение | Кто создаёт |
 |---|---|---|
 | `vision-<дата>-<версия>.md` | Видение продукта, дорожная карта, скоуп MVP | `product` |
-| `plan.md` | План работ (приоритизированный бэклог) | `product` |
 | `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `ci-cd` |
 | `hld.md` | HLD: актуальная архитектура, связывает все ADR | `architect` |
 | `sdd-native-core.md` | Каноническая модель SDD: Native SDD Core (ChangeSet, Product Baseline, OKF) | `architect` |
@@ -25,7 +24,7 @@
 | `.factory/` | Канонический SDD-слой Native SDD Core (ADR-020): `product/` baseline + `changes/`. Создаётся в T-020 |
 | `.agents/skills/` | Локальные скиллы: `dark-factory` (оркестратор), `speckit-*` (SDD bootstrap-фазы, ADR-001) |
 | `.specify/` | Spec Kit bootstrap-фазы: шаблоны, скрипты, `memory/constitution.md` (ADR-001) |
-| `specs/` | Артефакты фич Spec Kit bootstrap-фазы; после перехода на Native SDD Core — historical bootstrap evidence |
+| `specs/` | Артефакты фич Spec Kit bootstrap-фазы; после перехода на Native SDD Core — historical bootstrap evidence. Единственный трекер задач — `specs/001-dark-factory-mvp/tasks.md` |
 | `packs/` | Шаблоны Product Baseline и ChangeSet для продуктовых репозиториев (ADR-020) |
 
 ## Правила ведения
