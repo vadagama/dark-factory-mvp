@@ -23,6 +23,20 @@ def test_quick_route_skips_only_the_ui_gate() -> None:
     assert standard - quick == {Gate.UI}
 
 
+def test_ui_gate_is_required_on_construction_by_every_route_but_quick() -> None:
+    """Absolute, not relative: every route except ``quick`` carries the UI gate (ADR-023 p.6)."""
+    for route in Route:
+        ui_required = Gate.UI in required_gates(route, Stage.CONSTRUCTION)
+        assert ui_required is (route is not Route.QUICK), route.value
+
+
+def test_every_route_but_quick_covers_all_seven_mvp_gates() -> None:
+    for route in Route:
+        bound = {gate for stage in Stage for gate in required_gates(route, stage)}
+        expected = ALL_GATES - {Gate.UI} if route is Route.QUICK else ALL_GATES
+        assert bound == expected, route.value
+
+
 def test_gate_stage_binding() -> None:
     assert required_gates(Route.STANDARD, Stage.SPECIFICATION) == {Gate.SPECIFICATION}
     assert required_gates(Route.STANDARD, Stage.PLANNING) == {Gate.PLANNING}

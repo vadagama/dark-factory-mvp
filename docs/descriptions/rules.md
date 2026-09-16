@@ -10,7 +10,7 @@
 
 Подсистема разделена на три файла:
 
-- `gates.py` — обязательные проверки качества для пары route/stage;
+- `gates.py` — обязательные проверки качества для тройки route/stage/risk_class (машинный набор — от route/stage, человеческий — ещё и от класса, T-080);
 - `limits.py` — пределы rework, токенов, стоимости и времени;
 - `merge_protection.py` — требования к branch protection провайдера для merge-гейта (T-026, T-032).
 
@@ -18,7 +18,7 @@
 
 ```mermaid
 flowchart LR
-    INPUT["Route + Stage + GateResult[]\nBudgetSnapshot + now"] --> GATES["rules/gates.py"]
+    INPUT["Route + Stage + RiskClass\nGateResult[] + BudgetSnapshot + now"] --> GATES["rules/gates.py"]
     INPUT --> LIMITS["rules/limits.py"]
     OBSERVED["Наблюдаемые настройки\nbranch protection"] --> MP["rules/merge_protection.py"]
     GATES --> FLOW["orchestration/flow.py"]
@@ -53,20 +53,33 @@ flowchart LR
 | Review / Verification | Review, Verification |
 | Release | Release |
 
-`standard` добавляет UI-гейт на Construction. `quick` дополнительных гейтов не добавляет.
+`standard` добавляет UI-гейт на Construction; `quick` дополнительных гейтов не добавляет. Так же, как `standard`, требуют все семь гейтов `architecture` и `foundation` (T-080, ADR-023 п.6).
 
 ```mermaid
 flowchart LR
     SPEC["Specification"] -->|"specification"| PLAN["Planning"]
     PLAN -->|"planning"| BUILD["Construction"]
-    BUILD -->|"quick: code\nstandard: code + ui"| REVIEW["Review / Verification"]
+    BUILD -->|"quick: code\nостальные: code + ui"| REVIEW["Review / Verification"]
     REVIEW -->|"review + verification"| RELEASE["Release"]
     RELEASE -->|"release"| DONE["Succeeded"]
 ```
 
-`required_gates(route, stage)` объединяет базовый набор стадии и route-specific additions и возвращает `frozenset[Gate]`.
+`required_gates(route, stage)` объединяет базовый набор стадии и route-specific additions и возвращает `frozenset[Gate]` — набор **машинных** гейтов. Его сигнатура не менялась ни в T-080: риск-класс новых гейтов не создаёт.
 
-### 2.3. Что считается пройденным
+### 2.3. Человеческие гейты и риск-класс (T-080, ADR-023 п.3)
+
+`RISK_HUMAN_GATES` — человеческие гейты, которые класс добавляет к базовому набору ADR-018 (`HUMAN_GATES` из этого же модуля, ADR-018):
+
+| Класс | `RISK_HUMAN_GATES[класс]` |
+|---|---|
+| `R0` | — |
+| `R1` | `ui` |
+| `R2` | `ui`, `planning` |
+| `R3`, `R4` | все семь гейтов |
+
+`required_human_gates(route, stage, risk_class)` = `(HUMAN_GATES | RISK_HUMAN_GATES[risk_class]) & required_gates(route, stage)`. Пересечение с `required_gates` нужно, чтобы человеческим становился только фактически требуемый гейт: `ui` на `quick` маршрут не требует — точкой контроля он не становится. Отсюда инвариант, закреплённый тестами: человеческий гейт — всегда подмножество требуемых, а базовые `specification` и `review` человеческие для любого класса. Пары `(stage, gate)` из этого набора — те же, что у точек контроля ([orchestration-operations.md](orchestration-operations.md) §4.2).
+
+### 2.4. Что считается пройденным
 
 | `GateStatus` | Удовлетворяет обязательный гейт |
 |---|---:|
@@ -78,7 +91,7 @@ flowchart LR
 
 `skipped` означает «проверен и неприменим», поэтому не блокирует Flow.
 
-### 2.4. `unsatisfied_gates()`
+### 2.5. `unsatisfied_gates()`
 
 Функция:
 
@@ -212,7 +225,7 @@ flowchart LR
 
 | Действие | После `_block_reason()` |
 |---|---|
-| `execute_stage` | `_escalation_reason(target)`: объявленные эскалации → contract entry gate (при входе в Construction) → autonomy budget контракта (`iterations_used = len(run.stages)`) |
+| `execute_stage` | `_escalation_reason(target)`: объявленные эскалации → contract entry gate (при входе в Construction) → полоса классов маршрута (T-080) → autonomy budget контракта (`iterations_used = len(run.stages)`) |
 | `merge` | объявленные эскалации → merge policy (`evaluate_merge`) |
 | `release` | объявленные эскалации → completion invariants (обязательная evidence доступна, blocker findings закрыты) |
 | `rework` | объявленные эскалации → autonomy budget → rework limit; эскалация и исчерпанный autonomy budget ветоируют раунд **без сжигания** |
@@ -297,14 +310,17 @@ next_stage = None
 | `ReworkAction.max_rounds` отличается от run budget | решение принимает run budget |
 | Объявлена эскалация в StageResult | execute/merge/release/rework заблокированы; rework-раунд не сжигается |
 | Вход в Construction без approved Implementation Contract | execute блокируется (contract entry gate) |
+| Класс изменения не допускается маршрутом (R2+ на `quick`) | execute блокируется с полосой маршрута в причине (T-080, ADR-023 п.3) |
 | Исчерпан autonomy budget контракта | execute и rework блокируются |
 | `merge_context` не передан | ручной режим: run в `WAITING` на человеческий merge |
 | Merge policy вернул `blocked` | `StopAction(blocked)` с причиной политики |
+| R2+ и нет approval на обязательной точке контроля при merge | `blocked` с перечнем точек; для R0/R1 — прежний `manual_merge_required` (T-080) |
 | Наблюдение провайдера не соответствует `MergeProtectionPolicy` | список violations в фиксированном порядке правил |
 
 ## 9. Где искать проверки
 
 - `tests/test_rules_gates.py` — required/unsatisfied gates и порядок;
+- `tests/test_rules_gates_risk.py` — `required_human_gates` и полосы маршрутов (T-080);
 - `tests/test_rules_limits.py` — границы budgets и rework;
 - `tests/test_rules_merge_protection.py` — compliance и violations branch protection;
 - `tests/test_flow_engine.py` — интеграция rules с Flow;
@@ -316,7 +332,8 @@ next_stage = None
 - [ADR-005](../adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) — детерминированный межстадийный FSM;
 - [ADR-009](../adr/ADR-009-minimal-bootstrap-otel.md) — version-bound approvals, инвалидируемые новым SHA;
 - [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge/release policy и branch protection;
-- [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — остановка автономного цикла и участие человека.
+- [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — остановка автономного цикла и участие человека;
+- [ADR-023](../adr/ADR-023-risk-classes-and-control-points.md) — риск-классы R0–R4, человеческие гейты и полосы маршрутов.
 
 ## 11. Связь с другими модулями
 

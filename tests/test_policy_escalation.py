@@ -2,8 +2,17 @@
 
 import pytest
 
-from dark_factory.changes.enums import BoundaryArea, EscalationRule, RiskClass
+from dark_factory.changes.enums import (
+    BoundaryArea,
+    ControlPoint,
+    EscalationRule,
+    Gate,
+    RiskClass,
+    Route,
+    Stage,
+)
 from dark_factory.changes.escalations import EscalationViolation
+from dark_factory.changes.findings import Decision
 from dark_factory.changes.implementation_contract import ChangeScope
 from dark_factory.orchestration.policy.escalation import (
     BoundaryChange,
@@ -15,11 +24,11 @@ from dark_factory.orchestration.policy.escalation import (
     gate_failure_violation,
     irreversible_operation_violation,
     requirements_violation,
-    risk_raise_violation,
+    risk_escalation_violation,
     scope_exit_violation,
     ui_verification_violation,
 )
-from tests.changes_factories import make_contract
+from tests.changes_factories import make_contract, make_decision
 
 _IN_SCOPE = ("src/app.py", "tests/app_test.py")
 
@@ -135,21 +144,84 @@ def test_no_adr_proposal_is_silent() -> None:
     assert adr_proposal_violation(None) is None
 
 
-# --- risk_raised_to_r2 (manual assessment until T-080) ---
+# --- risk_raised_to_r2 (machine-checked class obligations, T-080, ADR-023 p.5) ---
 
 
-@pytest.mark.parametrize("target", [RiskClass.R2, RiskClass.R3, RiskClass.R4])
-def test_risk_raise_to_r2_or_higher_escalates_manually(target: RiskClass) -> None:
-    violation = risk_raise_violation(target)
+def _planning_approval(*, commit_sha: str | None = None) -> Decision:
+    """Approved human decision on the planning gate (the ``solution`` control point)."""
+    return make_decision().model_copy(update={"commit_sha": commit_sha})
+
+
+@pytest.mark.parametrize("risk_class", [RiskClass.R0, RiskClass.R1])
+def test_risk_below_r2_is_silent(risk_class: RiskClass) -> None:
+    violation = risk_escalation_violation(
+        risk_class=risk_class, route=Route.QUICK, stage=Stage.PLANNING
+    )
+    assert violation is None
+
+
+@pytest.mark.parametrize("risk_class", [RiskClass.R2, RiskClass.R3, RiskClass.R4])
+def test_risk_raise_to_r2_or_higher_is_a_machine_check(risk_class: RiskClass) -> None:
+    """The raise is a gate, not a manual assessment: it carries machine diagnostics."""
+    violation = risk_escalation_violation(
+        risk_class=risk_class, route=Route.QUICK, stage=Stage.PLANNING
+    )
     assert violation is not None
     assert violation.rule is EscalationRule.RISK_RAISED_TO_R2
-    assert violation.manual_assessment is True
-    assert target.value in violation.reason
+    assert violation.manual_assessment is False
+    assert risk_class.value in violation.reason
 
 
-@pytest.mark.parametrize("target", [RiskClass.R0, RiskClass.R1])
-def test_risk_at_or_below_r1_is_silent(target: RiskClass) -> None:
-    assert risk_raise_violation(target) is None
+def test_violation_names_every_unmet_obligation() -> None:
+    violation = risk_escalation_violation(
+        risk_class=RiskClass.R2, route=Route.QUICK, stage=Stage.PLANNING
+    )
+    assert violation is not None
+    assert Route.QUICK.value in violation.reason
+    assert ControlPoint.SOLUTION.value in violation.reason
+
+
+def test_a_missing_control_point_alone_escalates() -> None:
+    violation = risk_escalation_violation(
+        risk_class=RiskClass.R2, route=Route.STANDARD, stage=Stage.PLANNING
+    )
+    assert violation is not None
+    assert ControlPoint.SOLUTION.value in violation.reason
+    assert "does not allow" not in violation.reason
+
+
+def test_fulfilled_obligations_are_silent() -> None:
+    violation = risk_escalation_violation(
+        risk_class=RiskClass.R2,
+        route=Route.STANDARD,
+        stage=Stage.PLANNING,
+        decisions=[_planning_approval()],
+    )
+    assert violation is None
+
+
+def test_an_approval_on_another_gate_does_not_fulfil_the_obligation() -> None:
+    other_gate = make_decision().model_copy(update={"gate": Gate.UI})
+    violation = risk_escalation_violation(
+        risk_class=RiskClass.R2,
+        route=Route.STANDARD,
+        stage=Stage.PLANNING,
+        decisions=[other_gate],
+    )
+    assert violation is not None
+    assert ControlPoint.SOLUTION.value in violation.reason
+
+
+def test_an_approval_at_an_older_sha_does_not_fulfil_the_obligation() -> None:
+    violation = risk_escalation_violation(
+        risk_class=RiskClass.R2,
+        route=Route.STANDARD,
+        stage=Stage.PLANNING,
+        decisions=[_planning_approval(commit_sha="aaa111")],
+        sha="731ac91",
+    )
+    assert violation is not None
+    assert ControlPoint.SOLUTION.value in violation.reason
 
 
 # --- unrecoverable_gate_failure ---

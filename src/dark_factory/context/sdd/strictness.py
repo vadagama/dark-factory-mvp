@@ -5,12 +5,16 @@ Defaults fixed in code per the ChangeSet contract
 set applies to every non-bugfix profile, ``bugfix-r0`` runs the quick route with
 no SDD artifacts, and reconciliation is mandatory for R2+ regardless of profile
 (extra artifacts beyond the required set are always allowed).
+
+The profile also fixes the base route (``PROFILE_ROUTE``): the flow tightens it
+by the risk class (``flows.routes.select_route``, T-080, ADR-023 p.6).
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Final
 
-from dark_factory.changes.enums import RiskClass
+from dark_factory.changes.enums import RiskClass, Route
 
 
 class WorkflowProfile(StrEnum):
@@ -48,6 +52,20 @@ _DEFAULT_REQUIRED: Final[frozenset[ArtifactSlot]] = frozenset(
 )
 
 _HIGH_RISK: Final[frozenset[RiskClass]] = frozenset({RiskClass.R2, RiskClass.R3, RiskClass.R4})
+
+PROFILE_ROUTE: Final[Mapping[WorkflowProfile, Route]] = {
+    WorkflowProfile.BUGFIX_R0: Route.QUICK,
+    WorkflowProfile.PRODUCT_FEATURE: Route.STANDARD,
+    WorkflowProfile.UI_RESEARCH: Route.STANDARD,
+    WorkflowProfile.ARCHITECTURE_CHANGE: Route.ARCHITECTURE,
+    WorkflowProfile.REPOSITORY_REBUILD: Route.FOUNDATION,
+    WorkflowProfile.PLATFORM_CHANGE: Route.FOUNDATION,
+}
+"""Base route of each strictness profile (ADR-023 p.6).
+
+A profile fixes the route; the risk class may only tighten it. The map is total
+over :class:`WorkflowProfile` — a new profile must pick its route here.
+"""
 
 
 def required_artifacts(profile: WorkflowProfile, risk_class: RiskClass) -> frozenset[ArtifactSlot]:

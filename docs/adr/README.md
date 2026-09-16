@@ -52,3 +52,4 @@
 | [ADR-020](ADR-020-native-sdd-core.md) | Native SDD Core: ChangeSet, Product Baseline, OKF-проекция (заменяет ADR-017) | принято |
 | [ADR-021](ADR-021-console-mvp-delivery.md) | Console MVP: размещение (`console/`), сборка (npm/Vite) и отдача (отдельный nginx-образ + chart) | принято |
 | [ADR-022](ADR-022-pure-psycopg-libpq.md) | Pure-Python psycopg with the distribution's libpq (drop the `binary` extra) | принято |
+| [ADR-023](ADR-023-risk-classes-and-control-points.md) | Risk classes R0–R4 and control points | принято |

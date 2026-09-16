@@ -52,6 +52,8 @@ from dark_factory.changes.enums import (
     FindingStatus,
     RiskClass,
     Role,
+    Route,
+    Stage,
 )
 from dark_factory.changes.findings import Finding
 from dark_factory.changes.implementation_contract import (
@@ -66,7 +68,7 @@ from dark_factory.orchestration.policy.escalation import (
     BoundaryChange,
     boundary_change_violation,
     contract_entry_violation,
-    risk_raise_violation,
+    risk_escalation_violation,
     scope_exit_violation,
 )
 from dark_factory.orchestration.rework import ReviewPass, finding_signature, plan_rework
@@ -213,11 +215,10 @@ boundary_violation = boundary_change_violation(
     BoundaryChange(area=BoundaryArea.PUBLIC_API, compatible=False), approved
 )
 print(f"boundary change -> {boundary_violation.rule.value}: {boundary_violation.reason}")
-risk_violation = risk_raise_violation(RiskClass.R2)
-print(
-    f"risk raise -> {risk_violation.rule.value}"
-    f" (manual assessment: {risk_violation.manual_assessment})"
+risk_violation = risk_escalation_violation(
+    risk_class=RiskClass.R2, route=Route.QUICK, stage=Stage.PLANNING
 )
+print(f"risk raise -> {risk_violation.rule.value}: {risk_violation.reason}")
 
 print()
 print("== Шаг 7. Контекст приёмки строится заново и воспроизводим ==")
@@ -304,7 +305,7 @@ rework loop for a passed review is not planned: review pass 2 at c0ffee000002 ha
 == Шаг 6. Эскалации автономии (ADR-018) ==
 scope exit -> scope_exit: implementation leaves the approved scope: payment flow refactor
 boundary change -> boundary_change: public_api change is not provided for by the approved implementation contract (ADR-018 p.5: public API, data schema, IAM, architecture boundary)
-risk raise -> risk_raised_to_r2 (manual assessment: True)
+risk raise -> risk_raised_to_r2: risk class R2 obligations are not met: route 'quick' does not allow risk class R2 (band R0-R1); no human approval on the control points of stage 'planning': solution
 
 == Шаг 7. Контекст приёмки строится заново и воспроизводим ==
 bundle_hash reproducible: True
@@ -335,7 +336,7 @@ duplicate evidence rejected: duplicate evidence id 'ev-tests'
 
 **Блок 5. Зелёный проход.** После доработки новый SHA: `REV-1` всё ещё открытый blocker, но его `reviewed_sha` — старый SHA, поэтому он **stale** и в решении не участвует. Остались minor-находка и человеческий комментарий — гейт `passed`. Итог: **допуск действителен только для своего SHA** — новый коммит обнуляет прежние проверки (машинные в CI повторяются на итоговом SHA, FR-009). Зелёное ревью в цикл rework не попадает вовсе — это `ValueError` по дизайну: passed уходит дальше по конвейеру, а не в доработку.
 
-**Блок 6. Эскалации автономии.** Три проверяемых выхода за рамки: реализация трогает то, чего нет в scope (`scope_exit`); меняет защищённую границу — публичный API, схему данных, IAM, архитектурную границу — без разрешения в контракте (`boundary_change`); поднимает риск до R2+ (`risk_raised_to_r2`, оценка вручную). Каждая эскалация — это veto автономному продолжению: дальше только человек.
+**Блок 6. Эскалации автономии.** Три проверяемых выхода за рамки: реализация трогает то, чего нет в scope (`scope_exit`); меняет защищённую границу — публичный API, схему данных, IAM, архитектурную границу — без разрешения в контракте (`boundary_change`); поднимает риск до R2+ (`risk_escalation_violation`, T-080). Эскалация риска — не ручная пометка, а машинная проверка обязательств класса: маршрут с полосой `R0–R1` не допускает R2, и человеческая точка контроля стадии (`solution` — гейт `planning`) должна иметь `APPROVED`-решение, привязанное к SHA; `reason` перечисляет всё невыполненное. Каждая эскалация — это veto автономному продолжению: дальше только человек.
 
 **Блок 7. Независимый контекст приёмки.** Reviewer не наследует контекст автора: приёмка собирает **свой** набор материалов — закреплённая спецификация, diff на конкретном SHA, evidence. `bundle_hash` воспроизводим: одинаковые входы дают одинаковый отпечаток, даже если время сбора (`retrieved_at`) разное — время в хеш не входит. Дубликат evidence — ошибка: одна snapshot каждого артефакта.
 
@@ -353,7 +354,7 @@ duplicate evidence rejected: duplicate evidence id 'ev-tests'
 - [ ] блок 3: план — `rework, round 1/3` с перечнем находок
 - [ ] блок 4: четыре сценария — все `blocked` с детерминированными причинами
 - [ ] блок 5: stale-находки исключены, гейт `passed` на новом SHA; passed-ревью в цикл не входит
-- [ ] блок 6: `scope_exit`, `boundary_change`, `risk_raised_to_r2 (manual assessment: True)`
+- [ ] блок 6: `scope_exit`, `boundary_change`, `risk_raised_to_r2` с перечнем обязательств (`does not allow risk class R2`, `solution`)
 - [ ] блок 7: `bundle_hash reproducible: True`; дубликат evidence отклонён
 
 ## Чего на этом участке конвейера пока нет

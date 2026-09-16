@@ -22,7 +22,9 @@ class StageContext:
     """Fixed inputs of one deterministic stage attempt (FR-001, ADR-005).
 
     ``required_gates`` is the route-specific slice of the gate policy for the
-    stage: the gates the flow requires before the stage may advance.
+    stage: the gates the flow requires before the stage may advance. A risk
+    class never adds a gate to it (ADR-023 p.3): the risk-driven human gates and
+    control points are computed by the policy where they are consumed.
     """
 
     change: Change
@@ -45,9 +47,9 @@ def build_context(
 ) -> StageContext:
     """Assemble the stage context from the validated snapshot and the flow tables.
 
-    The gate set comes from ``rules.gates`` — the single source of gate policy
-    (ADR-005): on the standard route construction additionally carries the UI
-    gate, the quick route skips it.
+    The machine gate set comes from ``rules.gates`` — the single source of gate
+    policy (ADR-005): on the standard route construction additionally carries the
+    UI gate, the quick route skips it.
     """
     return StageContext(
         change=change,

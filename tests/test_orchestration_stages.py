@@ -8,6 +8,7 @@ import pytest
 from dark_factory.changes.enums import (
     Gate,
     GateStatus,
+    RiskClass,
     Route,
     RunStatus,
     Stage,
@@ -53,6 +54,34 @@ def test_gate_results_mirror_the_route_policy() -> None:
     assert [record.gate for record in standard.gate_results] == [Gate.CODE, Gate.UI]
     quick = run_deterministic_stage(_context(Stage.CONSTRUCTION, Route.QUICK))
     assert [record.gate for record in quick.gate_results] == [Gate.CODE]
+
+
+def test_pending_records_are_exactly_the_machine_gate_set_for_every_risk_class() -> None:
+    """A risk class adds no gate and decides none (T-080, ADR-023 p.3).
+
+    The records of the deterministic path are the machine gate set of the
+    route/stage pair — asserted against the policy function, not against the
+    context — and every one of them is ``pending``: whatever the risk class, no
+    gate is invented and no human decision is substituted for an evaluation.
+    """
+    for route in Route:
+        for stage in route_profile(route).stages:
+            for risk_class in RiskClass:
+                change = make_change().model_copy(update={"risk_class": risk_class})
+                context = build_context(
+                    change=change,
+                    stage=stage,
+                    route=route,
+                    run_id=RUN_ID,
+                    input_revision=REVISION,
+                    budget=BudgetSnapshot(),
+                )
+                result = run_deterministic_stage(context)
+                assert context.required_gates == required_gates(route, stage)
+                assert result.gate_results == [
+                    GateResult(gate=gate, status=GateStatus.PENDING)
+                    for gate in sorted(required_gates(route, stage), key=lambda g: g.value)
+                ]
 
 
 def test_stage_waits_with_an_honest_reason() -> None:
