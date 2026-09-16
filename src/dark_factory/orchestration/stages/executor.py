@@ -8,11 +8,13 @@ are evaluated on the final SHA in CI (FR-009), outside this path — and the
 attempt ends ``waiting`` with an honest ``wait_for_input`` reason naming
 what is missing. No gate result produced here satisfies a gate, so no
 ``succeeded`` decision is reachable (FR-009, SC-004); the path never invokes
-the harness (ADR-003). Attempt state persistence is a later task (T011):
-``attempt_number`` stays 1 and the budget is whatever the caller fixed in
-the context — the CLI passes the default snapshot until the state store
-lands, so exhaustion outcomes are produced only for callers that carry a
-persisted budget.
+the harness (ADR-003). The attempt number of the result is the one the context
+carries (ADR-006 p.7): the durable driver supplies the attempt of the physical
+execution, so a retry of the same operation is scored against the attempt it
+really is, and a caller that does not track attempts keeps the default first
+attempt. The budget is whatever the caller fixed in the context — the CLI passes
+the default snapshot until the state store lands, so exhaustion outcomes are
+produced only for callers that carry a persisted budget.
 
 The shared attempt budget (T-062) enters through the optional ``budget_check``
 produced by ``orchestration.budget.BudgetCoordinator``: an ``awaiting_decision``
@@ -121,13 +123,15 @@ def _result(
 ) -> StageResult:
     """StageResult skeleton shared by both outcomes: identity from the context.
 
-    ``attempt_number`` stays 1 until attempt state is persisted (T011).
+    ``attempt_number`` comes from the context, so a retry of the same logical
+    operation produces a result the flow can match to the active stage run
+    (ADR-006 p.7); a caller that does not track attempts keeps the default 1.
     """
     return StageResult(
         stage=context.stage,
         run_id=context.run_id,
         change_id=context.change.id,
-        attempt_number=1,
+        attempt_number=context.attempt_number,
         input_revision=context.input_revision,
         status=status,
         next_action=next_action,

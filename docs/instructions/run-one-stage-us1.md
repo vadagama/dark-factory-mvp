@@ -238,7 +238,7 @@ factory stage run: cannot read change snapshot './no-such-change.yaml': No such 
 Чтобы не искать лишнего:
 
 - фабрика пока **ничего не коммитит в ваш проект сама**: она читает задание и складывает протоколы в `evidence/`; коммиты делаете вы (автосоздание репозитория продукта из blueprint и автоматические MR — задачи T-061/T-070 и US2+);
-- команды `stage resume`, `run status`, `reconcile`, `outbox dispatch` пока отвечают «не реализовано» (код 2) — появятся в следующих задачах;
+- команда `stage resume` пока отвечает «не реализовано» (код 2) — появится в следующей задаче; `reconcile`, `outbox dispatch` и `run advance`/`run status` (T-092) уже работают. Durable-продвижение запуска всё равно честно останавливается на `waiting`/`blocked`: гейты по product SHA исполняет CI (FR-009), а не локальный прогон;
 - ИИ-агенты (Product, Developer и др.), веб-консоль — это следующие user stories (US2+).
 
 ## Справочник терминов

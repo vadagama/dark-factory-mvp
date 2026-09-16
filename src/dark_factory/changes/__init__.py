@@ -46,6 +46,7 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.run import (
+    RETRYABLE_STAGE_STATUSES,
     RUN_STATUS_TRANSITIONS,
     RUN_TERMINAL_STATUSES,
     SCHEMA_VERSION,
@@ -69,6 +70,7 @@ from dark_factory.changes.run_records import (
 from dark_factory.changes.usage import BudgetSnapshot, Usage
 
 __all__ = [
+    "RETRYABLE_STAGE_STATUSES",
     "RUN_STATUS_TRANSITIONS",
     "RUN_TERMINAL_STATUSES",
     "SCHEMA_VERSION",

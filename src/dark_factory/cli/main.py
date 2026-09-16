@@ -3,7 +3,7 @@
 ``factory`` is the entry point of a factory stage (ADR-006 p.1): the same core
 release runs locally and in CI (FR-022), so no always-on service is needed.
 This module owns the command tree (``stage run``/``stage resume``,
-``run status``/``run publish``, ``reconcile``, ``outbox dispatch``/
+``run advance``/``run status``/``run publish``, ``reconcile``, ``outbox dispatch``/
 ``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
 ``release verify``), option validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
@@ -13,16 +13,17 @@ exit code 2, matching the contract.
 Handlers are dispatched from here. ``doctor`` (T008) is implemented in
 ``dark_factory.cli.doctor``, ``stage run`` (T009, with run-record
 persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``,
-``reconcile`` (T-063, one idempotent Reconciler pass) in
-``dark_factory.cli.reconcile``, the outbox commands (T028, delivery of
+``run advance``/``run status`` (T-092, the durable run driver) in
+``dark_factory.cli.runner``, ``reconcile`` (T-063, one idempotent Reconciler
+pass) in ``dark_factory.cli.reconcile``, the outbox commands (T028, delivery of
 outbox events per ADR-016) in ``dark_factory.cli.outbox``, ``api serve``
 (T035, the REST API of contract api.md) in ``dark_factory.cli.api`` and
 ``release verify`` (T034, smoke + release evidence, ADR-011 p.6) in
 ``dark_factory.cli.release`` and ``run publish`` (T-061, the run-record index
 published into ``dark-factory-runs``, ADR-015 p.4) in
-``dark_factory.cli.runs``; the remaining handlers (``stage resume`` and
-``run status`` with the durable state-store wiring) arrive in later tasks and
-report ``not_implemented`` with exit code 2 until then.
+``dark_factory.cli.runs``; ``stage resume`` still reports ``not_implemented``
+with exit code 2 until the durable state-store wiring of the resume protocol
+(ADR-006 p.8) lands.
 """
 
 import argparse
@@ -80,6 +81,20 @@ class RunStatusArgs:
     """Arguments of ``factory run status`` (contract cli.md)."""
 
     run_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RunAdvanceArgs:
+    """Arguments of ``factory run advance`` (T-092, ADR-006).
+
+    Exactly one of ``change_id``/``run_id`` is set (argparse enforces the
+    group): ``change_id`` resolves the run from the change snapshot, ``run_id``
+    advances the run named directly.
+    """
+
+    change_id: str | None
+    run_id: str | None
     json_output: bool
 
 
@@ -183,6 +198,7 @@ CommandArgs = (
     StageRunArgs
     | StageResumeArgs
     | RunStatusArgs
+    | RunAdvanceArgs
     | RunPublishArgs
     | ReconcileArgs
     | OutboxDispatchArgs
@@ -253,6 +269,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="Inspect a run and publish its record.")
     run_commands = run.add_subparsers(required=True, metavar="command")
+    run_advance = run_commands.add_parser(
+        "advance", help="Advance one run by exactly one stage (T-092)."
+    )
+    run_advance_target = run_advance.add_mutually_exclusive_group(required=True)
+    run_advance_target.add_argument(
+        "--change-id", help="Id of the change whose run should be advanced."
+    )
+    run_advance_target.add_argument("--run-id", help="Id of the run to advance.")
+    run_advance.add_argument(
+        "--json", action="store_true", help="Emit the advance outcome as JSON on stdout."
+    )
+    run_advance.set_defaults(command="run_advance")
+
     run_status = run_commands.add_parser("status", help="Show the status of a run.")
     run_status.add_argument("--run-id", required=True, help="Id of the run to inspect.")
     run_status.add_argument("--json", action="store_true", help="Emit the run record as JSON.")
@@ -448,6 +477,12 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 run_id=_required_str(data, "run_id"),
                 json_output=_flag(data, "json"),
             )
+        case "run_advance":
+            return RunAdvanceArgs(
+                change_id=_option_str(data, "change_id"),
+                run_id=_option_str(data, "run_id"),
+                json_output=_flag(data, "json"),
+            )
         case "run_publish":
             return RunPublishArgs(
                 record=_required_str(data, "record"),
@@ -535,9 +570,18 @@ def _resume_stage(args: StageResumeArgs) -> int:
 
 
 def _show_run_status(args: RunStatusArgs) -> int:
-    return _not_implemented(
-        "run status", "the durable state-store wiring", json_output=args.json_output
-    )
+    # Imported here: cli.runner imports RunStatusArgs and the exit codes from
+    # this module, so a module-level import would be circular.
+    from dark_factory.cli import runner
+
+    return runner.run_status_command(args)
+
+
+def _advance_run(args: RunAdvanceArgs) -> int:
+    # Imported here for the same reason as ``_show_run_status``.
+    from dark_factory.cli import runner
+
+    return runner.run_advance_command(args)
 
 
 def _publish_run(args: RunPublishArgs) -> int:
@@ -607,6 +651,8 @@ def dispatch(command: CommandArgs) -> int:
             return _resume_stage(command)
         case RunStatusArgs():
             return _show_run_status(command)
+        case RunAdvanceArgs():
+            return _advance_run(command)
         case RunPublishArgs():
             return _publish_run(command)
         case ReconcileArgs():

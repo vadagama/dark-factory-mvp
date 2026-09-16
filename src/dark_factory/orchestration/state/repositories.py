@@ -24,7 +24,11 @@ from sqlalchemy.orm import Session
 from dark_factory.changes.enums import Provider, Route, RunStatus, Stage, StageStatus
 from dark_factory.changes.keys import attempt_id as compose_attempt_id
 from dark_factory.changes.keys import operation_key as compose_operation_key
-from dark_factory.changes.run import RUN_TERMINAL_STATUSES
+from dark_factory.changes.run import (
+    RUN_STATUS_TRANSITIONS,
+    RUN_TERMINAL_STATUSES,
+    InvalidStatusTransition,
+)
 from dark_factory.orchestration.state.enums import DeliveryStatus, EffectStatus
 from dark_factory.orchestration.state.models import (
     Attempt,
@@ -57,6 +61,31 @@ class LeaseLostError(StateError):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _run_status_path(current: RunStatus, target: RunStatus) -> tuple[RunStatus, ...]:
+    """Legal run-status walk from ``current`` to ``target``; raises outside the table.
+
+    Mirrors ``RunStore._status_path`` for stages: the domain table has no direct
+    ``pending -> waiting`` edge, while ``apply_result`` may apply more than one
+    edge in one decision (``pending -> running -> waiting``), so a target two
+    edges away is reached through ``running`` — the only intermediate the domain
+    uses. An empty tuple means ``current`` already is ``target``. The check is
+    what makes ``RUN_STATUS_TRANSITIONS`` the single authority for persisted run
+    statuses too, not only for the in-memory domain (ADR-024, условие 3).
+    """
+    if current is target:
+        return ()
+    if target in RUN_STATUS_TRANSITIONS[current]:
+        return (target,)
+    if (
+        RunStatus.RUNNING in RUN_STATUS_TRANSITIONS[current]
+        and target in RUN_STATUS_TRANSITIONS[RunStatus.RUNNING]
+    ):
+        return (RunStatus.RUNNING, target)
+    raise InvalidStatusTransition(
+        f"Run transition {current.value} -> {target.value} is not allowed"
+    )
 
 
 class ExecutionRepository:
@@ -152,7 +181,13 @@ class ExecutionRepository:
         expected_revision: int,
         fencing_token: int,
     ) -> Execution:
-        """Change status under both the optimistic revision and the lease fencing token."""
+        """Change status under the optimistic revision, the fencing token and the domain table.
+
+        The target must be reachable from the persisted status through
+        ``RUN_STATUS_TRANSITIONS`` (directly or via ``running``); anything else
+        raises ``InvalidStatusTransition``, so no persisted status can drift
+        from the domain table (ADR-024, условие 3).
+        """
         execution = self._session.get(Execution, execution_id, with_for_update=True)
         if execution is None:
             raise StateConflictError(f"execution {execution_id!r} does not exist")
@@ -167,6 +202,7 @@ class ExecutionRepository:
                 f"execution {execution_id!r} is at revision {execution.state_revision}, "
                 f"expected {expected_revision}"
             )
+        _run_status_path(RunStatus(execution.status), target)
         execution.status = target.value
         execution.state_revision += 1
         execution.updated_at = _now()

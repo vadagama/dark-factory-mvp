@@ -74,7 +74,15 @@ RESULT_STATUS_VALUES: Final = ", ".join(
 
 
 class Execution(Base):
-    """Logical execution of one change through the factory."""
+    """Logical execution of one change through the factory.
+
+    ``budget`` and ``implementation_contract`` hold the JSON dumps of the run's
+    :class:`~dark_factory.changes.usage.BudgetSnapshot` and approved
+    :class:`~dark_factory.changes.implementation_contract.ImplementationContract`
+    (T-092): without them a replayed run would lose its rework counters, its
+    accumulated spend and its approved implementation boundary. ``NULL`` means
+    "not set" — the default snapshot and an unapproved contract.
+    """
 
     __tablename__ = "execution"
 
@@ -84,6 +92,8 @@ class Execution(Base):
     provider: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default=RunStatus.PENDING.value)
     state_revision: Mapped[int] = mapped_column(Integer, default=1)
+    budget: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    implementation_contract: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, server_default=func.now()
     )
