@@ -18,6 +18,7 @@ from dark_factory.cli.main import (
     ReconcileArgs,
     ReleaseVerifyArgs,
     ResumeNextAction,
+    RunAdvanceArgs,
     RunPublishArgs,
     RunStatusArgs,
     StageResumeArgs,
@@ -114,6 +115,30 @@ def test_stage_resume_accepts_every_next_action_value(next_action: str) -> None:
 def test_run_status_parses_options() -> None:
     args = parse_command(["run", "status", "--run-id", "run_01H", "--json"])
     assert args == RunStatusArgs(run_id="run_01H", json_output=True)
+
+
+def test_run_advance_parses_exactly_one_target() -> None:
+    assert parse_command(["run", "advance", "--change-id", "chg_01H"]) == RunAdvanceArgs(
+        change_id="chg_01H", run_id=None, json_output=False
+    )
+    assert parse_command(["run", "advance", "--run-id", "run_01H", "--json"]) == RunAdvanceArgs(
+        change_id=None, run_id="run_01H", json_output=True
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "advance"],
+        ["run", "advance", "--change-id", "chg_01H", "--run-id", "run_01H"],
+    ],
+)
+def test_run_advance_rejects_a_missing_or_ambiguous_target(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_command(argv)
+
+    # argparse leaves with the contract's invalid-input code (cli.md).
+    assert exit_info.value.code == 2
 
 
 def test_run_publish_parses_options() -> None:
@@ -341,41 +366,38 @@ def test_help_exits_with_code_0(argv: list[str], capsys: pytest.CaptureFixture[s
     assert "usage:" in capsys.readouterr().out
 
 
-STUB_INVOCATIONS = [
-    (
+@pytest.mark.parametrize(
+    "argv",
+    [
         ["stage", "resume", "--run-id", "run_01H", "--next-action", "wa"],
-        "stage resume",
-        "the durable state-store wiring",
-    ),
-    (["run", "status", "--run-id", "run_01H"], "run status", "the durable state-store wiring"),
-]
-
-
-@pytest.mark.parametrize(("argv", "command", "task"), STUB_INVOCATIONS)
+    ],
+)
 def test_stub_reports_not_implemented_on_stderr(
-    argv: list[str], command: str, task: str, capsys: pytest.CaptureFixture[str]
+    argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(argv) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == f"factory {command}: not implemented yet (planned in {task})\n"
+    assert (
+        captured.err
+        == "factory stage resume: not implemented yet (planned in the durable state-store wiring)\n"
+    )
 
 
 @pytest.mark.parametrize(
-    ("argv", "command"),
+    "argv",
     [
-        (["stage", "resume", "--run-id", "r", "--next-action", "ci", "--json"], "stage resume"),
-        (["run", "status", "--run-id", "run_01H", "--json"], "run status"),
+        ["stage", "resume", "--run-id", "r", "--next-action", "ci", "--json"],
     ],
 )
 def test_stub_json_emits_json_error_on_stdout(
-    argv: list[str], command: str, capsys: pytest.CaptureFixture[str]
+    argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(argv) == 2
     captured = capsys.readouterr()
     assert captured.err == ""
     payload: object = json.loads(captured.out)
-    assert payload == {"error": "not_implemented", "command": command}
+    assert payload == {"error": "not_implemented", "command": "stage resume"}
 
 
 def test_factory_script_is_declared_in_pyproject() -> None:
