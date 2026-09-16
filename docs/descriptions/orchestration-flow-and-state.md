@@ -7,7 +7,7 @@
 - [`src/dark_factory/orchestration/state/`](../../src/dark_factory/orchestration/state/) — PostgreSQL state store;
 - [`src/dark_factory/changes/`](../../src/dark_factory/changes/) — домен: статусы, `NextAction`, контракты, на которых построены оба слоя.
 
-**Главный потребитель:** прикладной orchestration-сервис — ещё не реализован (§1). Потребители `state/` уже работают: [`api/`](../../src/dark_factory/api/), [`cli/`](../../src/dark_factory/cli/), [`orchestration/reconcile/`](../../src/dark_factory/orchestration/reconcile/). Сам `flow.py` потребляют тесты и экспорт `orchestration/__init__.py`.
+**Главный потребитель:** durable-раннер — [`orchestration/runner.py`](../../src/dark_factory/orchestration/runner.py) + [`orchestration/state/run_store.py`](../../src/dark_factory/orchestration/state/run_store.py), CLI-лицо — [`cli/runner.py`](../../src/dark_factory/cli/runner.py) (T-092). Потребители `state/` — [`api/`](../../src/dark_factory/api/), [`cli/`](../../src/dark_factory/cli/), [`orchestration/reconcile/`](../../src/dark_factory/orchestration/reconcile/); сам `flow.py` дополнительно потребляет экспорт `orchestration/__init__.py`.
 
 ## 1. Главное разделение
 
@@ -21,8 +21,10 @@
 
 ```mermaid
 flowchart TD
-    RESULT["Immutable StageResult"] --> SERVICE["Application orchestration\nещё не реализован"]
-    SERVICE --> LOAD["Загрузить ChangeRun / history"]
+    RESULT["Immutable StageResult"] --> SERVICE["runner.advance_run
+cli/runner.py + orchestration/runner.py"]
+    SERVICE --> LOAD["Загрузить ChangeRun / history
+state/run_store.RunStore"]
     LOAD --> FLOW["flow.apply_result()"]
     ROUTES["flows/routes.py\nмаршрут"] --> FLOW
     RULES["rules/\nгейты + лимиты"] --> FLOW
@@ -33,7 +35,7 @@ flowchart TD
     SERVICE --> EFFECTS["Внешние эффекты через ports"]
 ```
 
-> В текущем `src` нет production-сервиса, который связывает доменный Flow с durable state: загружает `ChangeRun`, вызывает `apply_result()`, сохраняет результат и выполняет side effects. CLI (`cli/stage.py`) исполняет стадии через harness и пишет evidence, но статусы двигает напрямую через `apply_status()` (T-003), минуя `apply_result()`. Реальные потребители `state/` — HTTP API, CLI и reconciler. Ниже разделены реализованное поведение и обязанности будущего caller-а.
+> Durable-раннер среза S1 существует: `runner.advance_run()` загружает `ChangeRun` из `run_store.RunStore`, вызывает `apply_result()` и сохраняет **всё решение** атомарно (`RunStore.persist_decision`: stage_result, статусы stage/attempt/run, `pending`-строки созданных стадий — successor-стадия, без которой run не продолжится, — и outbox-событие `run.stage_completed`). Повтор той же операции он распознаёт до любой записи и просто возвращает committed-результат (`replayed`, §13.2). Внешние side effects и harness-исполнитель стадии — срез S2: инжектируемый `StageExecutor` подменяется без изменения драйвера, `cli/stage.py` по-прежнему пишет evidence-файлы и двигает статусы в run record напрямую (T-003). Ниже разделены реализованное поведение и обязанности будущего caller-а.
 
 ## 2. Два уровня оркестрации
 
@@ -309,7 +311,7 @@ State-specific enum-ы: `EffectStatus` (`planned`, `in_progress`, `succeeded`, `
 - `record()` собирает ключи из самого результата (`operation_key`, `attempt_id`) и вставляет `ON CONFLICT DO NOTHING` по PK `attempt_id`: повтор той же попытки — no-op, предыдущие попытки никогда не перезаписываются;
 - чтение: `get(run_id, stage, attempt_number)` (ранняя по `produced_at` при неоднозначности), `list_for_run()`, `list_for_change()` — упорядочено по `(produced_at, stage, attempt_number)`.
 
-Таблица — read-источник API-агрегатов (`api/aggregates.py`, правило «последний выигрывает»). Запись из CLI/движка — следующая задача: сейчас CLI пишет `StageResult` только в evidence-каталог (§13).
+Таблица — read-источник API-агрегатов (`api/aggregates.py`, правило «последний выигрывает»). Запись из durable-раннера — `RunStore.persist_decision` (T-092, `orchestration/state/run_store.py`): `stage_result` пишется в одной транзакции со статусами stage/attempt/run, `pending`-строками стадий, которые создало решение (successor-стадия, без неё run не продолжится), и outbox-событием. Повтор той же попытки не доходит до этой записи: `advance_run` проверяет committed-результат **до любой мутации** (в т.ч. до lease) и на replay не пишет вообще ничего (§13.2). CLI `stage run` по-прежнему пишет `StageResult` только в evidence-каталог (§13).
 
 ## 13. Идемпотентность: два уровня (ADR-006 п.3)
 
@@ -331,7 +333,7 @@ effect_key    = operation_key:effect_type:effect_target
 - `stage_operation_key(result)` пересобирает ключ из полей самого результата; без `input_revision` результат не имеет полной идентичности и `None`;
 - `REPLAYABLE_RESULT_STATUSES = {succeeded, waiting}`: `succeeded` финален, `waiting` был сохранён до внешнего ожидания (ADR-006 п.8); `failed`/`blocked` сознательно не replay-ются — stage FSM разрешает retry как **новую** попытку той же операции, внешние эффекты которой дедуплицирует effect ledger (§16).
 
-Потребитель — CLI `stage run` (replay без второго исполнения); когда durable state store будет подключён к CLI, хранилищем станет он же — интерфейс уже зафиксирован.
+Потребитель — CLI `stage run` (replay без второго исполнения). С T-092 тот же policy применяет durable-раннер `factory run advance`: до любой мутации он читает committed-результат операции (`RunStore.committed_result`: run + stage + input_revision + attempt) и на `REPLAYABLE_RESULT_STATUSES` возвращает его как outcome `replayed`, **не записывая ничего** — ни результата, ни мутации attempt (его `status`/`finished_at` остаются финализированными; `open_attempt` вообще отказывается открывать финализированный attempt). Коммитнутый `failed`/`blocked` отказывается с ошибкой: retry — новая физическая попытка той же операции (ADR-006 п.3/п.7), и это протокол retry/resume среза S2. `EvidenceOperationStore` остаётся хранилищем `stage run` — интерфейс уже зафиксирован.
 
 ## 14. Engine и транзакции
 

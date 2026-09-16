@@ -53,3 +53,4 @@
 | [ADR-021](ADR-021-console-mvp-delivery.md) | Console MVP: размещение (`console/`), сборка (npm/Vite) и отдача (отдельный nginx-образ + chart) | принято |
 | [ADR-022](ADR-022-pure-psycopg-libpq.md) | Pure-Python psycopg with the distribution's libpq (drop the `binary` extra) | принято |
 | [ADR-023](ADR-023-risk-classes-and-control-points.md) | Risk classes R0–R4 and control points | принято |
+| [ADR-024](ADR-024-durable-run-driver-and-composition-root.md) | Durable run driver and the composition root | принято с условиями |

@@ -14,7 +14,8 @@
 |---|---|
 | Локальный/CI-прогон одной стадии | `stage run` |
 | Продолжение ожидающего запуска | `stage resume` — заглушка, exit 2 |
-| Инспекция запуска | `run status` — заглушка, exit 2 |
+| Инспекция запуска | `run status` (T-092) |
+| Продвижение запуска ровно на одну стадию | `run advance` (T-092) |
 | Публикация индекса run-записи в `dark-factory-runs` | `run publish` (T-061) |
 | Диагностика окружения и конфигурации | `doctor` |
 | Один идемпотентный проход Reconciler | `reconcile` |
@@ -32,7 +33,8 @@ flowchart TD
     ENTRY["factory\npyproject scripts +\npython -m dark_factory.cli"] --> P["cli/main.py\nbuild_parser + parse_command"]
     P --> D["dispatch\nисчерпывающий match\nпо типизированным args"]
     D --> SR["stage run\ncli/stage.py"]
-    D --> STUB["stage resume, run status\nnot_implemented, exit 2"]
+    D --> STUB["stage resume\nnot_implemented, exit 2"]
+    D --> ADV["run advance, run status\ncli/runner.py"]
     D --> PUB["run publish\ncli/runs.py"]
     D --> REC["reconcile\ncli/reconcile.py"]
     D --> OUT["outbox dispatch/replay/skip\ncli/outbox.py"]
@@ -51,6 +53,10 @@ flowchart TD
     SVC --> PG["orchestration/state/engine.py\nPostgreSQL (ADR-004)"]
     DISP --> PG
     APP --> PG
+    ADV --> RUNNER["orchestration/runner.py\nadvance_run: lease, Flow, persist"]
+    RUNNER --> RSTORE["orchestration/state/run_store.py\nexecution + stage + attempt\n+ stage_result + outbox"]
+    RUNNER --> FLOWD["orchestration/flow.py\napply_result — единственный переход"]
+    RSTORE --> PG
     DOC --> ENV["переменные окружения\nофлайн, без БД"]
 ```
 
@@ -59,6 +65,7 @@ flowchart TD
 | Команда | Доступ к данным |
 |---|---|
 | `stage run` | файл change-снапшота + `--evidence-dir`; PostgreSQL state store не используется (подключение — «durable state-store wiring», ещё не сделано) |
+| `run advance`, `run status` | PostgreSQL через `orchestration/state/run_store.py`: change из intake и run-стейт (execution/stage/attempt/stage_result/outbox); `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` |
 | `reconcile`, `outbox *`, `api serve` | PostgreSQL через `orchestration/state/engine.py`: `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` = `postgresql+psycopg://dark_factory:dark_factory@localhost:5432/dark_factory` |
 | `doctor` | только переменные окружения; соединение с БД не открывается (офлайн-проверки) |
 | `ci_job` | файл `stage_result.json` + `$GITHUB_OUTPUT` |
@@ -67,7 +74,8 @@ flowchart TD
 
 Что пока **не подключено** к production-обвязке (явные заглушки и упрощения):
 
-- `stage resume` и `run status` — парсятся, но всегда возвращают exit 2; их будущий читатель `load_run_record` уже есть;
+- `stage resume` — парсится, но всегда возвращает exit 2; его будущий читатель `load_run_record` уже есть;
+- `run advance` исполняет ровно одну стадию детерминированным исполнителем (`orchestration/stages/`), поэтому в S1 он честно останавливается на `waiting`/`blocked` и никогда не доходит до `succeeded` (FR-009); harness-исполнитель стадии — срез S2;
 - `stage run` не пишет в PostgreSQL state store — персистентность только через `--evidence-dir`; run-стейт подключится вместе с durable state-store wiring;
 - бюджет стадии — дефолтный `BudgetSnapshot` без накопленного usage, `attempt_number` всегда 1, `usage = None` в StageResult;
 - `pack_name`/`pack_version`/`blueprint_version`/`gitops_commit`/`okf_revision` в манифесте остаются незаполненными;
@@ -81,7 +89,8 @@ flowchart TD
 |---|---|---|---|
 | `stage run` | `--change`*, `--stage`*, `--route`, `--input-revision`, `--run-id`, `--json`, `--evidence-dir`, `--non-interactive` | Детерминированный прогон одной стадии | 0/10/20/1/2 |
 | `stage resume` | `--run-id`*, `--next-action`* (`wa`/`ci`/`input`), `--json` | Заглушка not_implemented | 2 |
-| `run status` | `--run-id`*, `--json` | Заглушка not_implemented | 2 |
+| `run status` | `--run-id`*, `--json` | Запуск из PostgreSQL: статус и стадии | 0/2 |
+| `run advance` | `--change-id` XOR `--run-id` (обязательна ровно одна), `--json` | Ровно одна стадия запуска durable-раннером | 0/10/20/1/2 |
 | `reconcile` | `--json` | Один проход Reconciler | 0/2 |
 | `outbox dispatch` | `--once`, `--json`, `--limit`, `--cleanup` | Одна пачка доставки outbox | 0/2 |
 | `outbox replay` | `--event-id`*, `--consumer`, `--json` | dead/failed → pending | 0/1/2 |
@@ -137,9 +146,22 @@ flowchart TD
 
 Каждый файл несёт полную операционную идентичность (`run_id`, `stage`, `input_revision`), поэтому replay проверяет идентичность перекомпоновкой ключа из сохранённого результата: чужая, битая или частичная запись считается «нет committed-результата» и ведёт к свежему исполнению под защитой effect ledger.
 
-### 3.2. `stage resume` и `run status` — заглушки
+### 3.2. `run advance` и `run status` (T-092) — durable-раннер
 
-Разбираются полностью (парсер принимает все флаги), но обращаются к `_not_implemented`: в текстовом режиме на stderr печатается `factory <command>: not implemented yet (planned in the durable state-store wiring)`, в `--json` на stdout — `{"error": "not_implemented", "command": "…"}`; exit 2. Реальные обработчики появятся вместе с durable state-store wiring (уже заготовлен `cli/run_records.load_run_record`).
+`run advance` — первый CLI-потребитель durable state store в роли *driver*: ровно одна стадия одного запуска за транзакцию. Обязательна ровно одна из `--change-id`/`--run-id` (mutually exclusive group, иначе argparse → exit 2).
+
+- **`--change-id`** читает `Change` из intake (`ChangeRepository`) и резолвит запуск из снапшота: id детерминированный (`state.run_store.generated_run_id`), поэтому повторный вызов для того же снапшота продолжает тот же run, а не создаёт второй; неизвестный change → exit 2. Маршрут — консервативный `standard` (ADR-005), provider — из `change.product.provider` (ADR-019 p.5), бюджет — дефолтный `BudgetSnapshot`, контракт не утверждён (вход в construction тогда блокирует policy, T-016).
+- **`--run-id`** продвигает существующий run, снапшот change берётся из intake.
+- **Replay-first (ADR-006 p.3)**: до любой записи (включая lease) ищется committed-результат той же операции (`run_store.committed_result`: run + stage + input_revision + attempt). Коммитнутый `succeeded`/`waiting` возвращается как есть — outcome `replayed`, в БД не пишется ничего (то же правило, что у replay `stage run`); коммитнутый `failed`/`blocked` требует **новой попытки** той же операции (ADR-006 p.7 — протокол retry/resume среза S2), поэтому команда отказывает с exit 2, не трогая финализированный attempt.
+- **Порядок одного прохода** (`orchestration/runner.py`): lease запуска с fencing token (ADR-006 p.6) → `running` через доменную таблицу (`ChangeRun.apply_status`) → `get_or_create_stage` + `append_attempt` (финализированный attempt не открывается заново: его `status` и `finished_at` не сбрасываются) → `build_context` с бюджетом run → инжектированный `StageExecutor` (в S1 — детерминированный `run_deterministic_stage`) → `apply_result` → атомарный persist → release lease.
+- **Решение и запись — не одно и то же**: `apply_result` решает переход *в памяти* и остаётся единственным источником решений FSM; durable-writer затем зеркалит это решение по тем же доменным таблицам переходов (`state/run_store.py`: `advance_stage` для стадии, финализация attempt). **Известное ограничение**: статус run идёт через `ExecutionRepository.update_status`, который сегодня проверяет только `state_revision` + `fencing_token`, а не таблицу `RUN_STATUS_TRANSITIONS` — валидность перехода гарантирует `apply_result`, а не запись.
+- **Персистится всё решение, а не только стадия**: immutable `stage_result` (FR-014), `pending`-строки стадий, которые решение создало и которых ещё нет в store (successor-стадия после `execute_stage`/`merge` — без неё run не продолжился бы на следующем вызове), статус и `state_revision` стадии, финализация attempt, статус run под `state_revision` + fencing token и событие `run.stage_completed` в outbox — всё в одной транзакции (ADR-006 p.8, ADR-016 p.1/p.5). Коммит делает вызывающий (`session_scope`), ровно один.
+- **Коды выхода**: `0` — стадия завершена (`advanced`/`completed`), `10` — `waiting` (результат уже сохранён, ADR-006 p.8), `20` — `blocked`, `1` — `failed`, `2` — неверный ввод, неизвестный change/run, недоступный store, отказ store (конфликт/потерянный lease) или run, который нельзя продвинуть (терминальный, без активной стадии либо стадия с коммитнутым `failed`/`blocked` — протокол retry среза S2). Replay отдаёт код по статусу committed-результата (`succeeded` → 0, `waiting` → 10) — как `stage run`. В S1 детерминированный исполнитель не вычисляет гейты по product SHA (FR-009), поэтому честный исход — `10` или `20`.
+- **Вывод**: текст — `run <id>: <outcome> (stage=…, stage_status=…, run_status=…, next_action=…, next_stage=…)` плюс `reason: …` для wait/stop; при replay — `run <id>: replayed (stage=…, result_status=…, next_action=…; nothing was written)`. `--json` — один объект с фиксированным набором ключей (`run_id`, `change_id`, `outcome`, `persisted`, `stage`, `result_status`, `next_action`, `attempt_number`, `stage_status`, `run_status`, `next_stage`, `reason`); при replay `persisted=false` и `null` в четырёх полях решения — flow не спрашивали, писать было нечего.
+
+`run status` читает запуск из state store и печатает статус и стадии: текст — заголовок `run <id>: <status> (change_id=…, route=…, provider=…, state_revision=…)` и по строке на стадию (`stage: status (attempt=…, input_revision=…, state_revision=…)`); `--json` — документ доменной `ChangeRun` (`changes/run.py`). Команда только читает: exit `0` или `2` (неизвестный run / недоступный store).
+
+`stage resume` остаётся заглушкой: парсится полностью, но обращается к `_not_implemented` — на stderr `factory stage resume: not implemented yet (planned in the durable state-store wiring)`, в `--json` на stdout `{"error": "not_implemented", "command": "…"}`; exit 2.
 
 ### 3.3. `reconcile` (T-063)
 
