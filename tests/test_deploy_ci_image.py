@@ -42,10 +42,13 @@ BUILD_SCRIPT = REPO_ROOT / "deploy" / "ci" / "scripts" / "build-image.sh"
 # is a reproducibility regression.
 PINNED_DIGEST_RE = r"@sha256:[0-9a-f]{64}"
 
-# The exact snapshot date the base image was built against (its own
-# debian.sources comment); installing git from a fixed snapshot keeps apt
-# packages from drifting the digest.
-SNAPSHOT_DATE = "20260824T000000Z"
+# The fixed snapshot date the apt layer installs from. Deliberately NOT the
+# base image's own debian.sources date: it was moved forward so the snapshot
+# carries the security updates the fail-closed trivy gate demands
+# (libpcre2-8-0 10.42-1+deb12u1, libssh2-1 1.10.0-3+deb12u1) — see
+# deploy/ci/README.md, "сознательные отклонения". One date for both archive
+# roots keeps the layer a single deterministic snapshot.
+SNAPSHOT_DATE = "20260906T000000Z"
 
 
 def _dockerfile_text() -> str:
@@ -210,6 +213,11 @@ def test_dockerfile_installs_git_from_fixed_snapshot() -> None:
     assert "snapshot.debian.org" in text
     assert SNAPSHOT_DATE in text
     assert "apt-get install" in text and "git" in text
+    # The layer must upgrade the whole OS layer from that one snapshot, not just
+    # a hand-picked package: the base image ships several stale packages the
+    # fail-closed trivy gate flags (libpcre2-8-0, libssh2-1, …) and a named list
+    # silently leaves some of them behind.
+    assert "apt-get upgrade" in text, "the snapshot's security updates must be applied"
     # The sed rewrite covers both archive roots (main and security); the
     # moving mirror survives only inside the sed pattern itself, never as a
     # live source line.

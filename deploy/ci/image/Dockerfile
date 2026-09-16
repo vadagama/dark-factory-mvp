@@ -30,8 +30,16 @@
 #   - provenance/SBOM attestations are disabled at build time (they embed
 #     invocation parameters and break digest stability); SBOM is produced as a
 #     CI artifact by the factory-image workflow instead;
-#   - git is installed from a fixed snapshot.debian.org date (same date the
-#     base image was built against) so package versions do not drift.
+#   - the runtime OS packages are refreshed from a fixed snapshot.debian.org
+#     date (`apt-get upgrade`, plus `git` itself) so their versions do not
+#     drift. The date is deliberately NOT the base image's own build date: it
+#     was moved forward to 20260906T000000Z so the snapshot carries the security
+#     updates the fail-closed trivy gate demands — libpcre2-8-0
+#     10.42-1+deb12u1 and libssh2-1 1.10.0-3+deb12u1 — which the base image
+#     predates. Upgrading from ONE frozen snapshot keeps the layer
+#     deterministic; naming packages one by one does not scale (patching only
+#     libpcre2-8-0 left libssh2-1 behind). The deviation, and the requests that
+#     confirm the snapshot serves the fixed packages, are in deploy/ci/README.md.
 # Do NOT touch the pinned digests or the snapshot date casually: each bump is
 # a conscious change and produces a new digest for the same SHA.
 
@@ -98,14 +106,20 @@ ARG GIT_SHA
 
 # git for the agent role (anonymous HTTPS clone, public pilot repository) and
 # runtime libs it needs; versions come from the fixed snapshot date, not from
-# a moving mirror. ca-certificates ships with the slim base image.
+# a moving mirror. ca-certificates ships with the slim base image. The upgrade
+# below lifts the base image's OS packages to that same snapshot — see the
+# header and deploy/ci/README.md.
 RUN set -eux; \
     sed -i \
-      -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260824T000000Z|g" \
-      -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260824T000000Z|g" \
+      -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260906T000000Z|g" \
+      -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260906T000000Z|g" \
       /etc/apt/sources.list.d/debian.sources; \
     echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot; \
     apt-get update; \
+    # The snapshot is frozen, so upgrading the whole OS layer is deterministic
+    # and patches every package the base image ships stale — which is what the
+    # trivy gate measures. A per-package list cannot keep up with new advisories.
+    apt-get upgrade -y; \
     apt-get install --no-install-recommends -y git; \
     rm -rf /var/lib/apt/lists/*; \
     # apt/dpkg embed wall-clock timestamps INSIDE log file contents (dpkg.log,
