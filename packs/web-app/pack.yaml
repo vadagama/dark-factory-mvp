@@ -1,0 +1,21 @@
+# Manifest of the web-app engineering pack (T041, docs plan T-070).
+# The pack is data, not code: its templates are copied into new product
+# repositories and validated by factory tests (tests/test_packs_web_app.py),
+# so a drifted template fails CI in the factory, not in a product repository.
+schema: dark-factory.dev/pack/v1
+id: pack:web-app
+name: web-app
+version: 0.1.0
+description: >-
+  Engineering pack for web-app products: React + Small UIKit stub frontend,
+  FastAPI + PostgreSQL backend, product CI, application Helm chart and test
+  conventions.
+contents:
+  - path: README.md
+    kind: doc
+  - path: rules.md
+    kind: doc
+  - path: CHANGELOG.md
+    kind: doc
+  - path: blueprint
+    kind: template

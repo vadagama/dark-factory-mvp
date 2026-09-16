@@ -1,0 +1,60 @@
+# Backend image of the example product (web-app engineering pack, T-070).
+#
+# Pattern: deploy/ci/image/Dockerfile of the factory — the same digest-pinned
+# multi-arch base, the same uv copy, non-root uid 65532, read-only-root-friendly
+# (HOME=/tmp). Deliberately SIMPLER than the factory image: no reproducible-build
+# contract (no SOURCE_DATE_EPOCH, no mtime normalization, no apt snapshot
+# pinning, no build constraints) — the product CI gates lint/typecheck/test and
+# publishes an immutable `sha-<sha>` image, not a byte-stable one. The gap is
+# recorded in the pack docs (docs/tech-dept.md, TD-012). Do NOT introduce
+# floating tags: every FROM pins a digest.
+#
+# Requires uv.lock in the build context: dependency resolution is frozen
+# (`uv sync --frozen`), so a rebuild resolves exactly the committed versions.
+
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS builder
+
+# uv pinned by digest (multi-arch index; same version as the factory image).
+COPY --from=ghcr.io/astral-sh/uv:0.11.19@sha256:b46b03ddfcfbf8f547af7e9eaefdf8a39c8cebcba7c98858d3162bd28cf536f6 /uv /usr/local/bin/uv
+
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+# Cache mount keeps downloads out of the image layers.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+COPY src/ /app/src/
+COPY alembic.ini /app/alembic.ini
+COPY migrations/ /app/migrations/
+# --no-editable: the project is installed as a built wheel, so the runtime
+# stage needs no source tree.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable
+
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+
+# libpq5 for the pure-Python psycopg driver (same rationale as the factory
+# image: the psycopg[binary] wheel vendors libraries the trivy gate rejects).
+# No snapshot pinning here (see the header); the fresh mirror serves patched
+# packages, which is what the fail-closed trivy gate of the product CI measures.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp
+
+COPY --from=builder /app /app
+WORKDIR /app
+
+# Same uid as the factory image and the chart securityContext: non-root.
+USER 65532:65532
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "example-product-backend"
+version = "0.1.0"
+description = "FastAPI backend of the example product (packs/web-app blueprint, T041)."
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13",
+    "fastapi>=0.141.1",
+    "psycopg>=3.2",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "uvicorn>=0.53.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "mypy>=1.14",
+    "pytest>=8.3",
+    "ruff>=0.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific rules
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

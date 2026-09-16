@@ -1,0 +1,6 @@
+apiVersion: v2
+name: web-app
+description: Helm chart of the example product from the web-app engineering pack (T-070) - FastAPI backend, React/nginx frontend and in-chart PostgreSQL.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

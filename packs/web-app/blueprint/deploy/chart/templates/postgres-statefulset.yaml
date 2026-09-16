@@ -1,0 +1,109 @@
+{{- if .Values.postgres.enabled }}
+{{- /* In-chart PostgreSQL for the pilot (parity with the factory bootstrap,
+deploy/bootstrap/manifests/postgres.yaml, T029). Rationale for a chart-internal
+StatefulSet instead of a dependency subchart: digest-pinning control and KISS -
+see the header of values.yaml. Single Replica, no HA: the pilot accepts the
+risk; products with real durability needs replace this component. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "web-app.fullname" . }}-postgres
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  # Headless: doubles as the StatefulSet governing service and as stable pod
+  # DNS; the DATABASE_URL secret points at this name.
+  clusterIP: None
+  selector:
+    {{- include "web-app.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+  ports:
+    - name: pg
+      port: {{ .Values.postgres.port }}
+      targetPort: pg
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "web-app.fullname" . }}-postgres
+  labels:
+    {{- include "web-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  serviceName: {{ include "web-app.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "web-app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        {{- include "web-app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # fsGroup lets the postgres user (999) take ownership of the volume.
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgres.image.repository }}@{{ .Values.postgres.image.digest }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          ports:
+            - name: pg
+              containerPort: {{ .Values.postgres.port }}
+          env:
+            # pgdata in a subdirectory: the postgres image refuses an owned
+            # lost+found at the mount root (factory bootstrap pattern).
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.credentials.existingSecret }}
+                  key: {{ .Values.postgres.credentials.secretKey }}
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          securityContext:
+            # Deliberately WITHOUT readOnlyRootFilesystem: the postgres image
+            # writes runtime files across the rootfs (/var/run/postgresql,
+            # /etc) - hardening it further is out of scope for the blueprint,
+            # parity with the factory bootstrap (T029).
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "web-app.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: database
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}
+{{- end }}

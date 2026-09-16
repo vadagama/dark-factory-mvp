@@ -1,0 +1,18 @@
+# Python (backend)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+
+# Node (frontend)
+node_modules/
+coverage/
+
+# Vite
+frontend/dist/
+
+# OS
+.DS_Store

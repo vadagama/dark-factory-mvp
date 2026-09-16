@@ -1,0 +1,39 @@
+# Frontend image of the example product (web-app engineering pack, T-070).
+#
+# Pattern: console/Dockerfile — nginx-unprivileged serves the built SPA and
+# proxies /api/ to the backend Service inside the cluster. Base image pinned by
+# digest (nginx-unprivileged 1.29.4, multi-arch index; same digest as the
+# console image). No reproducible-build requirement (TD-012); no floating tags.
+#
+# dist/ comes from the product CI (Node 22 via .nvmrc, npm ci, vite build) and
+# must stay in the build context (no .dockerignore on purpose, like console).
+
+FROM nginxinc/nginx-unprivileged:1.29.4@sha256:c38007e929d1d368ea26df1b696bfc5655e274db11f755fad63c25950a157423
+
+# Upstream of the /api/ proxy. Overridden by the chart with the in-cluster
+# Service DNS name; defaults work for a plain `docker run` with a local API.
+ENV API_UPSTREAM=host.docker.internal:8000
+
+# OS security updates for the pinned base, for the fail-closed trivy gate of
+# the product CI (--ignore-unfixed --severity HIGH,CRITICAL). Build-time only:
+# USER 101 below restores the base image's runtime user, so nginx still serves
+# on 8080 as UID 101 with the same writable paths.
+USER root
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# The base image's non-root runtime user (uid/gid 101).
+USER 101
+
+# The stock nginx entrypoint envsubst's every template in /etc/nginx/templates
+# into /etc/nginx/conf.d. Only defined env vars are substituted, so nginx
+# runtime variables ($uri, $host) survive. No trailing slash on proxy_pass —
+# the /api prefix is preserved.
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY dist/ /usr/share/nginx/html/
+
+# nginx-unprivileged listens on 8080 as UID 101 by default; writable paths are
+# provided by the chart (emptyDir on /tmp, /var/cache/nginx and
+# /etc/nginx/conf.d) because the container runs with readOnlyRootFilesystem.
+EXPOSE 8080
