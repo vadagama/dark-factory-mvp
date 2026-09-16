@@ -114,17 +114,58 @@ def test_run_stage_maps_cost_when_the_model_reports_it() -> None:
     assert result.usage.cost == Decimal("0.25")
 
 
+def _capturing_json_model(payload: str) -> tuple[FunctionModel, list[AgentInfo]]:
+    """A model answering with ``payload`` text, recording the ``AgentInfo`` of each call.
+
+    Prompted structured output arrives as text, exactly as this model replies; the
+    recorded ``AgentInfo`` shows which tools (including output tools) were declared.
+    """
+    calls: list[AgentInfo] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        calls.append(info)
+        return ModelResponse(
+            parts=[TextPart(payload)], usage=RequestUsage(input_tokens=5, output_tokens=7)
+        )
+
+    return FunctionModel(respond), calls
+
+
 def test_run_stage_supports_structured_output() -> None:
     class Verdict(BaseModel):
         approved: bool
         score: int
 
-    harness = PydanticAIHarness(_config(), model=TestModel())
+    model, _ = _capturing_json_model('{"approved": true, "score": 7}')
+    harness = PydanticAIHarness(_config(), model=model)
     result = asyncio.run(harness.run_stage(_envelope(role=Role.QUALITY), output_type=Verdict))
     assert result.ok is True
     payload = json.loads(result.output)
     assert isinstance(payload["approved"], bool)
     assert isinstance(payload["score"], int)
+
+
+def test_structured_output_uses_the_prompted_mode_not_a_forced_tool() -> None:
+    """A structured answer must not force ``tool_choice`` (TD-015).
+
+    The ``ToolOutput`` default registers an output tool and sends
+    ``tool_choice: "required"``; an endpoint whose thinking mode is active
+    rejects that (DeepSeek: "Thinking mode does not support this tool_choice").
+    ``PromptedOutput`` asks for JSON in the answer instead, so no output tool is
+    registered and the value still parses into the requested model.
+    """
+
+    class Verdict(BaseModel):
+        approved: bool
+        reason: str
+
+    model, calls = _capturing_json_model('{"approved": true, "reason": "trivial"}')
+    harness = PydanticAIHarness(_config(), model=model)
+    result = asyncio.run(harness.run_stage(_envelope(role=Role.QUALITY), output_type=Verdict))
+    assert result.ok is True
+    assert json.loads(result.output)["reason"] == "trivial"
+    assert calls, "the model must have been called"
+    assert [tool.name for tool in calls[0].function_tools] == []
 
 
 def test_run_stage_has_no_tools_by_default() -> None:

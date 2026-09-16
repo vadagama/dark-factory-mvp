@@ -19,6 +19,14 @@ Usage accounting: PydanticAI token usage maps onto the core ``Usage``
 (genai-prices) and stays ``None`` when the proxied model cannot be priced;
 budget enforcement is the budget coordinator's concern (T-062), and LiteLLM
 may report cost in addition later.
+
+Structured output: a requested ``output_type`` is wrapped in ``PromptedOutput``
+-- the model answers with JSON instead of calling an output tool. PydanticAI's
+default output mode (``ToolOutput``) forces ``tool_choice: "required"``, which
+DeepSeek rejects while its thinking mode is active ("Thinking mode does not
+support this tool_choice"), and thinking is on by default there. The prompted
+mode keeps thinking enabled, stays provider-neutral (no vendor profile flags)
+and uses the endpoint's JSON output mode; the trade-offs are recorded as TD-015.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -29,6 +37,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.output import PromptedOutput
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RunUsage
 
@@ -96,7 +105,7 @@ class PydanticAIHarness(HarnessPort):
         try:
             agent = Agent(
                 model,
-                output_type=str if output_type is None else output_type,
+                output_type=_agent_output_type(output_type),
                 system_prompt=envelope.instruction,
                 tools=list(self._role_tools.get(envelope.role, ())),
             )
@@ -165,6 +174,22 @@ def _masked_url(value: str) -> str:
     if parsed.port is not None:
         netloc = f"{netloc}:{parsed.port}"
     return f"{parsed.scheme}://{netloc}"
+
+
+def _agent_output_type(output_type: type[BaseModel] | None) -> Any:
+    """Agent output mode of one call: plain text or prompted structured JSON (TD-015).
+
+    ``PromptedOutput`` instead of the ``ToolOutput`` default: the default forces
+    ``tool_choice: "required"``, which an endpoint whose thinking mode is active
+    (DeepSeek is the MVP one) rejects with ``Thinking mode does not support this
+    tool_choice``. The prompted mode works with thinking enabled, needs no
+    vendor-specific profile flags and asks for the endpoint's JSON output mode; a
+    prompt/parse round trip is cheaper than the output tool schema, which keeps
+    the deterministic stages inside their budget (T-062).
+    """
+    if output_type is None:
+        return str
+    return PromptedOutput(output_type)
 
 
 def _render_output(output: Any) -> str:
