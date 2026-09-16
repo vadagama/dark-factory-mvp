@@ -401,9 +401,12 @@ def test_stub_json_emits_json_error_on_stdout(
 
 
 def test_factory_script_is_declared_in_pyproject() -> None:
+    # The console script points at the composition root, not at the core CLI: the
+    # CLI may not import ``dark_factory.runtime`` (ADR-024 p.5), so the binding
+    # into ``run advance`` has to start in the runtime (ADR-025).
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    assert data["project"]["scripts"] == {"factory": "dark_factory.cli.main:main"}
+    assert data["project"]["scripts"] == {"factory": "dark_factory.runtime.entrypoint:main"}
 
 
 def test_python_dash_m_invocation_exits_with_code_2() -> None:

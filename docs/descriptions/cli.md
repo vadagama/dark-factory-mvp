@@ -6,7 +6,7 @@
 
 ## 1. Назначение
 
-`cli/` — точка входа «фабричного раннера» (T007): console-script `factory` (`pyproject [project.scripts]`: `factory = "dark_factory.cli.main:main"`) и `python -m dark_factory.cli`. Одна и та же команда работает локально и в CI (FR-022, ADR-006) — постоянно живой сервис не нужен.
+`cli/` — «фабричный раннер» (T007): дерево команд и их контракт. Console-script `factory` объявлен в `pyproject [project.scripts]` как `factory = "dark_factory.runtime.entrypoint:main"` — это composition root (ADR-025), который разбирает команду и собирает runtime только для `run advance`; `python -m dark_factory.cli` — явный core-путь (та же команда без композиции). Одна и та же команда работает локально и в CI (FR-022, ADR-006) — постоянно живой сервис не нужен.
 
 Сценарии, которые закрывает модуль:
 
@@ -30,7 +30,8 @@
 
 ```mermaid
 flowchart TD
-    ENTRY["factory\npyproject scripts +\npython -m dark_factory.cli"] --> P["cli/main.py\nbuild_parser + parse_command"]
+    ENTRY["factory\npyproject scripts:\nruntime.entrypoint:main\n(композиция для run advance)"] --> P["cli/main.py\nbuild_parser + parse_command"]
+    CORE["python -m dark_factory.cli\ncore-путь, без композиции"] --> P
     P --> D["dispatch\nисчерпывающий match\nпо типизированным args"]
     D --> SR["stage run\ncli/stage.py"]
     D --> STUB["stage resume\nnot_implemented, exit 2"]
@@ -60,7 +61,7 @@ flowchart TD
     DOC --> ENV["переменные окружения\nофлайн, без БД"]
 ```
 
-Команды CLI **не используют** порты (`ports/`) и адаптеры (`adapters/`): ни один файл `cli/` не импортирует `dark_factory.ports` или `dark_factory.adapters`. Fakes, PydanticAI-адаптер `HarnessPort` и GitHub-адаптер к CLI не подключены — детерминированный путь `stage run` не вызывает harness/LLM (ADR-003), а машинное исполнение гейтов живёт в CI (FR-009).
+Ни один файл `cli/` не импортирует `ports/` или `adapters/`: CLI — core и не называет ни порты, ни адаптеры (правила A/B теста границ). Связывание приходит **значением**: для `run advance` композицию собирает `runtime.entrypoint:main` и передаёт швы `executor`/`revision_of` в `cli.main.main` (ADR-025); без сборки (в том числе `python -m dark_factory.cli`) оба шва — `None` и работает детерминированный путь. Детерминированный `stage run` harness/LLM не вызывает (ADR-003), а машинное исполнение гейтов живёт в CI (FR-009).
 
 | Команда | Доступ к данным |
 |---|---|
@@ -75,11 +76,11 @@ flowchart TD
 Что пока **не подключено** к production-обвязке (явные заглушки и упрощения):
 
 - `stage resume` — парсится, но всегда возвращает exit 2; его будущий читатель `load_run_record` уже есть;
-- `run advance` исполняет ровно одну стадию детерминированным исполнителем (`orchestration/stages/`), поэтому в S1 он честно останавливается на `waiting`/`blocked` и никогда не доходит до `succeeded` (FR-009); harness-исполнитель стадии — срез S2;
+- `run advance` исполняет ровно одну стадию; исполнитель инжектируется. `runtime.entrypoint` передаёт собранный агентный `StageExecutor` только когда окружение полное, а реального адаптера `ExecutionPort` пока нет (TD-022), поэтому в проде `agent_stage_executor()` = `None` и работает детерминированный исполнитель (`orchestration/stages/`): честный исход — `waiting`/`blocked`, `succeeded` без гейтов по product SHA не достигается (FR-009);
 - `stage run` не пишет в PostgreSQL state store — персистентность только через `--evidence-dir`; run-стейт подключится вместе с durable state-store wiring;
 - бюджет стадии — дефолтный `BudgetSnapshot` без накопленного usage, `attempt_number` всегда 1, `usage = None` в StageResult;
 - `pack_name`/`pack_version`/`blueprint_version`/`gitops_commit`/`okf_revision` в манифесте остаются незаполненными;
-- ни один порт (`HarnessPort`, `SDDPort` и др.) и ни один адаптер (fakes, PydanticAI, GitHub) не вызывается из CLI.
+- ни один файл `cli/` не импортирует порт (`HarnessPort`, `SDDPort` и др.) или адаптер (fakes, PydanticAI, GitHub): передать их может только composition root (`runtime`) — значением и только для `run advance` (ADR-025).
 
 ## 3. Команды и коды выхода
 
@@ -154,7 +155,7 @@ flowchart TD
 - **`--run-id`** продвигает существующий run, снапшот change берётся из intake.
 - **Replay-first (ADR-006 p.3, ADR-024 p.3)**: до любой записи (включая lease) ищется committed-результат той операции, которую продвижение исполнило бы (`run_store.committed_result`: run + stage + input_revision + attempt). Коммитнутый `succeeded`/`waiting` возвращается как есть — outcome `replayed`, в БД не пишется ничего, включая строку lease (то же правило, что у replay `stage run`).
 - **Retry (ADR-006 p.7, срез S2)**: стадия, чья попытка закончилась `failed`/`blocked`, при следующем продвижении **повторяется**: номер попытки увеличивается на единицу, и в той же строке логической операции открывается новая физическая попытка (`append_attempt`), а не переоткрывается финализированная. Коммитнутый `failed`/`blocked`-результат поэтому не отказывает команде: он сообщается как `replayed` (с кодом по своему статусу), когда его записал конкурентный writer для уже открытой попытки.
-- **Порядок одного прохода** (`orchestration/runner.py`): быстрый replay по committed-результату (без записи) → lease запуска с fencing token (ADR-006 p.6) → **перевывод идентичности под lease**: номер попытки и replay-проверка считаются заново от свежего run, иначе два конкурентных продвижения вычислили бы разные номера попыток и исполнили стадию дважды (ADR-024, условие 2; вторая линия защиты — durable-строка attempt, которую `open_attempt` вставляет до исполнения) → `running` через доменную таблицу (`ChangeRun.apply_status`) → `open_attempt` (для retry — `attempt_number + 1`; финализированная попытка не открывается заново: её `status` и `finished_at` не сбрасываются) → `build_context` с бюджетом run и номером попытки → инжектированный `StageExecutor` (в S1 — детерминированный `run_deterministic_stage`) → `apply_result` → атомарный persist → release lease.
+- **Порядок одного прохода** (`orchestration/runner.py`): быстрый replay по committed-результату (без записи) → lease запуска с fencing token (ADR-006 p.6) → **перевывод идентичности под lease**: номер попытки и replay-проверка считаются заново от свежего run, иначе два конкурентных продвижения вычислили бы разные номера попыток и исполнили стадию дважды (ADR-024, условие 2; вторая линия защиты — durable-строка attempt, которую `open_attempt` вставляет до исполнения) → `running` через доменную таблицу (`ChangeRun.apply_status`) → `open_attempt` (для retry — `attempt_number + 1`; финализированная попытка не открывается заново: её `status` и `finished_at` не сбрасываются) → `build_context` с бюджетом run и номером попытки → инжектированный `StageExecutor` (шов: `factory` передаёт собранный агентный исполнитель, когда окружение полное, иначе — детерминированный `run_deterministic_stage`; ADR-025) → `apply_result` → атомарный persist → release lease.
 - **Решение и запись — не одно и то же**: `apply_result` решает переход *в памяти* и остаётся единственным источником решений FSM; durable-writer затем зеркалит это решение по тем же доменным таблицам переходов (`state/run_store.py`: `advance_stage` для стадии, финализация attempt). Статус run идёт через `ExecutionRepository.update_status`, который проверяет `state_revision`, `fencing_token` **и** доменную таблицу `RUN_STATUS_TRANSITIONS` (двухшаговый переход вроде `pending → waiting` идёт через `running`): persisted-статус не может разойтись с таблицей (ADR-024, условие 3).
 - **Персистится всё решение, а не только стадия**: immutable `stage_result` (FR-014), `pending`-строки стадий, которые решение создало и которых ещё нет в store (successor-стадия после `execute_stage`/`merge` — без неё run не продолжился бы на следующем вызове), статус и `state_revision` стадии, финализация attempt, статус run под `state_revision` + fencing token и событие `run.stage_completed` в outbox — всё в одной транзакции (ADR-006 p.8, ADR-016 p.1/p.5). Коммит делает вызывающий (`session_scope`), ровно один.
 - **Коды выхода**: `0` — стадия завершена (`advanced`/`completed`), `10` — `waiting` (результат уже сохранён, ADR-006 p.8), `20` — `blocked`, `1` — `failed`, `2` — неверный ввод, неизвестный change/run, недоступный store, отказ store (конфликт/потерянный lease) или run, который нельзя продвинуть (терминальный либо без активной стадии). Replay отдаёт код по статусу committed-результата (`succeeded` → 0, `waiting` → 10, `blocked` → 20, `failed` → 1) — как `stage run`. В S1 детерминированный исполнитель не вычисляет гейты по product SHA (FR-009), поэтому честный исход — `10` или `20`; повтор стадии — новая попытка (retry, ADR-006 p.7), а не отказ.
@@ -252,7 +253,7 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 - **Диспетчеризация**: `dispatch(command)` — исчерпывающий `match` по всем вариантам `CommandArgs`; ветка по умолчанию — `assert_never`, поэтому новая команда требует нового кейса на этапе компиляции.
 - **Заглушки**: `_not_implemented(command, planned_task)` печатает диагностику (текст — stderr, JSON — stdout) и возвращает exit 2.
 - **Циклические импорты**: `cli.stage`, `cli.reconcile`, `cli.outbox`, `cli.api`, `cli.runs` импортируют args-датаклассы и коды выхода из `main`, поэтому `main` импортирует их лениво — внутри обработчиков.
-- **`main(argv)`** возвращает `int` — код процесса; `SystemExit` поднимает обёртка: console-script из `pyproject [project.scripts]` или `__main__.py` (`raise SystemExit(main())`).
+- **`main(argv, *, executor=None, revision_of=None)`** возвращает `int` — код процесса. Необязательные keyword-only швы `executor`/`revision_of` (типы из `orchestration.runner`, импорт под `TYPE_CHECKING`) — точка связывания composition root'а: их потребляет только ветка `RunAdvanceArgs` (через `_advance_run` в `runner.run_advance_command`); без них ветка идёт детерминированным путём, как раньше. `SystemExit` с кодом поднимает обёртка: console-script `factory` (`pyproject [project.scripts]` → `dark_factory.runtime.entrypoint:main`, ADR-025) или `__main__.py` (`raise SystemExit(main())`). `python -m dark_factory.cli` — явный core-путь: без сборки runtime и без швов.
 - **Гигиена вывода (ADR-009)**: секреты не попадают в отчёты — `doctor` маскирует URL до `scheme://host:port/database`, outbox/reconcile/api не печатают URL и сырой текст исключений, `stage run` в ошибках валидации показывает первые 3 pydantic-ошибки без эхо-входа, аннотации `ci_job` несут только доменные поля.
 
 ## 5. Граничные случаи
@@ -260,6 +261,9 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 | Случай | Поведение |
 |---|---|
 | Команда или подкоманда не указана (`factory`, `stage`, `outbox`) | argparse: exit 2 |
+| Команда, которой композиция не нужна (`doctor`, `stage run`, `run status`, …) | runtime не собирается; швы `executor`/`revision_of` = `None` (ADR-025) |
+| Ошибка разбора у `factory` (`bogus`, недопустимое значение, `--help`) | argparse: exit 2/0 **до** решения о сборке — runtime не собирается |
+| Сбой внутри `factory run advance` | runtime всё равно закрыт (`finally`, `asyncio.run(runtime.aclose())`) |
 | Неизвестное значение `--stage` / `--route` / `--next-action` | argparse choices: exit 2 |
 | Пустые `--run-id` / `--input-revision` (`""`, пробелы) | exit 2, тег `invalid_input` |
 | Снапшот: нет файла, не YAML, не соответствует схеме `Change` | exit 2; стадия и evidence-dir не создаются |
@@ -291,7 +295,8 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 
 ## 6. Где искать проверки
 
-- [test_cli_parser.py](../../tests/test_cli_parser.py) — дерево команд, дефолты, choices, exit-коды argparse, заглушки not_implemented, декларация console-script и `python -m`;
+- [test_runtime_entrypoint.py](../../tests/test_runtime_entrypoint.py) — точка входа процесса `factory`: `run advance` собирает runtime и передаёт швы в CLI, runtime закрывается (в том числе когда команда упала), команда без швов runtime не собирает и швов не передаёт, ошибка разбора не собирает runtime, швы доходят до `runner.run_advance_command`, а без швов `cli.main` ведёт себя как раньше;
+- [test_cli_parser.py](../../tests/test_cli_parser.py) — дерево команд, дефолты, choices, exit-коды argparse, заглушки not_implemented, декларация console-script (`factory` → `runtime.entrypoint:main`) и `python -m`;
 - [test_cli_stage.py](../../tests/test_cli_stage.py) — контракт StageResult, детерминизм `input_revision`, evidence-dir, коды выхода, обработка повреждений evidence;
 - [test_cli_doctor.py](../../tests/test_cli_doctor.py) — статусы трёх проверок, маскирование секретов, коды выхода;
 - [test_cli_ci_job.py](../../tests/test_cli_ci_job.py) — классификация кодов, валидация StageResult, outputs, `::error::`-аннотации;
@@ -306,6 +311,8 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 
 ## 7. Связанные решения
 
+- [ADR-025](../adr/ADR-025-process-entry-point-and-lazy-composition.md) — точка входа процесса и ленивая композиция: console-script `factory` → `runtime.entrypoint:main`, сборка runtime только для `run advance`, `python -m dark_factory.cli` как core-путь;
+- [ADR-024](../adr/ADR-024-durable-run-driver-and-composition-root.md) — durable-драйвер и composition root: швы `executor`/`revision_of` приходят в CLI значением, ядро не импортирует `runtime` (п.5);
 - [ADR-004](../adr/ADR-004-postgresql-factory-state.md) — PostgreSQL state store: `DATABASE_URL`, локальный дефолт, liveness-проба с exit 2;
 - [ADR-005](../adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) — маршруты и применимость гейтов: дефолт `standard` для `stage run`;
 - [ADR-006](../adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) — ephemeral job pods: одна стадия = один job, `operation_key` и идемпотентный replay, persist-before-wait (p.8), Reconciler CronJob (p.5);
