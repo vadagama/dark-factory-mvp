@@ -45,6 +45,7 @@ from dark_factory.ports import (
     AgentResult,
     HarnessPort,
     HealthStatus,
+    PortError,
     TaskEnvelope,
     WorkspaceRequest,
 )
@@ -89,6 +90,13 @@ class ExplodingRepository(FakeRepository):
         idempotency_key: str,
     ) -> str:
         raise RuntimeError("provider failed at https://token@scm.example/api")
+
+
+class UnreachableRepository(FakeRepository):
+    """Repository whose reads fail like a rejected token, not like a missing ref."""
+
+    async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str:
+        raise PortError("the provider rejected the installation token")
 
 
 def _context(
@@ -388,9 +396,20 @@ def test_scm_revision_falls_back_to_the_base_ref_before_the_branch_exists() -> N
     assert resolver(change, Stage.CONSTRUCTION) == "base-1"
 
 
-def test_scm_revision_falls_back_to_the_base_ref_when_the_provider_fails() -> None:
-    resolver = ScmRevision(ExplodingRepository(), base_ref="main")
+def test_scm_revision_falls_back_to_the_base_ref_for_an_unknown_ref() -> None:
+    # get_revision reports a missing ref as KeyError (the shared port contract,
+    # in the fake and in the GitHub adapter alike): an absent task branch is the
+    # normal state before the first stage runs, and the base ref is the answer.
+    resolver = ScmRevision(FakeRepository(), base_ref="main")
     assert resolver(make_change(), Stage.CONSTRUCTION) == "main"
+
+
+def test_scm_revision_does_not_mask_a_provider_failure() -> None:
+    # Only a missing ref is a fallback: a rejected token must fail the advance
+    # instead of keying the operation by a guessed revision (ADR-006 p.3).
+    resolver = ScmRevision(UnreachableRepository(), base_ref="main")
+    with pytest.raises(PortError):
+        resolver(make_change(), Stage.CONSTRUCTION)
 
 
 def test_stage_role_covers_every_stage() -> None:

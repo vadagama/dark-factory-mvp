@@ -49,7 +49,7 @@ from dark_factory.agents.skills.registry import get_skill
 from dark_factory.changes.enums import Role, Stage, StageStatus, StopOutcome
 from dark_factory.changes.keys import effect_key, operation_key
 from dark_factory.changes.next_action import StopAction, WaitForCIAction
-from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef
+from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change, StageResult
 from dark_factory.orchestration.stages.checks import pending_gate_results
 from dark_factory.orchestration.stages.context import StageContext
@@ -408,18 +408,33 @@ class ScmRevision:
     def __call__(self, change: Change, stage: Stage) -> str:
         """Resolve the revision ``change`` executes ``stage`` from.
 
-        A repository that cannot answer (unknown ref, unreachable provider) does
-        not fail the advance: the base ref is the honest answer while the task
-        branch does not exist yet.
+        The task branch head wins once the branch exists — it is the revision
+        rework actually advanced — and the change's base ref is the answer while
+        the branch does not exist yet. A provider failure that is *not* a missing
+        ref is not masked (:meth:`_known_revision`).
         """
         return asyncio.run(self._resolve(change))
 
     async def _resolve(self, change: Change) -> str:
         repository = change.product
-        branch = branch_name(change.id, prefix=self._branch_prefix)
-        for ref in (branch, self._base_ref):
-            try:
-                return await self._repository.get_revision(repository, ref)
-            except Exception:
-                continue
-        return self._base_ref
+        head = await self._known_revision(
+            repository, branch_name(change.id, prefix=self._branch_prefix)
+        )
+        if head is not None:
+            return head
+        base = await self._known_revision(repository, self._base_ref)
+        return base if base is not None else self._base_ref
+
+    async def _known_revision(self, repository: RepositoryRef, ref: str) -> str | None:
+        """Revision of ``ref``, or ``None`` when the repository does not have that ref.
+
+        ``RepositoryPort.get_revision`` reports a missing ref as ``KeyError`` —
+        the contract the fake and the GitHub adapter share (a 404 is "absent",
+        not a failure). Every other exception propagates: masking a rejected
+        token or an unreachable provider would key the operation by a guessed
+        revision instead of failing the advance (ADR-006 p.3).
+        """
+        try:
+            return await self._repository.get_revision(repository, ref)
+        except KeyError:
+            return None
