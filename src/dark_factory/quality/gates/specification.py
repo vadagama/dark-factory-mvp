@@ -5,10 +5,10 @@ as computed by :func:`dark_factory.context.sdd.normalized.normalize`: findings
 are data, the gate weighs them. Pure and deterministic — no harness, LLM or
 clock; identical inputs yield an identical :class:`GateDecision`.
 
-The risk-class total order is deliberately duplicated from
-``dark_factory.orchestration.policy.risk``: the flow consumes the quality
-gates, so ``quality`` must not depend on ``orchestration`` (import boundaries
-take precedence over DRY).
+The risk-class total order and the R2 threshold come from
+``dark_factory.changes.risk`` (T-080, ADR-023 p.2): the lowest layer, so
+``quality`` neither depends on ``orchestration`` nor keeps a second copy of the
+order.
 """
 
 from typing import Final
@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dark_factory.changes.enums import Gate, GateStatus, RiskClass
 from dark_factory.changes.implementation_contract import ImplementationContract
+from dark_factory.changes.risk import RISK_ORDER, is_r2_or_higher
 from dark_factory.context.sdd.models import (
     ChangeManifest,
     DeltaOperationKind,
@@ -61,10 +62,8 @@ DEFAULT_SPEC_GATE_BLOCKING_CODES: Final[frozenset[str]] = frozenset(
     }
 )
 
-# Total order R0 < R1 < R2 < R3 < R4 (ADR-011 p.5); local copy — see docstring.
-_RISK_ORDER: Final[dict[RiskClass, int]] = {risk: index for index, risk in enumerate(RiskClass)}
-
-_R2_INDEX: Final = _RISK_ORDER[RiskClass.R2]
+# Total order R0 < R1 < R2 < R3 < R4 lives in ``dark_factory.changes.risk``
+# (T-080): a single definition, no local copy to drift.
 
 
 class SpecGatePolicy(BaseModel):
@@ -75,11 +74,6 @@ class SpecGatePolicy(BaseModel):
     name: str = Field(default=SPECIFICATION_GATE_POLICY, min_length=1)
     version: str = Field(default=SPECIFICATION_GATE_POLICY_VERSION, min_length=1)
     blocking_codes: frozenset[str] = DEFAULT_SPEC_GATE_BLOCKING_CODES
-
-
-def _is_r2_or_higher(risk_class: RiskClass) -> bool:
-    """Whether ``risk_class`` is at or above the R2 threshold."""
-    return _RISK_ORDER[risk_class] >= _R2_INDEX
 
 
 def _missing_artifact_findings(
@@ -100,7 +94,7 @@ def _missing_artifact_findings(
 
 def _reconciliation_findings(changeset: ChangeSet, risk_class: RiskClass) -> list[AxisFinding]:
     """Policy finding on the R2+ reconciliation requirement, by the effective risk."""
-    if _is_r2_or_higher(risk_class) and changeset.reconciliation is None:
+    if is_r2_or_higher(risk_class) and changeset.reconciliation is None:
         return [
             AxisFinding(
                 axis=Axis.POLICY,
@@ -113,7 +107,7 @@ def _reconciliation_findings(changeset: ChangeSet, risk_class: RiskClass) -> lis
 
 def _risk_transition_finding(manifest_risk: RiskClass, effective: RiskClass) -> AxisFinding:
     """Lowering the risk class is a policy decision, raising it is informational (ADR-011 p.5)."""
-    if _RISK_ORDER[effective] < _RISK_ORDER[manifest_risk]:
+    if RISK_ORDER[effective] < RISK_ORDER[manifest_risk]:
         return AxisFinding(
             axis=Axis.POLICY,
             code="risk_class_lowered_without_policy",

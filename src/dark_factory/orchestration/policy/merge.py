@@ -16,6 +16,10 @@ MVP rules (ADR-011 p.2: autonomous implementation with a human release gate):
   evaluated at the final SHA: a result bound to an older or unknown SHA is
   stale and does not satisfy (T-032: required checks on the merged SHA; a new
   SHA invalidates previous passes, ADR-009 p.7);
+- for R2+ every human control point the class makes mandatory must be approved
+  at the final SHA (ADR-023 p.4/p.5): a dangerous change is blocked instead of
+  being carried on an unapproved control point. Below R2 the check is silent and
+  the policy is unchanged —
 - a human decision on the merge authorization gate must be bound to the final
   SHA (version-bound approval, ADR-009 p.7) and the last such decision in list
   order must be an approval; a decision bound to an earlier SHA never
@@ -43,6 +47,8 @@ from dark_factory.changes.enums import (
     Stage,
 )
 from dark_factory.changes.findings import Decision, GateResult
+from dark_factory.changes.risk import is_r2_or_higher
+from dark_factory.orchestration.policy.risk import missing_control_points
 from dark_factory.rules.gates import unsatisfied_gates
 
 type MergeExecutor = Literal["human", "trusted_finalizer", "agent"]
@@ -82,7 +88,7 @@ class MergePolicy:
 
     merge_authorization_gate: Gate = Gate.REVIEW
     """Human gate carrying merge authorization (ADR-011 p.2: review carries
-    the human-confirmed merge; ``flows.routes.HUMAN_GATES``)."""
+    the human-confirmed merge; ``rules.gates.HUMAN_GATES``)."""
 
 
 DEFAULT_MERGE_POLICY: Final[MergePolicy] = MergePolicy()
@@ -166,6 +172,27 @@ def evaluate_merge(
                 f"{names} (T-032; a new SHA invalidates previous passes, ADR-009 p.7)"
             ),
         )
+    if is_r2_or_higher(context.risk_class):
+        # R2+ obligations (ADR-023 p.5): the human control points of the merge
+        # stage must be approved at the final SHA. Below R2 the policy is
+        # unchanged — a missing approval stays a request for the human merge.
+        missing = missing_control_points(
+            context.route,
+            context.stage,
+            context.risk_class,
+            context.human_approvals,
+            sha=context.expected_sha,
+        )
+        if missing:
+            names = ", ".join(sorted(point.value for point in missing))
+            return MergeDecision(
+                kind="blocked",
+                reason=(
+                    f"risk class {context.risk_class.value} requires human control points "
+                    f"approved at the final SHA {context.expected_sha}: {names} "
+                    "(ADR-023 p.4/p.5)"
+                ),
+            )
     latest = _latest_human_decision(context, policy, context.expected_sha)
     if latest is None:
         return MergeDecision(

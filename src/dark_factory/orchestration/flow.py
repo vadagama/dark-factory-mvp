@@ -18,11 +18,15 @@ Guarantees are layered (ADR-005 p.2):
   (see ``tests/test_flow_transitions.py``).
 
 Rework and budget limits live in ``dark_factory.rules.limits``, gate policy in
-``dark_factory.rules.gates``, route topology in ``dark_factory.flows.routes``,
-escalation policy (T-016, ADR-018 p.5) in ``dark_factory.orchestration.policy``
-and merge policy (T-026, ADR-011 p.2) in
-``dark_factory.orchestration.policy.merge``. Stop conditions deterministically
-end in ``Blocked`` (FR-008, ADR-018 p.5).
+``dark_factory.rules.gates``, route topology and risk bands in
+``dark_factory.flows.routes``, escalation policy (T-016, ADR-018 p.5) in
+``dark_factory.orchestration.policy``, merge policy (T-026, ADR-011 p.2) in
+``dark_factory.orchestration.policy.merge`` and the risk-class obligations
+(T-080, ADR-023 p.3/p.5) in ``dark_factory.orchestration.policy.risk``: the
+engine re-derives the effective class from the approved contract and checks it
+against the route band and the human control points on every advance, merge and
+release. Stop conditions deterministically end in ``Blocked`` (FR-008, ADR-018
+p.5).
 Stage-internal execution (TaskGraph, pydantic-graph) is T-015 and deliberately
 out of scope here.
 """
@@ -32,8 +36,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, Literal, assert_never
 
-from dark_factory.changes.enums import RunStatus, Stage, StageStatus, StopOutcome
-from dark_factory.changes.findings import GateResult
+from dark_factory.changes.enums import RiskClass, RunStatus, Stage, StageStatus, StopOutcome
+from dark_factory.changes.findings import Decision, GateResult
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
@@ -54,11 +58,12 @@ from dark_factory.changes.run import (
     completion_violations,
 )
 from dark_factory.changes.usage import BudgetSnapshot, Usage
-from dark_factory.flows.routes import route_profile
+from dark_factory.flows.routes import route_allows_risk, route_profile
 from dark_factory.orchestration.policy.escalation import (
     autonomy_budget_violation,
     contract_entry_violation,
     escalation_stop_reason,
+    risk_escalation_violation,
 )
 from dark_factory.orchestration.policy.merge import (
     DEFAULT_MERGE_POLICY,
@@ -67,6 +72,7 @@ from dark_factory.orchestration.policy.merge import (
     MergeRequestContext,
     evaluate_merge,
 )
+from dark_factory.orchestration.policy.risk import effective_change_risk_class
 from dark_factory.rules.gates import unsatisfied_gates
 from dark_factory.rules.limits import continuation_violations, rework_violation
 
@@ -201,6 +207,7 @@ def apply_result(
     history: Sequence[StageResult] = (),
     now: datetime | None = None,
     merge_context: MergeRequestContext | None = None,
+    human_decisions: Sequence[Decision] = (),
 ) -> FlowDecision:
     """Apply one stage result to the run: the single flow transition point.
 
@@ -214,13 +221,19 @@ def apply_result(
     reaches a successful terminal state. ``now`` overrides the wall clock for
     the deadline limit (determinism in tests and reconciliation replays).
 
-    ``merge_context`` carries the merge facts (executor, risk class, SHAs,
-    human approvals) the ``MergeAction`` handler needs to consult the merge
-    policy (T-026). The flow anchors ``route``, ``stage`` and
+    ``merge_context`` carries the merge facts (executor, SHAs, human approvals)
+    the ``MergeAction`` handler needs to consult the merge policy (T-026). The
+    flow anchors ``route``, ``stage``, the effective ``risk_class`` and
     ``gate_results`` of the context to the run and the result — the caller
-    contributes only executor, risk class, SHAs and approvals. Without a
-    context the merge parks the run in Waiting: absent merge facts mean
-    manual mode, the machine never merges on missing data (FR-010).
+    contributes only executor, SHAs and approvals. Without a context the merge
+    parks the run in Waiting: absent merge facts mean manual mode, the machine
+    never merges on missing data (FR-010).
+
+    ``human_decisions`` are the human approvals the caller observed (the state
+    store, a reconciler pass). They close the control points of a R2+ risk
+    class (T-080, ADR-023 p.5) on the stage boundary: absent decisions the
+    obligations are unmet by definition and the advance stops — the check is
+    fail-closed, never fail-open.
 
     Persisting the run and the result before an external wait is the caller's
     duty (ADR-006 p.8); double application is prevented upstream by the
@@ -245,7 +258,15 @@ def apply_result(
     stage_run = _ensure_stage_run(run, result)
     if run.status is not RunStatus.RUNNING:
         run.apply_status(RunStatus.RUNNING)
-    return _handle_action(run, stage_run, result, history, reference_now, merge_context)
+    return _handle_action(
+        run,
+        stage_run,
+        result,
+        history,
+        reference_now,
+        merge_context,
+        human_decisions,
+    )
 
 
 def _handle_action(
@@ -255,6 +276,7 @@ def _handle_action(
     history: Sequence[StageResult],
     now: datetime,
     merge_context: MergeRequestContext | None,
+    human_decisions: Sequence[Decision] = (),
 ) -> FlowDecision:
     """Apply the effects of one honored-or-blocked action; exhaustively checked."""
     budget = run.budget
@@ -270,7 +292,9 @@ def _handle_action(
                 )
             reason = _block_reason(run, result.stage, result.gate_results, now)
             if reason is None:
-                reason = _escalation_reason(run, result, target=next_stage)
+                reason = _escalation_reason(
+                    run, result, target=next_stage, human_decisions=human_decisions
+                )
             if reason is not None:
                 return _stop(stage_run, run, reason)
             _advance(run, stage_run, next_stage)
@@ -317,12 +341,15 @@ def _handle_action(
                 raise FlowStateError(
                     f"no stage follows {result.stage.value} on route {run.route.value}"
                 )
-            # Stage gates (SHA-blind) and escalations block first: their stop
-            # reasons are preserved for existing callers. The merge policy then
-            # adds the merge-specific preconditions on the final SHA (T-026).
+            # Stage gates (SHA-blind), escalations and the route risk band block
+            # first: their stop reasons are preserved for existing callers. The
+            # merge policy then adds the merge-specific preconditions on the
+            # final SHA (T-026) and the control points of a R2+ class (T-080).
             reason = _block_reason(run, result.stage, result.gate_results, now)
             if reason is None:
                 reason = escalation_stop_reason(result.escalations)
+            if reason is None:
+                reason = _risk_band_reason(run)
             if reason is not None:
                 return _stop(stage_run, run, reason)
             decision = _merge_policy_decision(run, result, merge_context)
@@ -340,6 +367,8 @@ def _handle_action(
             reason = _block_reason(run, result.stage, result.gate_results, now)
             if reason is None:
                 reason = escalation_stop_reason(result.escalations)
+            if reason is None:
+                reason = _risk_band_reason(run)
             if reason is not None:
                 return _stop(stage_run, run, reason)
             violations = completion_violations(
@@ -364,13 +393,14 @@ def _merge_policy_decision(
     result: StageResult,
     merge_context: MergeRequestContext | None,
 ) -> MergeDecision:
-    """Consult the merge policy for one ``MergeAction`` result (T-026).
+    """Consult the merge policy for one ``MergeAction`` result (T-026, T-080).
 
-    The context is anchored to the run: route, stage and the attempt's gate
-    results are authoritative — the caller cannot widen or shrink the gate
-    set by shaping its context. Without a context the policy is not consulted
-    at all: absent merge facts mean manual mode (FR-010) — the run waits for
-    the human merge instead of advancing on missing data.
+    The context is anchored to the run: route, stage, the effective risk class
+    and the attempt's gate results are authoritative — the caller cannot widen
+    or shrink the gate set, nor lower the class it travels with. Without a
+    context the policy is not consulted at all: absent merge facts mean manual
+    mode (FR-010) — the run waits for the human merge instead of advancing on
+    missing data.
     """
     if merge_context is None:
         return MergeDecision(
@@ -381,6 +411,7 @@ def _merge_policy_decision(
         merge_context,
         route=run.route,
         stage=result.stage,
+        risk_class=_effective_risk_class(run),
         gate_results=result.gate_results,
     )
     return evaluate_merge(anchored, policy=MERGE_POLICY)
@@ -444,14 +475,24 @@ def _block_reason(
     return None
 
 
-def _escalation_reason(run: ChangeRun, result: StageResult, *, target: Stage) -> str | None:
+def _escalation_reason(
+    run: ChangeRun,
+    result: StageResult,
+    *,
+    target: Stage,
+    human_decisions: Sequence[Decision] = (),
+) -> str | None:
     """Escalation-policy reason blocking an autonomous stage advance, if any.
 
     Declared escalations always stop the advance. Entering construction
     additionally requires an approved Implementation Contract (T-016 DoD):
-    rework only re-enters construction for runs that already passed this
-    gate. Otherwise the contract's autonomy budget bounds the stage attempts
-    (an iteration is one ``StageRun`` occurrence).
+    rework only re-enters construction for runs that already passed this gate.
+    The obligations of a R2+ effective risk class — the route band and the
+    human control points of the stage being left — are checked next (T-080,
+    ADR-023 p.3/p.5); the check is produced here, by the engine, so a R2+
+    change never advances on a missing, unbound or stale approval. The
+    contract's autonomy budget bounds the stage attempts last (an iteration is
+    one ``StageRun`` occurrence).
     """
     declared = escalation_stop_reason(result.escalations)
     if declared is not None:
@@ -460,7 +501,50 @@ def _escalation_reason(run: ChangeRun, result: StageResult, *, target: Stage) ->
         violation = contract_entry_violation(run.implementation_contract)
         if violation is not None:
             return violation.reason
+    obligations = risk_escalation_violation(
+        risk_class=_effective_risk_class(run),
+        route=run.route,
+        stage=result.stage,
+        decisions=human_decisions,
+        sha=result.input_revision,
+    )
+    if obligations is not None:
+        # Rendered with its rule, as declared escalations are: the stop reason
+        # names the gate that fired, not just the missing obligation.
+        return f"{obligations.rule.value}: {obligations.reason}"
     return _autonomy_budget_reason(run)
+
+
+def _effective_risk_class(run: ChangeRun) -> RiskClass:
+    """Effective risk class of the run: declared, derived facts and the route floor.
+
+    The class is recomputed by the policy on every transition (T-080, ADR-023
+    p.2/p.6), never read as a self-report: the facts come from the approved
+    contract (:func:`dark_factory.orchestration.policy.risk.risk_facts`) and the
+    route floor can only raise the result.
+    """
+    return effective_change_risk_class(run.implementation_contract, run.route)
+
+
+def _risk_band_reason(run: ChangeRun) -> str | None:
+    """Reason for an effective risk class the route of the run does not allow, if any.
+
+    The band is checked against the *effective* class, so a low declared class
+    on a route with a higher floor (``architecture``, ``foundation``) is raised
+    by the floor instead of being rejected, while a class the band refuses (R2+
+    on ``quick``) stops the transition. Called on every action that advances the
+    run — stage advance, merge and release — so no onward path carries a risky
+    change along the short route (ADR-023 p.3).
+    """
+    risk_class = _effective_risk_class(run)
+    if route_allows_risk(run.route, risk_class):
+        return None
+    profile = route_profile(run.route)
+    return (
+        f"risk class {risk_class.value} is not allowed on route {run.route.value} "
+        f"(band {profile.min_risk_class.value}-{profile.max_risk_class.value}): "
+        "a risky change does not take the short route (ADR-023 p.3, ADR-018 p.5)"
+    )
 
 
 def _autonomy_budget_reason(run: ChangeRun) -> str | None:

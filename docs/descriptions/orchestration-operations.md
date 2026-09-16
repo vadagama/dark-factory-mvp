@@ -196,13 +196,32 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 
 Монотонность: агент может **повысить** класс, понизить — только формальная политика или человек (`transition_decision_class`, иначе `DecisionClassPolicyError`).
 
-### 4.2. Риск-классы (`risk.py`)
+### 4.2. Риск-классы и точки контроля (`risk.py`, T-080)
 
-`RISK_ORDER` — тотальный порядок `R0 < R1 < R2 < R3 < R4`; `R2_THRESHOLD = R2` — порог эскалации; `RISK_ASSESSMENT_MANUAL = True` (оценка R2+ ручная до T-080). `transition_risk_class` — та же монотонность, что и у классов решений (`RiskClassPolicyError`); `is_r2_or_higher(risk)` — сравнение с порогом.
+Модуль — policy-поверхность риска (ADR-023). Доменные примитивы живут слоем ниже, в [`changes/risk.py`](../../src/dark_factory/changes/risk.py) (`changes` — самый нижний слой), и реэкспортируются здесь, чтобы публичная поверхность пакета не менялась:
+
+- `RISK_ORDER` — тотальный порядок `R0 < R1 < R2 < R3 < R4`;
+- `R2_THRESHOLD = R2` — порог, с которого начинаются обязательства класса;
+- `is_r2_or_higher(risk)` — сравнение с порогом.
+
+`classify_risk(facts) -> RiskClass` — детерминированный вывод класса из наблюдаемых фактов, первый совпавший уровень выигрывает: `factory_self_modification` → R4; `irreversible` или `regulated_data` → R3; непустые `boundaries` или `decision_class = NEW_PATH` → R2; `documentation_only` → R0; иначе R1 (ADR-023 п.2). Класс не самоотчёт: агент не может передать «свой» класс в обход функции.
+
+[`effective_risk_class(declared, facts, *, route_floor)`](../../src/dark_factory/changes/risk.py) — максимум из трёх слагаемых: заявленный класс, класс из фактов и пол маршрута. Функция только повышает класс; понижение агентом запрещено (`transition_risk_class`, `RiskClassPolicyError`). Формальная политика понижения — сам пол: он не может быть опущен решением агента и определяет обязательные гейты и точки контроля.
+
+Точки контроля (`ControlPoint`) — именованные человеческие решения, привязанные к существующему `(stage, gate)`:
+
+| Точка | Стадия | Гейт |
+|---|---|---|
+| `problem` | `specification` | `specification` |
+| `solution` | `planning` | `planning` |
+| `ux` | `construction` | `ui` |
+| `discovery_release` | `review_verification` | `review` |
+
+`CONTROL_POINT_BINDING` — сама привязка; `required_control_points(route, stage, risk_class)` — обязательные точки тройки (единственное правило: точка обязательна тогда и только тогда, когда её гейт входит в `required_human_gates(route, stage, risk_class)`, см. [rules.md](rules.md)); `missing_control_points(route, stage, risk_class, decisions, *, sha=None)` — точки без человеческого `APPROVED`-решения, привязанного к `sha` (version-bound approval, ADR-009 п.7; `sha=None` сравнивается с непривязанным решением, поэтому approval на старом SHA точку не закрывает). `RISK_ASSESSMENT_MANUAL` удалён — ручных условий эскалации после T-080 нет.
 
 ### 4.3. Условия эскалации (`escalation.py`)
 
-Каждая проверка — чистая функция, возвращающая `EscalationViolation` (поля `rule`, `reason`, `manual_assessment`) или `None`. Flow ветоет автономное продолжение при нарушении, объявленном на `StageResult.escalations` (`escalation_stop_reason` склеивает нарушения через `"; "`), и дополнительно вызывает `contract_entry_violation` при входе в construction и `autonomy_budget_violation` на каждой итерации.
+Каждая проверка — чистая функция, возвращающая `EscalationViolation` (`rule`, `reason`, `manual_assessment`) или `None`. Поле `manual_assessment` — deprecated и всегда `False` (ADR-023 п.5): после T-080 ни одно условие не является ручной оценкой; поле останется в сериализуемом контракте до ближайшей ревизии схемы записи (ADR-015 п.3). Flow ветоет автономное продолжение при нарушении, объявленном на `StageResult.escalations` (`escalation_stop_reason` склеивает нарушения через `"; "`), и дополнительно вызывает `contract_entry_violation` при входе в construction, `route_allows_risk` на каждом продвижении стадии (полоса классов маршрута, T-080) и `autonomy_budget_violation` на каждой итерации.
 
 | Функция | Нарушение фиксируется, когда | `EscalationRule` |
 |---|---|---|
@@ -211,11 +230,13 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 | `scope_exit_violation` | Элемент вне `scope.in_scope` | `scope_exit` |
 | `boundary_change_violation` | Граница не покрыта контрактом, либо покрыта, но изменение несовместимо без утверждённого плана миграции | `boundary_change` |
 | `adr_proposal_violation` | Агент предлагает новый ADR | `new_adr_proposal` |
-| `risk_raise_violation` | Целевой класс ≥ R2 (`manual_assessment=True`) | `risk_raised_to_r2` |
+| `risk_escalation_violation` | Класс ≥ R2, и не выполнено хотя бы одно обязательство класса: маршрут не допускает класс или нет человеческих решений на обязательных точках контроля стадии; `reason` перечисляет всё невыполненное | `risk_raised_to_r2` |
 | `gate_failure_violation` | Неповторяемое policy-нарушение или исчерпан rework-бюджет при падающих гейтах (исправимое остаётся в bounded rework, T-014) | `unrecoverable_gate_failure` |
 | `autonomy_budget_violation` | `iterations_used >= contract.budget.max_autonomous_iterations` | `autonomy_budget_exhausted` |
 | `ui_verification_violation` | UI не подтверждается автоматически | `ui_unverifiable` |
 | `irreversible_operation_violation` | Запрошена необратимая операция | `irreversible_operation` |
+
+`risk_escalation_violation(*, risk_class, route, stage, decisions=(), sha=None)` ниже R2 молчит — обязательства класса возникают только с R2 (ADR-023 п.5), поэтому для R0/R1 поведение прежнее.
 
 `BoundaryChange(area, compatible=True, migration_plan_approved=False)`; защищённые границы `BoundaryArea`: `public_api`, `data_schema`, `iam`, `architecture_boundary`.
 
@@ -230,10 +251,13 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 | 1 | `executor == "agent"` | `blocked` (FR-004, FR-023: у агентских задач нет права на merge) |
 | 2 | `expected_sha`/`head_sha` неизвестны или различаются | `blocked` (FR-011) |
 | 3 | Гейты не satisfied на финальном SHA — участвуют только результаты с `sha == expected_sha` | `blocked` (T-032: новый SHA инвалидирует прошлые проходы, ADR-009 p.7) |
-| 4 | Нет человеческого решения на гейте merge, привязанного к финальному SHA, либо последнее — не `APPROVED` | `manual_merge_required` (version-bound approval, ADR-009 p.7; решения `policy`/`agent` не считаются) |
-| 5 | `executor == "human"` | `human_merge_authorized` |
-| 6 | `executor == "trusted_finalizer"` и `risk_class` в `auto_merge_risk_classes` | `finalizer_merge_allowed` + `merge_method` (`"squash"`, когда метод ровно один) |
-| 7 | Иначе | `manual_merge_required` |
+| 4 | Для R2+ обязательные точки контроля класса не имеют человеческого approval на финальном SHA (`missing_control_points`) | `blocked` с перечнем отсутствующих точек (ADR-023 п.4/п.5) |
+| 5 | Нет человеческого решения на гейте merge, привязанного к финальному SHA, либо последнее — не `APPROVED` | `manual_merge_required` (version-bound approval, ADR-009 p.7; решения `policy`/`agent` не считаются) |
+| 6 | `executor == "human"` | `human_merge_authorized` |
+| 7 | `executor == "trusted_finalizer"` и `risk_class` в `auto_merge_risk_classes` | `finalizer_merge_allowed` + `merge_method` (`"squash"`, когда метод ровно один) |
+| 8 | Иначе | `manual_merge_required` |
+
+Шаг 4 действует только для R2+: ниже R2 точки контроля не запрашиваются, и отсутствие approval остаётся ожиданием человека (`manual_merge_required`), как раньше (T-080).
 
 Проводка в Flow: на `MergeAction` контекст якорится к run — `route=run.route`, `stage=result.stage`, `gate_results=result.gate_results` (вызывающий не может расширить/сузить набор гейтов); без контекста политика не вызывается вовсе — ручной режим. `blocked` → `StopAction(blocked)`; `manual_merge_required` → `WaitForInputAction`, run в `WAITING` до человеческой авторизации на финальный SHA.
 
@@ -250,7 +274,7 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 | `specification`, `planning`, `review_verification` | `human_in_the_loop` |
 | `construction`, `release` | `human_off_the_loop` |
 
-Человеческие гейты Flow — `HUMAN_GATES = {specification, review}` в [`flows/routes.py`](../../src/dark_factory/flows/routes.py), независимо от маршрута; planning остаётся in-the-loop через эскалации (например, новый ADR), а не через гейт.
+Человеческие гейты Flow — `HUMAN_GATES = {specification, review}` в [`rules/gates.py`](../../src/dark_factory/rules/gates.py) (реэкспортируется из `flows/routes.py`): базовый набор, не зависящий от маршрута (ADR-018). Риск-класс расширяет его — `rules.gates.required_human_gates(route, stage, risk_class)` (T-080, ADR-023 п.3): с R2 человеческим становится и `planning`, с R3/R4 — каждый требуемый гейт стадии. Planning остаётся in-the-loop и через эскалации (например, новый ADR), но с R2 его подтверждение — уже обязательное решение.
 
 ## 5. Граничные случаи
 
@@ -275,13 +299,17 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 | Решение не от `HUMAN`, на другом гейте или с другим `commit_sha` | Не авторизует merge |
 | Последнее решение — `REJECTED`/`WAIVED` | `manual_merge_required` |
 | Финализатор при дефолтной политике (пустые классы) | `manual_merge_required` — ручной режим |
+| Маршрут не допускает класс изменения (R2+ на `quick`) | Продвижение стадии останавливается `StopAction(blocked)` с полосой маршрута в причине (T-080, ADR-023 п.3) |
+| R2+ и нет approval на обязательной точке контроля при merge | `blocked` с перечнем точек; для R0/R1 — прежний `manual_merge_required` (ADR-023 п.5) |
+| Approval привязан к старому SHA | Точку контроля не закрывает: version-bound approval (ADR-009 п.7) |
 | Агент понижает decision/risk класс | `DecisionClassPolicyError` / `RiskClassPolicyError` |
 
 ## 6. Где искать проверки
 
 - [`test_orchestration_events.py`](../../tests/test_orchestration_events.py) — таблица backoff, dead-правило, ordering-eligibility, cleanup-матрица, журнал и реестр обработчиков;
 - [`test_orchestration_reconcile.py`](../../tests/test_orchestration_reconcile.py) — таблица аномалий, приоритеты правил, идемпотентность планирования, drift, наблюдение engine;
-- [`test_policy_decision_class.py`](../../tests/test_policy_decision_class.py), [`test_policy_risk.py`](../../tests/test_policy_risk.py) — классификация и монотонность;
+- [`test_policy_decision_class.py`](../../tests/test_policy_decision_class.py), [`test_policy_risk.py`](../../tests/test_policy_risk.py) — классификация, монотонность, привязка и обязательность точек контроля;
+- [`test_changes_risk.py`](../../tests/test_changes_risk.py), [`test_rules_gates_risk.py`](../../tests/test_rules_gates_risk.py) — вывод класса из фактов, эффективный класс, полосы маршрутов и человеческие гейты (T-080);
 - [`test_policy_escalation.py`](../../tests/test_policy_escalation.py) — все десять условий эскалации и общий stop-reason;
 - [`test_policy_merge.py`](../../tests/test_policy_merge.py) — все исходы merge policy и предусловия;
 - [`test_policy_participation.py`](../../tests/test_policy_participation.py) — таблица фаз ADR-018 и проекция на стадии;
@@ -292,6 +320,7 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 
 - [ADR-006](../adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) — ephemeral job pods, CronJob-реконсилятор, лизы и fencing;
 - [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge/release policy, ручной режим MVP, риск-классы;
+- [ADR-023](../adr/ADR-023-risk-classes-and-control-points.md) — классы R0–R4, точки контроля, полосы маршрутов;
 - [ADR-016](../adr/ADR-016-postgresql-outbox.md) — transactional outbox: доставка, порядок, dead-letter, retention;
 - [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — участие человека по фазам, эскалации, классы решений;
 - [ADR-009](../adr/ADR-009-minimal-bootstrap-otel.md) — version-bound approvals (p.7) и retention аудита.

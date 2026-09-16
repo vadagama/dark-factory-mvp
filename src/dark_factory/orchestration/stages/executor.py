@@ -67,8 +67,10 @@ def run_deterministic_stage(
     with the violation reasons (SC-006); an ``awaiting_decision`` budget check
     (T-062) blocks the same way with its diagnostics and a blocker finding per
     triggered limit; otherwise the attempt ends ``waiting`` (FR-009: gate
-    execution is out of scope here) with the required-but-unevaluated gates
-    recorded as ``pending`` gate results and an actionable reason. ``now``
+    execution is out of scope here) with the required-but-unevaluated machine
+    gates recorded as ``pending`` gate results and an actionable reason. A risk
+    class adds no gate here (T-080, ADR-023 p.3): its human side is policy, not
+    a machine check of this path. ``now``
     overrides the wall clock for the deadline check and ``produced_at``
     (determinism in tests, as in ``flow.apply_result``); ``budget_check`` is the
     optional coordinator output — the explicit seam for a configured budget

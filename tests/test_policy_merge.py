@@ -1,9 +1,11 @@
-"""Merge policy decision branches (T-026, docs T-032, ADR-011 p.2).
+"""Merge policy decision branches (T-026, docs T-032, ADR-011 p.2; R2+ control points: T-080).
 
 Every outcome kind and every precondition is covered:
 
 - blocked: agent executor (FR-004, FR-023), SHA drift or unknown SHA (FR-011),
-  gates stale or failed at the final SHA (T-032, ADR-009 p.7);
+  gates stale or failed at the final SHA (T-032, ADR-009 p.7), and — for R2+
+  only — control points the class makes mandatory without a version-bound human
+  approval (ADR-023 p.4/p.5);
 - manual_merge_required: no version-bound human approval, a non-approval as
   the latest decision, a finalizer without an explicit risk-class allowance
   (FR-010: manual mode by default);
@@ -12,6 +14,8 @@ Every outcome kind and every precondition is covered:
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+
+import pytest
 
 from dark_factory.changes.enums import (
     DecisionOutcome,
@@ -178,6 +182,36 @@ def test_skipped_gate_satisfies_the_merge_gates() -> None:
     gates = _passing_gates(statuses={Gate.VERIFICATION: GateStatus.SKIPPED})
     decision = evaluate_merge(_context(gate_results=gates, human_approvals=_approved()))
     assert decision.kind == "human_merge_authorized"
+
+
+# --- blocked: R2+ control points (T-080, ADR-023 p.4/p.5) ---
+
+
+def test_r2_merge_is_blocked_without_the_control_point_approval() -> None:
+    decision = evaluate_merge(_context(risk_class=RiskClass.R2))
+    assert decision.kind == "blocked"
+    assert decision.reason is not None
+    assert RiskClass.R2.value in decision.reason
+    assert "discovery_release" in decision.reason
+
+
+def test_r2_merge_is_authorized_once_the_control_point_is_approved() -> None:
+    decision = evaluate_merge(_context(risk_class=RiskClass.R2, human_approvals=_approved()))
+    assert decision.kind == "human_merge_authorized"
+
+
+def test_r2_merge_blocks_an_approval_bound_to_an_older_sha() -> None:
+    decision = evaluate_merge(_context(risk_class=RiskClass.R2, human_approvals=_approved(OLD_SHA)))
+    assert decision.kind == "blocked"
+    assert decision.reason is not None and "discovery_release" in decision.reason
+
+
+@pytest.mark.parametrize("risk_class", [RiskClass.R0, RiskClass.R1])
+def test_below_r2_a_missing_approval_still_waits_for_the_human(
+    risk_class: RiskClass,
+) -> None:
+    decision = evaluate_merge(_context(risk_class=risk_class))
+    assert decision.kind == "manual_merge_required"
 
 
 # --- manual_merge_required: version-bound human approval (ADR-009 p.7) ---

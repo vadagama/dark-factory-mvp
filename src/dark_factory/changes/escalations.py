@@ -11,9 +11,13 @@ class EscalationViolation(BaseModel):
     Produced by the deterministic checks of
     ``dark_factory.orchestration.policy`` and transported to the flow on
     ``StageResult.escalations``: a declared violation vetoes autonomous
-    continuation and stops the flow in ``Blocked``. ``manual_assessment``
-    marks conditions the machine cannot fully verify yet — the raise of the
-    risk class to R2+ stays manual until T-080 (ADR-018 p.5).
+    continuation and stops the flow in ``Blocked``.
+
+    ``manual_assessment`` is deprecated and always ``False``: after T-080 no
+    escalation condition is a manual assessment (ADR-023 p.5). The field stays
+    in the serialized contract — removing it is a breaking change that needs a
+    ``SchemaVersion`` bump (ADR-015 p.3) — and is dropped in the next record
+    schema revision.
     """
 
     model_config = ConfigDict(frozen=True)

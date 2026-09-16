@@ -16,10 +16,17 @@ class Provider(StrEnum):
 
 
 class Route(StrEnum):
-    """Factory Flow route of a run (ADR-005)."""
+    """Factory Flow route of a run (ADR-005, ADR-023 p.6).
+
+    All four routes traverse the same five stages; they differ in gate policy
+    (``rules/gates.py``) and in the risk-class band they allow
+    (``flows/routes.py``).
+    """
 
     QUICK = "quick"
     STANDARD = "standard"
+    ARCHITECTURE = "architecture"
+    FOUNDATION = "foundation"
 
 
 class RiskClass(StrEnum):
@@ -78,6 +85,19 @@ class Gate(StrEnum):
     REVIEW = "review"
     VERIFICATION = "verification"
     RELEASE = "release"
+
+
+class ControlPoint(StrEnum):
+    """Named human decision mandatory from a risk class on (ADR-023 p.1/p.4).
+
+    A control point is not a gate (``Gate`` stays unextended): it binds one
+    human decision to an existing ``(stage, gate)`` pair.
+    """
+
+    PROBLEM = "problem"
+    SOLUTION = "solution"
+    UX = "ux"
+    DISCOVERY_RELEASE = "discovery_release"
 
 
 class RunStatus(StrEnum):
@@ -234,7 +254,8 @@ class EscalationRule(StrEnum):
 
     ``implementation_contract_unapproved`` is the T-016 precondition gate: an
     unapproved contract never enters implementation. The rest are the ADR-018
-    p.5 conditions; ``risk_raised_to_r2`` stays a manual assessment until T-080.
+    p.5 conditions; ``risk_raised_to_r2`` is the machine-checked R2+ obligation
+    gate (T-080, ADR-023 p.5) — no condition is a manual assessment any more.
     """
 
     IMPLEMENTATION_CONTRACT_UNAPPROVED = "implementation_contract_unapproved"

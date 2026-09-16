@@ -16,7 +16,7 @@
 // ---------------------------------------------------------------------------
 
 export type Provider = "gitlab" | "github";
-export type Route = "quick" | "standard";
+export type Route = "quick" | "standard" | "architecture" | "foundation";
 export type RiskClass = "R0" | "R1" | "R2" | "R3" | "R4";
 export type BoundaryArea = "public_api" | "data_schema" | "iam" | "architecture_boundary";
 export type Role =

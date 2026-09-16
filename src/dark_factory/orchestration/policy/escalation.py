@@ -13,10 +13,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from dark_factory.changes.enums import BoundaryArea, EscalationRule, RiskClass
+from dark_factory.changes.enums import BoundaryArea, EscalationRule, RiskClass, Route, Stage
 from dark_factory.changes.escalations import EscalationViolation
+from dark_factory.changes.findings import Decision
 from dark_factory.changes.implementation_contract import ChangeScope, ImplementationContract
-from dark_factory.orchestration.policy.risk import RISK_ASSESSMENT_MANUAL, is_r2_or_higher
+from dark_factory.changes.risk import is_r2_or_higher
+from dark_factory.flows.routes import route_allows_risk, route_profile
+from dark_factory.orchestration.policy.risk import missing_control_points
 
 _UNSUPPORTED_TEXT: Final = "not provided for by the approved implementation contract"
 
@@ -113,17 +116,43 @@ def adr_proposal_violation(proposal: str | None) -> EscalationViolation | None:
     )
 
 
-def risk_raise_violation(target: RiskClass) -> EscalationViolation | None:
-    """A risk raise to R2+ escalates; machine assessment is manual until T-080 (ADR-018 p.5)."""
-    if not is_r2_or_higher(target):
+def risk_escalation_violation(
+    *,
+    risk_class: RiskClass,
+    route: Route,
+    stage: Stage,
+    decisions: Sequence[Decision] = (),
+    sha: str | None = None,
+) -> EscalationViolation | None:
+    """Unmet obligations of a R2+ risk class; ``None`` below R2 (ADR-023 p.5).
+
+    Closes the deferred condition of ADR-018 p.5: the raise to R2+ is no longer a
+    manual assessment but a machine check of the class obligations — the route
+    band and the human control points of the stage. ``reason`` names every unmet
+    obligation, so a human sees what is missing instead of a bare verdict.
+
+    ``decisions`` are the human decisions known to the caller; a control point
+    counts as closed only by an ``APPROVED`` human decision bound to ``sha``
+    (version-bound approval, ADR-009 p.7).
+    """
+    if not is_r2_or_higher(risk_class):
+        return None
+    unmet: list[str] = []
+    if not route_allows_risk(route, risk_class):
+        profile = route_profile(route)
+        unmet.append(
+            f"route {route.value!r} does not allow risk class {risk_class.value} "
+            f"(band {profile.min_risk_class.value}-{profile.max_risk_class.value})"
+        )
+    missing = missing_control_points(route, stage, risk_class, decisions, sha=sha)
+    if missing:
+        names = ", ".join(sorted(point.value for point in missing))
+        unmet.append(f"no human approval on the control points of stage {stage.value!r}: {names}")
+    if not unmet:
         return None
     return EscalationViolation(
         rule=EscalationRule.RISK_RAISED_TO_R2,
-        reason=(
-            f"risk raised to {target.value} (>= R2); manual assessment "
-            "until the risk matrix lands (T-080)"
-        ),
-        manual_assessment=RISK_ASSESSMENT_MANUAL,
+        reason=f"risk class {risk_class.value} obligations are not met: " + "; ".join(unmet),
     )
 
 

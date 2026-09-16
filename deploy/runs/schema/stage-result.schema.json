@@ -104,7 +104,7 @@
       "type": "string"
     },
     "EscalationRule": {
-      "description": "Machine-checkable escalation condition of autonomous implementation (ADR-018 p.5, T-016).\n\n``implementation_contract_unapproved`` is the T-016 precondition gate: an\nunapproved contract never enters implementation. The rest are the ADR-018\np.5 conditions; ``risk_raised_to_r2`` stays a manual assessment until T-080.",
+      "description": "Machine-checkable escalation condition of autonomous implementation (ADR-018 p.5, T-016).\n\n``implementation_contract_unapproved`` is the T-016 precondition gate: an\nunapproved contract never enters implementation. The rest are the ADR-018\np.5 conditions; ``risk_raised_to_r2`` is the machine-checked R2+ obligation\ngate (T-080, ADR-023 p.5) \u2014 no condition is a manual assessment any more.",
       "enum": [
         "implementation_contract_unapproved",
         "requirements_deficient",
@@ -121,7 +121,7 @@
       "type": "string"
     },
     "EscalationViolation": {
-      "description": "One triggered escalation condition with human-readable diagnostics.\n\nProduced by the deterministic checks of\n``dark_factory.orchestration.policy`` and transported to the flow on\n``StageResult.escalations``: a declared violation vetoes autonomous\ncontinuation and stops the flow in ``Blocked``. ``manual_assessment``\nmarks conditions the machine cannot fully verify yet \u2014 the raise of the\nrisk class to R2+ stays manual until T-080 (ADR-018 p.5).",
+      "description": "One triggered escalation condition with human-readable diagnostics.\n\nProduced by the deterministic checks of\n``dark_factory.orchestration.policy`` and transported to the flow on\n``StageResult.escalations``: a declared violation vetoes autonomous\ncontinuation and stops the flow in ``Blocked``.\n\n``manual_assessment`` is deprecated and always ``False``: after T-080 no\nescalation condition is a manual assessment (ADR-023 p.5). The field stays\nin the serialized contract \u2014 removing it is a breaking change that needs a\n``SchemaVersion`` bump (ADR-015 p.3) \u2014 and is dropped in the next record\nschema revision.",
       "properties": {
         "manual_assessment": {
           "default": false,
