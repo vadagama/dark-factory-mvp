@@ -42,12 +42,17 @@ The caller owns the transaction and the clock: ``advance_run`` never commits,
 takes ``now`` for determinism and expects the caller (``session_scope``) to
 commit once — an exception rolls the whole advance back, lease included.
 
-Known limitation of slice S1 (T-092) still open in S2:
+Known limitation of slice S1 (T-092) lifted in S2 by injection:
 
-- **A reworked stage with an unchanged input revision** — rework that re-enters a
-  stage with the same revision maps onto that stage's existing operation row
-  (ADR-006 p.3), so a reconstruction resumes the stage the rework left; a
-  faithful rework needs the SCM-derived revision of slice S2.
+- **A reworked stage with an unchanged input revision** — rework re-enters a
+  stage with the same change snapshot, so the S1 revision (the snapshot digest)
+  maps the reworked stage onto its own earlier operation row (ADR-006 p.3) and a
+  reconstruction resumes the stage the rework left. The driver now accepts a
+  ``revision_of`` resolver (``ScmRevision``, ADR-006 p.4): the composition root
+  supplies the SCM-backed one, which reads the product revision the stage starts
+  from, so rework advances the revision and the re-entered stage is a new
+  operation. Without a resolver the S1 snapshot digest stays the default, so the
+  behaviour of an uninstrumented caller is unchanged.
 """
 
 from collections.abc import Sequence
@@ -112,6 +117,19 @@ class StageExecutor(Protocol):
     """
 
     def __call__(self, context: StageContext) -> StageResult: ...
+
+
+class RevisionResolver(Protocol):
+    """Resolves the input revision a stage starts from (ADR-006 p.4, slice S2).
+
+    The default is the change snapshot's digest (``RunStore.stage_input_revision``,
+    slice S1). The composition root injects an SCM-backed resolver instead, so the
+    revision of a stage is the product commit it consumes and rework — which does
+    not change the snapshot — still produces a new revision and therefore a new
+    logical operation.
+    """
+
+    def __call__(self, change: Change, stage: Stage) -> str: ...
 
 
 def deterministic_stage_executor(context: StageContext) -> StageResult:
@@ -241,7 +259,8 @@ def advance_run(
     change: Change,
     run_id: str,
     owner_id: str,
-    executor: StageExecutor = deterministic_stage_executor,
+    executor: StageExecutor | None = None,
+    revision_of: RevisionResolver | None = None,
     merge_context: MergeRequestContext | None = None,
     human_decisions: Sequence[Decision] = (),
     lease_ttl: timedelta = DEFAULT_LEASE_TTL,
@@ -253,7 +272,13 @@ def advance_run(
     (FR-001); ``merge_context`` and ``human_decisions`` are the facts the flow
     needs for the merge policy and the R2+ control points (T-026, T-080) — the
     driver observes nothing itself. ``now`` overrides the wall clock for the
-    deadline limit and the timestamps.
+    deadline limit and the timestamps. ``revision_of`` optionally supplies the
+    input revision of a stage entered for the first time (ADR-006 p.4, slice S2:
+    the SCM-derived revision); without it the change snapshot's digest is used,
+    so an uninstrumented caller sees the unchanged S1 behaviour. ``executor``
+    defaults to the deterministic stage path ("waiting"/"blocked" only); the
+    composition root injects the harness-backed one, which is how the working
+    path reaches adapters without any core module importing them (ADR-024 p.5).
 
     The whole decision is persisted, not only its stage: the successor stage the
     flow advanced into is inserted as a ``pending`` row of its own operation, so
@@ -278,10 +303,11 @@ def advance_run(
     propagates, so an illegal transition can never be papered over.
     """
     reference_now = now if now is not None else datetime.now(UTC)
+    stage_executor = executor if executor is not None else deterministic_stage_executor
     run = _advanceable_run(store, run_id)
     stage = _next_stage_to_execute(run)
     attempt_number = _attempt_number(run, stage)
-    input_revision = _pinned_revision(store, run, stage, change)
+    input_revision = _pinned_revision(store, run, stage, change, revision_of)
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
     if committed is not None:
         # Fast replay (ADR-024 p.3): a committed result of the operation is
@@ -297,7 +323,7 @@ def advance_run(
     run = _advanceable_run(store, run_id)
     stage = _next_stage_to_execute(run)
     attempt_number = _attempt_number(run, stage)
-    input_revision = _pinned_revision(store, run, stage, change)
+    input_revision = _pinned_revision(store, run, stage, change, revision_of)
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
     if committed is not None:
         # A concurrent advance committed the very attempt in the window above:
@@ -325,7 +351,7 @@ def advance_run(
         budget=run.budget,
         attempt_number=attempt_number,
     )
-    result = executor(context)
+    result = stage_executor(context)
     decision = apply_result(
         run,
         result,
@@ -335,7 +361,7 @@ def advance_run(
         human_decisions=human_decisions,
     )
     created_stages = _created_stages(
-        store, run, known=known_stage_runs, executed=stage, change=change
+        store, run, known=known_stage_runs, executed=stage, change=change, revision_of=revision_of
     )
     persisted = store.persist_decision(
         run=run,
@@ -448,19 +474,29 @@ def _attempt_number(run: ChangeRun, stage: Stage) -> int:
     return current.attempt_number
 
 
-def _pinned_revision(store: RunStorePort, run: ChangeRun, stage: Stage, change: Change) -> str:
-    """Input revision of the stage operation: the one in flight, else the snapshot's.
+def _pinned_revision(
+    store: RunStorePort,
+    run: ChangeRun,
+    stage: Stage,
+    change: Change,
+    revision_of: RevisionResolver | None,
+) -> str:
+    """Input revision of the stage operation: the one in flight, else a fresh one.
 
     A stage run opened earlier carries the revision its operation was keyed by;
-    a stage entered for the first time has none yet and is keyed by the snapshot
-    revision (``RunStore.stage_input_revision``). Both the stage row and the
-    stage context receive the same value, and it is read from the same stage run
-    as the attempt number, so the result recomposes the operation key of the row
-    it belongs to (ADR-006 p.3).
+    a stage entered for the first time has none yet. Its revision comes from the
+    injected ``revision_of`` resolver (the SCM-derived revision of ADR-006 p.4)
+    when the caller has one, and from the change snapshot otherwise
+    (``RunStore.stage_input_revision``, the S1 default). Both the stage row and
+    the stage context receive the same value, and it is read from the same stage
+    run as the attempt number, so the result recomposes the operation key of the
+    row it belongs to (ADR-006 p.3).
     """
     active = _active_stage_runs(run, stage)
     if active and active[-1].input_revision is not None:
         return active[-1].input_revision
+    if revision_of is not None:
+        return revision_of(change, stage)
     return store.stage_input_revision(change)
 
 
@@ -471,6 +507,7 @@ def _created_stages(
     known: tuple[StageRun, ...],
     executed: Stage,
     change: Change,
+    revision_of: RevisionResolver | None,
 ) -> list[StagePlacement]:
     """Stage rows the decision created that the store does not have yet (T-092).
 
@@ -485,7 +522,9 @@ def _created_stages(
     for stage_run in run.stages:
         if stage_run.stage == executed or any(stage_run is item for item in known):
             continue
-        stage_run.input_revision = _pinned_revision(store, run, stage_run.stage, change)
+        stage_run.input_revision = _pinned_revision(
+            store, run, stage_run.stage, change, revision_of
+        )
         created.append(
             StagePlacement(stage=stage_run.stage, input_revision=stage_run.input_revision)
         )

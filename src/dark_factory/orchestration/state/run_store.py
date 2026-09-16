@@ -35,13 +35,13 @@ commits: :func:`~dark_factory.orchestration.runner.advance_run` composes them so
 that a decision is one atomic commit (ADR-006 p.8), and the caller
 (``session_scope``) commits exactly once.
 
-Known limitations of slice S1 (T-092), documented rather than hidden:
-
-- **A reworked stage with an unchanged input revision.** Rework that re-enters an
-  earlier stage maps onto that stage's existing operation row (ADR-006 p.3 — the
-  same revision is the same logical operation), so the reconstruction resumes the
-  stage the rework left. A faithful rework needs the SCM-derived revision of
-  slice S2, just like the initial stage revision.
+A reworked stage is no longer keyed by the unchanged snapshot (slice S2):
+:meth:`RunStore.stage_input_revision` stays the default revision of a stage — the
+``Change`` snapshot's digest, which is deterministic without a provider — but
+:func:`~dark_factory.orchestration.runner.advance_run` accepts an injected
+``revision_of`` resolver (``ScmRevision``, ADR-006 p.4), and the composition root
+supplies the SCM-backed one, so rework advances the revision and the re-entered
+stage is a new logical operation instead of a resumed one.
 
 The retry protocol is no longer a limitation: a ``failed``/``blocked`` attempt
 is retried as the next physical attempt of the same logical operation
@@ -288,14 +288,15 @@ class RunStore:
 
     @staticmethod
     def stage_input_revision(change: Change) -> str:
-        """Pinned input revision of a ``Change`` snapshot: SHA-256 of its canonical JSON.
+        """Default input revision of a ``Change`` snapshot: SHA-256 of its canonical JSON.
 
         Deterministic: identical snapshots yield an identical revision, any
         changed field yields a new one (``changes.keys.operation_key`` is built
-        on it, ADR-006 p.3). Until the SCM wiring of slice S2 the revision is
-        derived from the change snapshot itself, not from a product commit SHA —
-        an immutable product revision is the ADR-006 p.4 target, not yet
-        reachable, and this function is the single place that has to change.
+        on it, ADR-006 p.3). It is the *default*: the driver accepts an injected
+        ``revision_of`` resolver (slice S2), and the composition root supplies the
+        SCM-backed one so a stage is keyed by the product commit it starts from
+        (ADR-006 p.4). Without a provider this function stays the answer, and it
+        is the single place that has to change for a different default.
         """
         return hashlib.sha256(to_json(change).encode("utf-8")).hexdigest()
 

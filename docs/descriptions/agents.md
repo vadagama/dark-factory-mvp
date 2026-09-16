@@ -121,7 +121,7 @@ flowchart TD
 
 ## 5. Профили (`profiles/`)
 
-`AgentProfile` — frozen pydantic-модель, `AGENT_PROFILE_SCHEMA_VERSION = 1` (`ProfileSchemaVersion = Literal[1]`). Роль — идентичность профиля: ровно один профиль на роль. Поля: `role: Role`, `name`, `version`, `description` (все min_length=1), `inputs`/`outputs: tuple[ArtifactKind, ...]`, `tools`, `constraints`, `stop_conditions`, `skills` — кортежи строк. Имена инструментов — только имена: привязка к callables происходит в обвязке harness и ещё не подключена.
+`AgentProfile` — frozen pydantic-модель, `AGENT_PROFILE_SCHEMA_VERSION = 1` (`ProfileSchemaVersion = Literal[1]`). Роль — идентичность профиля: ровно один профиль на роль. Поля: `role: Role`, `name`, `version`, `description` (все min_length=1), `inputs`/`outputs: tuple[ArtifactKind, ...]`, `tools`, `constraints`, `stop_conditions`, `skills` — кортежи строк. Имена инструментов — только имена: привязка к callables выполняется в обвязке harness (T-092 S2) — `WorkspaceTools` (`orchestration/stages/tools.py`) разрешает имена профиля в async-callables над изолированным workspace громко падая на неизвестное имя, а `Runtime.harness_of` (`dark_factory.runtime`) отдаёт их harness'у стадии.
 
 | Константа | `name` | `version` | inputs | outputs | tools | skills |
 |---|---|---|---|---|---|---|

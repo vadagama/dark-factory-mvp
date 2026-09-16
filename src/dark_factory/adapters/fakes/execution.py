@@ -16,7 +16,11 @@ class FakeExecution(ExecutionPort):
 
     ``prepare_workspace`` is idempotent by ``idempotency_key`` — a replay
     returns the same handle and mints no second workspace; ids are
-    deterministic ``ws-NNNN``. ``run_command`` derives its result from
+    deterministic ``ws-NNNN``. ``write_file`` puts content into the workspace
+    (idempotent by state: the same path holds the same bytes after a replay) and
+    is the write half of ``collect_evidence``: both address the seeded file
+    store, so content written by an agent tool is readable back as evidence.
+    ``run_command`` derives its result from
     ``argv`` only: commands seeded through ``seed_failure`` fail
     deterministically, everything else succeeds with a deterministic stdout
     line. Evidence is served from files seeded through ``seed_file``; an
@@ -52,6 +56,14 @@ class FakeExecution(ExecutionPort):
         self._workspaces[workspace_id] = handle
         self._prepare_keys[idempotency_key] = workspace_id
         return handle
+
+    async def write_file(
+        self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str
+    ) -> None:
+        # Idempotent by state, not by key: the path holds exactly ``content``
+        # afterwards, so a replay is a no-op in effect (FR-017).
+        self._workspace(workspace)
+        self._files.setdefault(workspace.workspace_id, {})[path] = content
 
     async def run_command(
         self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str

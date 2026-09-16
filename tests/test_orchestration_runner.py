@@ -708,3 +708,84 @@ def test_advance_run_refuses_a_result_status_that_contradicts_the_action() -> No
         )
 
     assert store.decisions == []
+
+
+# --- SCM-derived revisions (ADR-006 p.4, slice S2) --------------------------
+
+
+def test_advance_run_uses_the_injected_revision_resolver() -> None:
+    # A stage entered for the first time has no pinned revision yet: its revision
+    # comes from the injected resolver, not from the change snapshot's digest.
+    run = _fresh_run()
+    run.stages[0].input_revision = None
+    store = FakeStore(run=run)
+    calls: list[tuple[str, Stage]] = []
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        calls.append((change.id, stage))
+        return "scm-rev-1"
+
+    advance = advance_run(
+        store=store,
+        change=make_change(),
+        run_id=run.id,
+        owner_id="test-owner",
+        executor=_waiting(),
+        revision_of=revision_of,
+        lease_ttl=TTL,
+        now=NOW,
+    )
+
+    # The advance re-derives the identity under the lease (ADR-024, условие 2),
+    # so the resolver is consulted once per derivation — always for the same
+    # (change, stage) pair, since it is deterministic.
+    assert set(calls) == {("chg-001", Stage.SPECIFICATION)}
+    assert advance.result.input_revision == "scm-rev-1"
+    assert store.attempts[0].input_revision == "scm-rev-1"
+
+
+def test_advance_run_defaults_to_the_store_revision_without_a_resolver() -> None:
+    run = _fresh_run()
+    run.stages[0].input_revision = None
+    store = FakeStore(run=run)
+
+    advance = _advance(store, executor=_waiting())
+
+    assert advance.result.input_revision == REVISION
+
+
+def test_advance_run_pins_the_created_successor_with_the_resolver() -> None:
+    # The successor stage the decision creates must carry the same SCM-derived
+    # revision the next advance will resolve, or the two would disagree on the
+    # operation identity (ADR-006 p.3).
+    run = _fresh_run()
+    store = FakeStore(run=run)
+    calls: list[tuple[str, Stage]] = []
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        calls.append((change.id, stage))
+        return f"scm-{stage.value}"
+
+    advance = advance_run(
+        store=store,
+        change=make_change(),
+        run_id=run.id,
+        owner_id="test-owner",
+        executor=_executor(
+            status=StageStatus.SUCCEEDED,
+            next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
+            gate_results=[_satisfied(Gate.SPECIFICATION)],
+        ),
+        revision_of=revision_of,
+        lease_ttl=TTL,
+        now=NOW,
+    )
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    # The executed stage was pinned, so only the created successor consulted the
+    # resolver — the executed stage keeps the revision of its own operation.
+    assert calls == [("chg-001", Stage.PLANNING)]
+    assert run.stages[1].input_revision == "scm-planning"
+    assert store.created_stages == [
+        StagePlacement(stage=Stage.PLANNING, input_revision="scm-planning")
+    ]
