@@ -10,7 +10,7 @@
 - Фабрика запускается как CLI локально и как CI-job GitHub Actions (ADR-006, ADR-019).
 - Секреты — только через env/Kubernetes Secret; в git и командах их нет.
 
-## 1. Базовые гейты (доступно сейчас: T-002, T-003)
+## 1. Базовые гейты
 
 ```bash
 uv sync --all-groups
@@ -116,4 +116,4 @@ uv run factory outbox dispatch --once
 
 ## Дальше
 
-Следующий шаг bootstrap-фазы — `/speckit-tasks` (Phase 2): разбить план на упорядоченные задачи в `specs/001-dark-factory-mvp/tasks.md`.
+Разделы 1–2 проверяются локально без БД и LLM; разделы 5–7 требуют окружения (PostgreSQL, GitHub-контур, локальный кластер — `deploy/bootstrap/`). Оставшиеся работы — e2e-пилот (T043) и финальная приёмка (T056): статусы задач — в `specs/001-dark-factory-mvp/tasks.md`.

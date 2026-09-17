@@ -10,17 +10,18 @@
 | `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `ci-cd` |
 | `hld.md` | HLD: актуальная архитектура, связывает все ADR | `architect` |
 | `sdd-native-core.md` | Каноническая модель SDD: Native SDD Core (ChangeSet, Product Baseline, OKF) | `architect` |
-| `architecture-target.md` | Целевая архитектура, health score | `architect` |
 | `tech-dept.md` | Реестр технического долга | `architect` |
 | `adr/` | Архитектурные решения (ADR) | `architect` |
 | `descriptions/` | Понятные описания реализованных модулей, контрактов и runtime-механизмов | `architect` |
 | `instructions/` | Пошаговые ручные инструкции для людей: как прогнать реализованное своими руками | `dark-factory` |
+| `notion/` | Снапшот исходных материалов из Notion (исследования, черновики) — не каноническая документация | выгрузка из Notion |
 
 ## Вне `docs/` — связанные артефакты
 
 | Путь | Назначение |
 |---|---|
 | `AGENTS.md` | Правила для агентов: роли, конвейер, DoD, структура репозитория |
+| `.env` | Локальные секреты фабрики (не в git): зеркало секретов Kubernetes namespace `factory`; источник истины — кластер. Агентам не читать и не выводить содержимое; процессам — только через env (`--env-file .env`). Шаблон имён ключей — `.env.example` |
 | `.factory/` | Канонический SDD-слой Native SDD Core (ADR-020): `product/` baseline + `changes/`. Создаётся в T-020 |
 | `.agents/skills/` | Локальные скиллы: `dark-factory` (оркестратор), `speckit-*` (SDD bootstrap-фазы, ADR-001) |
 | `.specify/` | Spec Kit bootstrap-фазы: шаблоны, скрипты, `memory/constitution.md` (ADR-001) |
