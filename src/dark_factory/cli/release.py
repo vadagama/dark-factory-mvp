@@ -241,19 +241,31 @@ def _resolve_inputs(args: ReleaseVerifyArgs) -> _ReleaseInputs:
     )
 
 
-def _resolve_expected_digest(args: ReleaseVerifyArgs) -> str:
-    """Expected digest from the flag or the T033 artifact; exactly one source."""
-    if args.expected_digest is not None and args.digest_json is not None:
+def resolve_expected_digest(*, expected_digest: str | None, digest_json: str | None) -> str:
+    """Expected digest from the flag or the T033 artifact; exactly one source.
+
+    Shared by ``factory release verify`` (T034) and the release options of
+    ``factory run advance`` (T-092 S4). Raises :class:`ReleaseVerifyError`
+    naming the violated rule, never echoing a value (ADR-009).
+    """
+    if expected_digest is not None and digest_json is not None:
         raise ReleaseVerifyError("--expected-digest and --digest-json are mutually exclusive")
-    if args.expected_digest is not None:
-        value = args.expected_digest.strip()
+    if expected_digest is not None:
+        value = expected_digest.strip()
         if not value:
             raise ReleaseVerifyError("--expected-digest must be a non-empty string")
         return value
-    if args.digest_json is not None:
-        return _expected_digest_from_json(args.digest_json)
+    if digest_json is not None:
+        return _expected_digest_from_json(digest_json)
     raise ReleaseVerifyError(
         "the expected digest is required: pass --expected-digest or --digest-json"
+    )
+
+
+def _resolve_expected_digest(args: ReleaseVerifyArgs) -> str:
+    """Expected digest of ``release verify``: the shared rule over its flags."""
+    return resolve_expected_digest(
+        expected_digest=args.expected_digest, digest_json=args.digest_json
     )
 
 
@@ -280,20 +292,36 @@ def _expected_digest_from_json(path: str) -> str:
     return digest.strip()
 
 
-def _validate_smoke_options(args: ReleaseVerifyArgs) -> None:
-    """Consistency of the smoke flags; the health probe is the base of the set."""
-    if args.smoke_url is None:
-        if args.smoke_digest_url is not None:
+def validate_smoke_options(
+    *, smoke_url: str | None, smoke_digest_url: str | None, smoke_digest_header: str | None
+) -> None:
+    """Consistency of the smoke flags; the health probe is the base of the set.
+
+    Shared by ``factory release verify`` (T034) and the release options of
+    ``factory run advance`` (T-092 S4). Raises :class:`ReleaseVerifyError`
+    without echoing any URL (ADR-009).
+    """
+    if smoke_url is None:
+        if smoke_digest_url is not None:
             raise ReleaseVerifyError(
                 "--smoke-digest-url requires --smoke-url:"
                 " the health probe is the base of the smoke set"
             )
-        if args.smoke_digest_header is not None:
+        if smoke_digest_header is not None:
             raise ReleaseVerifyError("--smoke-digest-header requires --smoke-digest-url")
         return
-    _validated_smoke_url(args.smoke_url)
-    if args.smoke_digest_url is not None:
-        _validated_smoke_url(args.smoke_digest_url)
+    _validated_smoke_url(smoke_url)
+    if smoke_digest_url is not None:
+        _validated_smoke_url(smoke_digest_url)
+
+
+def _validate_smoke_options(args: ReleaseVerifyArgs) -> None:
+    """Consistency of the ``release verify`` smoke flags: the shared rule."""
+    validate_smoke_options(
+        smoke_url=args.smoke_url,
+        smoke_digest_url=args.smoke_digest_url,
+        smoke_digest_header=args.smoke_digest_header,
+    )
 
 
 def _validated_smoke_url(value: str) -> str:

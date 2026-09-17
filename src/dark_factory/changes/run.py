@@ -29,6 +29,7 @@ from dark_factory.changes.findings import Finding, GateResult
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import NextAction
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, Evidence, RepositoryRef
+from dark_factory.changes.release_records import ReleaseEvidence
 from dark_factory.changes.usage import BudgetSnapshot, Usage
 
 SCHEMA_VERSION: Final = 1
@@ -278,6 +279,11 @@ class StageResult(BaseModel):
     gate_results: list[GateResult] = []
     findings: list[Finding] = []
     escalations: list[EscalationViolation] = []
+    release: ReleaseEvidence | None = None
+    """Additive optional release-verification section, like ``RunRecord.release``
+    (T034 precedent): records written before it parse unchanged (the field
+    defaults to ``None``) and older readers ignore the new key, so
+    ``schema_version`` stays ``1``."""
     usage: Usage | None = None
     produced_at: datetime = Field(default_factory=_now)
 

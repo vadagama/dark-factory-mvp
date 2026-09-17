@@ -91,7 +91,7 @@ flowchart TD
 | `stage run` | `--change`*, `--stage`*, `--route`, `--input-revision`, `--run-id`, `--json`, `--evidence-dir`, `--non-interactive` | Детерминированный прогон одной стадии | 0/10/20/1/2 |
 | `stage resume` | `--run-id`*, `--next-action`* (`wa`/`ci`/`input`), `--json` | Заглушка not_implemented | 2 |
 | `run status` | `--run-id`*, `--json` | Запуск из PostgreSQL: статус и стадии | 0/2 |
-| `run advance` | `--change-id` XOR `--run-id` (обязательна ровно одна), `--json` | Ровно одна стадия запуска durable-раннером | 0/10/20/1/2 |
+| `run advance` | `--change-id` XOR `--run-id` (обязательна ровно одна), `--json`; release-опции (T-092 S4): `--expected-digest` XOR `--digest-json`, наблюдение `--observed-digest`/`--argo-sync`/`--argo-health`, пробы `--smoke-url`/`--smoke-digest-url`/`--smoke-digest-header`, `--application`, `--runs-root` | Ровно одна стадия запуска durable-раннером; release-опции — GitOps-промоушен, резолюция waiting-релиза и публикация run-записи | 0/10/20/1/2 |
 | `reconcile` | `--json` | Один проход Reconciler | 0/2 |
 | `outbox dispatch` | `--once`, `--json`, `--limit`, `--cleanup` | Одна пачка доставки outbox | 0/2 |
 | `outbox replay` | `--event-id`*, `--consumer`, `--json` | dead/failed → pending | 0/1/2 |
@@ -162,6 +162,12 @@ flowchart TD
 - **Вывод**: текст — `run <id>: <outcome> (stage=…, stage_status=…, run_status=…, next_action=…, next_stage=…)` плюс `reason: …` для wait/stop; при replay — `run <id>: replayed (stage=…, result_status=…, next_action=…; nothing was written)`. `--json` — один объект с фиксированным набором ключей (`run_id`, `change_id`, `outcome`, `persisted`, `stage`, `result_status`, `next_action`, `attempt_number`, `stage_status`, `run_status`, `next_stage`, `reason`); при replay `persisted=false` и `null` в четырёх полях решения — flow не спрашивали, писать было нечего.
 
 `run status` читает запуск из state store и печатает статус и стадии: текст — заголовок `run <id>: <status> (change_id=…, route=…, provider=…, state_revision=…)` и по строке на стадию (`stage: status (attempt=…, input_revision=…, state_revision=…)`); `--json` — документ доменной `ChangeRun` (`changes/run.py`). Команда только читает: exit `0` или `2` (неизвестный run / недоступный store).
+
+**Release-опции `run advance` (T-092 S4, ADR-024 §7)** — все необязательны, без них поведение прежнее:
+
+- `--expected-digest` / `--digest-json` (XOR, иначе exit 2) — свежая release-стадия промоутит digest в GitOps-репозиторий (блок `DARK_FACTORY_GITOPS_*`): один коммит-пин `releases/<run_id>/digest` на ветке `factory-release/<run_id>` (replay → тот же коммит; новый digest → новый коммит на той же ветке) и MR промоушена; результат `waiting`. Без digest — честный `blocked` до внешних эффектов.
+- Наблюдение (`--observed-digest`, `--argo-sync`, `--argo-health`) — при задании любого waiting-чекпоинт release-стадии разрешается release-фактами той же попытки: digest-иммутабельность (FR-011) → Argo sync/health (ADR-010) → smoke (FR-013), первый провал останавливает; `released` завершает run (`completed`), провал — `blocked` c rollback-сигналом (revert GitOps-коммита). Пробы (`--smoke-url`, опционально `--smoke-digest-url`/`--smoke-digest-header`) запускаются только когда pre-smoke-проверки прошли (FR-011) — неверный digest не стреляет пробами; без smoke-опций — `smoke was not run` (fail-closed).
+- `--runs-root` (или `DARK_FACTORY_RUNS_ROOT`) — после терминального advance (`completed`/`failed`) run-запись публикуется в checkout `dark-factory-runs` идемпотентно (T-061) и best-effort: сбой — предупреждение на stderr, код выхода не меняется.
 
 `stage resume` остаётся заглушкой: парсится полностью, но обращается к `_not_implemented` — на stderr `factory stage resume: not implemented yet (planned in the durable state-store wiring)`, в `--json` на stdout `{"error": "not_implemented", "command": "…"}`; exit 2.
 

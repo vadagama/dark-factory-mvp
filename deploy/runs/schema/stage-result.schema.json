@@ -548,6 +548,126 @@
       "title": "ReleaseAction",
       "type": "object"
     },
+    "ReleaseEvidence": {
+      "description": "Release section of a run record: digest, Argo status, smoke, decision (T034, ADR-011 p.6).\n\nAdded as an optional section (``RunRecord.release`` in T034, then\n``StageResult.release`` in T-092 S4): records written before each\nextension parse unchanged (the field defaults to ``None``) and older\nreaders ignore the new key, so ``schema_version`` stays ``1`` \u2014 the\nextension is additive and optional. ``argo_sync_status``/\n``argo_health_status`` store the raw observed values verbatim; the\ncanonical statuses live in ``quality.release`` and only feed the decision.",
+      "properties": {
+        "application": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Application"
+        },
+        "argo_health_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argo Health Status"
+        },
+        "argo_sync_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argo Sync Status"
+        },
+        "decision": {
+          "$ref": "#/$defs/ReleaseStatus"
+        },
+        "expected_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Digest"
+        },
+        "observed_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Digest"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "rollback_signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollback Signal"
+        },
+        "smoke": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SmokeProbeEvidence"
+          },
+          "title": "Smoke",
+          "type": "array"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verified_at",
+        "decision"
+      ],
+      "title": "ReleaseEvidence",
+      "type": "object"
+    },
+    "ReleaseStatus": {
+      "description": "Outcome of the release verification of a change (US5, T034, ADR-011 p.6).\n\n``released`` requires the unchanged expected digest (FR-011), a synced and\nhealthy Argo Application (ADR-010) and a passing smoke check (FR-013).\nAnything else \u2014 including missing data \u2014 is ``release_failed``: the check\norder is fail-closed, and a failure carries the rollback signal (revert\nthe GitOps commit, ADR-010/ADR-011 p.6).",
+      "enum": [
+        "released",
+        "release_failed"
+      ],
+      "title": "ReleaseStatus",
+      "type": "string"
+    },
     "RepositoryRef": {
       "description": "Provider-neutral product repository reference (ADR-019).",
       "properties": {
@@ -660,6 +780,38 @@
     "SchemaVersion": {
       "const": 1,
       "type": "integer"
+    },
+    "SmokeProbeEvidence": {
+      "description": "Result of one smoke probe inside the release evidence (T034, FR-013).\n\n``detail`` is a short diagnostic (HTTP status, exception class name); it\nnever carries the probe URL, response bodies or raw exception text\n(ADR-009).",
+      "properties": {
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "passed"
+      ],
+      "title": "SmokeProbeEvidence",
+      "type": "object"
     },
     "Stage": {
       "description": "Factory Flow stages (T-004).\n\nSpecification -> Planning -> Construction -> Review/Verification -> Release.",
@@ -934,6 +1086,17 @@
       "format": "date-time",
       "title": "Produced At",
       "type": "string"
+    },
+    "release": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReleaseEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "run_id": {
       "minLength": 1,

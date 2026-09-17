@@ -106,11 +106,31 @@ class RunAdvanceArgs:
     Exactly one of ``change_id``/``run_id`` is set (argparse enforces the
     group): ``change_id`` resolves the run from the change snapshot, ``run_id``
     advances the run named directly.
+
+    The release options (T-092 S4) are all optional and default to ``None``:
+    the expected digest (``expected_digest`` or the T033 ``digest_json``
+    artifact — exactly one source) feeds the GitOps promotion of a fresh
+    release attempt, the observed deployment state (``observed_digest``,
+    ``argo_sync``, ``argo_health``) and the smoke options feed the value-level
+    release facts that resume a waiting release attempt, and ``runs_root``
+    (falling back to ``DARK_FACTORY_RUNS_ROOT``) enables the run-record
+    publication after a terminal advance (ADR-015 p.4). Without them the
+    command behaves exactly as before S4.
     """
 
     change_id: str | None
     run_id: str | None
     json_output: bool
+    expected_digest: str | None = None
+    digest_json: str | None = None
+    observed_digest: str | None = None
+    argo_sync: str | None = None
+    argo_health: str | None = None
+    smoke_url: str | None = None
+    smoke_digest_url: str | None = None
+    smoke_digest_header: str | None = None
+    application: str | None = None
+    runs_root: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +312,47 @@ def build_parser() -> argparse.ArgumentParser:
         "--change-id", help="Id of the change whose run should be advanced."
     )
     run_advance_target.add_argument("--run-id", help="Id of the run to advance.")
+    run_advance_release = run_advance.add_argument_group("release (T-092 S4)")
+    run_advance_release.add_argument(
+        "--expected-digest",
+        help="Immutable image digest the release stage promotes (GitOps pin).",
+    )
+    run_advance_release.add_argument(
+        "--digest-json",
+        help="Path of the T033 image-digest.json artifact; alternative to --expected-digest.",
+    )
+    run_advance_release.add_argument(
+        "--observed-digest",
+        help="Digest observed on the deployment; release fact of a waiting release stage.",
+    )
+    run_advance_release.add_argument(
+        "--argo-sync",
+        help="Raw sync status of the Argo Application; release fact of a waiting release.",
+    )
+    run_advance_release.add_argument(
+        "--argo-health",
+        help="Raw health status of the Argo Application; release fact of a waiting release.",
+    )
+    run_advance_release.add_argument(
+        "--smoke-url",
+        help="HTTP health-probe URL run after the digest/argo checks pass (FR-013).",
+    )
+    run_advance_release.add_argument(
+        "--smoke-digest-url",
+        help="HTTP digest-probe URL checked for the expected digest; requires --smoke-url.",
+    )
+    run_advance_release.add_argument(
+        "--smoke-digest-header",
+        help="Response header the digest probe checks; requires --smoke-digest-url.",
+    )
+    run_advance_release.add_argument(
+        "--application",
+        help="namespace/name of the Argo Application, recorded in the release evidence.",
+    )
+    run_advance_release.add_argument(
+        "--runs-root",
+        help="Checkout of dark-factory-runs; defaults to DARK_FACTORY_RUNS_ROOT.",
+    )
     run_advance.add_argument(
         "--json", action="store_true", help="Emit the advance outcome as JSON on stdout."
     )
@@ -497,6 +558,16 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 change_id=_option_str(data, "change_id"),
                 run_id=_option_str(data, "run_id"),
                 json_output=_flag(data, "json"),
+                expected_digest=_option_str(data, "expected_digest"),
+                digest_json=_option_str(data, "digest_json"),
+                observed_digest=_option_str(data, "observed_digest"),
+                argo_sync=_option_str(data, "argo_sync"),
+                argo_health=_option_str(data, "argo_health"),
+                smoke_url=_option_str(data, "smoke_url"),
+                smoke_digest_url=_option_str(data, "smoke_digest_url"),
+                smoke_digest_header=_option_str(data, "smoke_digest_header"),
+                application=_option_str(data, "application"),
+                runs_root=_option_str(data, "runs_root"),
             )
         case "run_publish":
             return RunPublishArgs(

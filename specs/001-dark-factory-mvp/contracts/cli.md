@@ -13,6 +13,10 @@ factory stage run    --change <path|ref> --stage <stage> [--route quick|standard
 factory stage resume --run-id <id> --next-action <wa|ci|input> [--json]
 factory run status   --run-id <id> [--json]
 factory run advance  --change-id <id> | --run-id <id> [--json]  # одна стадия запуска (T-092)
+                     [--expected-digest <digest> | --digest-json <path>]  # релиз (T-092 S4)
+                     [--observed-digest <d>] [--argo-sync <s>] [--argo-health <h>]
+                     [--smoke-url <url>] [--smoke-digest-url <url>] [--smoke-digest-header <h>]
+                     [--application <ns/name>] [--runs-root <dir>]
 factory run publish  --record <path> [--runs-root <dir>] [--json]  # публикация run-записи (T-061)
 factory reconcile    [--json]           # один идемпотентный проход Reconciler
 factory outbox dispatch [--once]        # доставка событий (ADR-016)
@@ -66,6 +70,14 @@ factory doctor       [--json]           # проверка окружения и
 `factory run publish` (T-061, ADR-015 §4) не исполняет стадию и не производит `StageResult`: он публикует уже сохранённый `run_record.json` в checkout репозитория `dark-factory-runs` (`--runs-root` или переменная `DARK_FACTORY_RUNS_ROOT`). Коды выхода: `0` — запись создана или уже была опубликована без изменений; `1` — запись отклонена (секрет, превышение размера, неполная цепочка evidence, конфликт immutability); `2` — неверный ввод/конфигурация (нечитаемая запись, несоответствие схеме, не задан runs-root), при этом ничего не записано.
 
 `factory run advance` (T-092, ADR-024) исполняет **ровно одну** стадию запуска и завершается, не удерживая процесс: требуется ровно один из `--change-id` / `--run-id`; с `--change-id` запуск создаётся при отсутствии (идемпотентно по снапшоту изменения) и продолжается существующий при наличии. Решение применяет `flow.apply_result`, а драйвер пишет его целиком в одной транзакции (`stage_result`, статусы `stage`/`attempt`/`run`, строки созданных решением стадий, событие outbox). Повтор того же логического действия **инертен** — результат возвращается как `replayed` и не пишется ничего, включая строку lease; committed `failed`/`blocked` требует новой попытки (ADR-006 §7, срез S2). Коды выхода — общая таблица выше (`waiting` — не ошибка, результат персистентен до ожидания). Ограничения среза S1: входная ревизия стадии выводится из снапшота изменения, а не из commit SHA продукта (цель ADR-006 §4 — срез S2); статус run пишется через `ExecutionRepository.update_status`, который проверяет `state_revision` и `fencing_token`, но не таблицу `RUN_STATUS_TRANSITIONS`.
+
+**Release-опции (T-092 S4, ADR-024 §7)** — все необязательны, без них поведение прежнее:
+
+- `--expected-digest` / `--digest-json` (ровно один источник, иначе exit 2) — ожидаемый immutable digest: свежая release-стадия промоутит его в GitOps-репозиторий (блок `DARK_FACTORY_GITOPS_*`, все переменные обязательны при задании любой); без digest свежая попытка честно `blocked` до внешних эффектов.
+- `--observed-digest`, `--argo-sync`, `--argo-health` — наблюдаемое состояние развёртывания; при задании любого из них waiting-чекпоинт release-стадии разрешается release-фактами той же попытки (digest → Argo → smoke, порядок фиксирован, недостающие данные — fail-closed).
+- `--smoke-url`, `--smoke-digest-url`, `--smoke-digest-header` — smoke-пробы (FR-013); запускаются только когда проверки digest/Argo прошли (FR-011: неверный digest не стреляет пробами); без smoke-опций — `smoke was not run`, релиз не проходит.
+- `--application` — `namespace/name` Argo Application, попадает в release evidence.
+- `--runs-root` (или `DARK_FACTORY_RUNS_ROOT`) — после терминального advance (`completed`/`failed`) run-запись публикуется в checkout `dark-factory-runs` идемпотентно и best-effort: сбой — предупреждение на stderr, код выхода не меняется; корень не задан — публикация пропускается.
 
 ## Поведение и инварианты
 

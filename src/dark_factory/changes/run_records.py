@@ -5,15 +5,22 @@ A run record is the compact immutable evidence index persisted to the
 results between CI jobs (ADR-005 p.3). ``schema_version`` marks the versioned
 contract; serialization goes through JSON mode so ``Decimal`` and ``datetime``
 survive both JSON and YAML.
-"""
 
-from datetime import datetime
+The release evidence models live in :mod:`dark_factory.changes.release_records`
+(a leaf module, so ``run`` can reference them too — T-092 S4) and are
+re-exported here for the T034 import path.
+"""
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from dark_factory.changes.enums import ReleaseStatus
 from dark_factory.changes.findings import Decision
+from dark_factory.changes.release_records import (
+    ReleaseEvidence as ReleaseEvidence,
+)
+from dark_factory.changes.release_records import (
+    SmokeProbeEvidence as SmokeProbeEvidence,
+)
 from dark_factory.changes.run import (
     SCHEMA_VERSION,
     Change,
@@ -55,42 +62,6 @@ class RunManifest(BaseModel):
         if value is not None and value.strip().lower() == "latest":
             raise ValueError("run records reference exact revisions, not 'latest' (ADR-015 p.5)")
         return value
-
-
-class SmokeProbeEvidence(BaseModel):
-    """Result of one smoke probe inside the release evidence (T034, FR-013).
-
-    ``detail`` is a short diagnostic (HTTP status, exception class name); it
-    never carries the probe URL, response bodies or raw exception text
-    (ADR-009).
-    """
-
-    name: str = Field(min_length=1)
-    passed: bool
-    detail: str | None = None
-
-
-class ReleaseEvidence(BaseModel):
-    """Release section of a run record: digest, Argo status, smoke, decision (T034, ADR-011 p.6).
-
-    Added as an optional section (``RunRecord.release``): records written
-    before T034 parse unchanged (the field defaults to ``None``) and older
-    readers ignore the new key, so ``schema_version`` stays ``1`` — the
-    extension is additive and optional. ``argo_sync_status``/
-    ``argo_health_status`` store the raw observed values verbatim; the
-    canonical statuses live in ``quality.release`` and only feed the decision.
-    """
-
-    verified_at: datetime
-    decision: ReleaseStatus
-    reason: str | None = None
-    expected_digest: str | None = None
-    observed_digest: str | None = None
-    argo_sync_status: str | None = None
-    argo_health_status: str | None = None
-    application: str | None = None
-    smoke: tuple[SmokeProbeEvidence, ...] = ()
-    rollback_signal: str | None = None
 
 
 class RunRecord(BaseModel):
