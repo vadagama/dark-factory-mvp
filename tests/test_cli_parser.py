@@ -126,6 +126,50 @@ def test_run_advance_parses_exactly_one_target() -> None:
     )
 
 
+def test_run_advance_parses_the_release_options() -> None:
+    args = parse_command(
+        [
+            "run",
+            "advance",
+            "--run-id",
+            "run_01H",
+            "--expected-digest",
+            "sha256:abc",
+            "--observed-digest",
+            "sha256:abc",
+            "--argo-sync",
+            "Synced",
+            "--argo-health",
+            "Healthy",
+            "--smoke-url",
+            "https://app.example/health",
+            "--smoke-digest-url",
+            "https://app.example/version",
+            "--smoke-digest-header",
+            "X-Version",
+            "--application",
+            "factory/app",
+            "--runs-root",
+            "/tmp/runs",
+            "--json",
+        ]
+    )
+    assert args == RunAdvanceArgs(
+        change_id=None,
+        run_id="run_01H",
+        json_output=True,
+        expected_digest="sha256:abc",
+        observed_digest="sha256:abc",
+        argo_sync="Synced",
+        argo_health="Healthy",
+        smoke_url="https://app.example/health",
+        smoke_digest_url="https://app.example/version",
+        smoke_digest_header="X-Version",
+        application="factory/app",
+        runs_root="/tmp/runs",
+    )
+
+
 @pytest.mark.parametrize(
     "argv",
     [

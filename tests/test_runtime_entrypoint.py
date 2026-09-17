@@ -74,6 +74,14 @@ class FakeRuntime:
         self.executor_calls += 1
         return self.executor
 
+    def release_stage_executor(
+        self, *, expected_digest: str | None = None, inner: Any = None
+    ) -> Any:
+        self.release_calls = getattr(self, "release_calls", 0) + 1
+        self.release_expected_digest = expected_digest
+        self.release_inner = inner
+        return None
+
     def revision_of(self) -> RevisionResolver:
         self.revision_calls += 1
         return self.resolver

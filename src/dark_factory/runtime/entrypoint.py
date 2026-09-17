@@ -33,7 +33,8 @@ from collections.abc import Sequence
 
 from dark_factory.cli.main import ApiServeArgs, RunAdvanceArgs, parse_command
 from dark_factory.cli.main import main as cli_main
-from dark_factory.runtime.composition import build_runtime
+from dark_factory.cli.release import ReleaseVerifyError, resolve_expected_digest
+from dark_factory.runtime.composition import RuntimeNotConfiguredError, build_runtime
 
 __all__ = ["main"]
 
@@ -45,14 +46,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     ``SystemExit`` with it. Argument parsing is the CLI's, so an invalid command
     leaves with argparse's exit code 2 before anything is assembled.
 
-    For ``run advance`` the runtime is assembled first and its bindings are passed
-    to the CLI: the executor drives the stage, the revision resolver keys it by
-    the product commit and the provider-facts observer resolves a waiting
-    stage's external wait (T-092 S3). For ``api serve`` the same runtime supplies
-    the CI stage switchboard (``ci_toggles``/``ci_repository``, T059) — absent
-    credentials leave it ``None`` and the API reports the toggles unconfigured.
-    The runtime is released in a ``finally``, so the adapters' resources (HTTP
-    pool, tracer provider) are freed even when the command fails.
+    For ``run advance`` the runtime is assembled first and its bindings are
+    passed to the CLI: the executor drives the stage (wrapped, when the GitOps
+    repository is configured, into the release promotion executor — T-092 S4 —
+    carrying the expected digest resolved from the command's flags), the
+    revision resolver keys it by the product commit and the provider-facts
+    observer resolves a waiting stage's external wait (T-092 S3). For ``api
+    serve`` the same runtime supplies the CI stage switchboard
+    (``ci_toggles``/``ci_repository``, T059) — absent credentials leave it
+    ``None`` and the API reports the toggles unconfigured. The runtime is
+    released in a ``finally``, so the adapters' resources (HTTP pool, tracer
+    provider) are freed even when the command fails.
+
+    An invalid expected digest (the XOR of ``--expected-digest``/
+    ``--digest-json`` violated, or an unreadable artifact) leaves the release
+    executor unbound here: the command itself validates the same options and
+    reports the invalid input with exit 2 — the single source of the error
+    report is the CLI (ADR-024 p.5, binding is not deciding).
     """
     command = parse_command(argv)
     if isinstance(command, ApiServeArgs):
@@ -69,11 +79,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cli_main(argv)
     runtime = build_runtime()
     try:
+        executor = runtime.agent_stage_executor()
+        try:
+            release_executor = runtime.release_stage_executor(
+                expected_digest=_expected_digest(command), inner=executor
+            )
+        except RuntimeNotConfiguredError:
+            # A GitOps repository without a harness/execution port cannot bind
+            # the promotion wrapper: the inner executor stays the one driver,
+            # and the release stage reports its own honest gap.
+            release_executor = None
         return cli_main(
             argv,
-            executor=runtime.agent_stage_executor(),
+            executor=release_executor if release_executor is not None else executor,
             revision_of=runtime.revision_of(),
             gate_facts=runtime.facts_provider(),
         )
     finally:
         asyncio.run(runtime.aclose())
+
+
+def _expected_digest(command: RunAdvanceArgs) -> str | None:
+    """The expected digest of the release options, or ``None`` when unresolvable.
+
+    ``None`` covers both the absent options and an invalid pair: the command
+    validates the same rule and reports it (exit 2) — the executor binding
+    never duplicates the error report.
+    """
+    if command.expected_digest is None and command.digest_json is None:
+        return None
+    try:
+        return resolve_expected_digest(
+            expected_digest=command.expected_digest, digest_json=command.digest_json
+        )
+    except ReleaseVerifyError:
+        return None

@@ -9,6 +9,7 @@ holds no behaviour of its own.
 import asyncio
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -206,3 +207,67 @@ def test_revision_resolver_is_an_scm_revision_when_configured() -> None:
     runtime = build_runtime(env=GITHUB_ENV, token_provider=_static_tokens())
     resolver = runtime.revision_of()
     assert isinstance(resolver, ScmRevision)
+
+
+# --- the GitOps repository adapter (T-092 S4, ADR-024 §7 S4) -----------------
+
+GITOPS_ENV = {
+    "DARK_FACTORY_GITOPS_APP_ID": "3",
+    "DARK_FACTORY_GITOPS_APP_PRIVATE_KEY": "-----BEGIN KEY2-----\n-----END KEY2-----",
+    "DARK_FACTORY_GITOPS_INSTALLATION_ID": "4",
+    "DARK_FACTORY_GITOPS_REPOSITORY_SLUG": "small/gitops",
+}
+
+
+def test_without_the_gitops_block_there_is_no_release_executor() -> None:
+    runtime = build_runtime(env={}, token_provider=_static_tokens())
+
+    assert runtime.gitops is None
+    assert runtime.release_stage_executor(inner=_never_called) is None
+
+
+def _never_called(context: Any) -> Any:
+    raise AssertionError("the inner executor must not be called at build time")
+
+
+def test_gitops_block_assembles_a_second_independent_adapter() -> None:
+    runtime = build_runtime(env=GITOPS_ENV, token_provider=_static_tokens())
+
+    assert isinstance(runtime.gitops, GitHubAdapter)
+    assert runtime.gitops is not runtime.github
+    assert runtime.gitops_config is not None
+    assert runtime.gitops_config.repository_slug == "small/gitops"
+
+
+def test_release_executor_wraps_the_inner_executor_with_the_gitops_ports() -> None:
+    runtime = build_runtime(env=GITOPS_ENV, token_provider=_static_tokens())
+
+    executor = runtime.release_stage_executor(expected_digest="sha256:abc", inner=_never_called)
+
+    assert executor is not None
+    gitops = runtime.gitops
+    assert gitops is not None
+    assert executor._expected_digest == "sha256:abc"
+    assert executor._gitops_repository.slug == "small/gitops"
+    assert executor._repository is gitops.repository
+    assert executor._merge_requests is gitops.pull_requests
+
+
+def test_release_executor_without_an_inner_executor_refuses() -> None:
+    runtime = build_runtime(env=GITOPS_ENV, token_provider=_static_tokens())
+
+    with pytest.raises(RuntimeNotConfiguredError, match="inner executor"):
+        runtime.release_stage_executor(inner=None)
+
+
+def test_incomplete_gitops_block_fails_closed() -> None:
+    # Any DARK_FACTORY_GITOPS_* variable makes the block live: a partial one is
+    # a misconfiguration (an error), never a silently half-configured promotion.
+    with pytest.raises(ValueError, match="DARK_FACTORY_GITOPS_INSTALLATION_ID"):
+        build_runtime(
+            env={
+                "DARK_FACTORY_GITOPS_APP_ID": "3",
+                "DARK_FACTORY_GITOPS_REPOSITORY_SLUG": "small/gitops",
+            },
+            token_provider=_static_tokens(),
+        )

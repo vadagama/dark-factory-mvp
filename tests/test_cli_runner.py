@@ -29,11 +29,13 @@ from dark_factory.cli.main import (
     RunStatusArgs,
     main,
 )
+from dark_factory.cli.release_facts import CliReleaseFactsProvider
+from dark_factory.execution.runs.errors import UnsafeRunRecordError
 from dark_factory.orchestration.flow import FlowDecision
 from dark_factory.orchestration.runner import RunAdvance, RunAdvanceOutcome
 from dark_factory.orchestration.stages.gates import GateObservation
 from dark_factory.orchestration.state.repositories import LeaseLostError
-from tests.changes_factories import make_change, make_run
+from tests.changes_factories import make_change, make_manifest, make_run
 
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 RUN_ID = "run-001"
@@ -102,6 +104,9 @@ class StubStore:
     def load(self, execution_id: str) -> ChangeRun | None:
         return self.run if execution_id == self.run.id else None
 
+    def load_history(self, execution_id: str) -> list[StageResult]:
+        return []
+
     def create_run(self, **kwargs: Any) -> ChangeRun:
         self.created.append(kwargs)
         return self.run
@@ -139,7 +144,7 @@ def _advance_for(outcome: RunAdvanceOutcome) -> RunAdvance:
 
 
 def _stub(monkeypatch: pytest.MonkeyPatch, outcome: RunAdvanceOutcome) -> None:
-    """Stub the durable seam: store, intake and driver."""
+    """Stub the durable seam: store, intake and driver (and a hermetic runs root)."""
     captured: list[RunAdvance] = [_advance_for(outcome)]
 
     def fake_advance(**kwargs: Any) -> RunAdvance:
@@ -148,6 +153,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, outcome: RunAdvanceOutcome) -> None:
     monkeypatch.setattr(runner_module, "RunStore", StubStore)
     monkeypatch.setattr(runner_module, "ChangeRepository", StubChanges)
     monkeypatch.setattr(runner_module, "advance_run", fake_advance)
+    monkeypatch.delenv("DARK_FACTORY_RUNS_ROOT", raising=False)
 
 
 def _last_store() -> StubStore:
@@ -516,3 +522,182 @@ def test_default_owner_id_is_unique_per_process(monkeypatch: pytest.MonkeyPatch)
     int(first.rsplit("-", 1)[1], 16)  # the suffix is a uuid hex chunk
     monkeypatch.setenv("DARK_FACTORY_RUN_OWNER_ID", "cronjob-runner")
     assert runner_module._default_owner_id() == "cronjob-runner"
+
+
+# --- release options and the run-record publication (T-092 S4) ---------------
+
+
+def test_run_advance_hands_the_release_facts_to_the_driver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The observation options build the value-level release facts provider the
+    # driver consumes (T-092 S4); the CLI passes it through like gate_facts.
+    seen: dict[str, Any] = {}
+
+    def _recording_advance(**kwargs: Any) -> RunAdvance:
+        seen.update(kwargs)
+        return _advance_for(RunAdvanceOutcome.WAITING)
+
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    monkeypatch.setattr(runner_module, "advance_run", _recording_advance)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=CHANGE_ID,
+            run_id=None,
+            json_output=False,
+            observed_digest="sha256:abc",
+            argo_sync="Synced",
+            argo_health="Healthy",
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_WAITING
+    release_facts = seen["release_facts"]
+    assert isinstance(release_facts, CliReleaseFactsProvider)
+
+
+def test_run_advance_builds_no_release_facts_without_observation_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def _recording_advance(**kwargs: Any) -> RunAdvance:
+        seen.update(kwargs)
+        return _advance_for(RunAdvanceOutcome.WAITING)
+
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    monkeypatch.setattr(runner_module, "advance_run", _recording_advance)
+
+    runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=CHANGE_ID,
+            run_id=None,
+            json_output=False,
+            expected_digest="sha256:abc",  # promotion input only, not an observation
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert seen["release_facts"] is None
+
+
+def test_run_advance_rejects_conflicting_digest_sources(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=CHANGE_ID,
+            run_id=None,
+            json_output=False,
+            expected_digest="sha256:abc",
+            digest_json="/tmp/digest.json",
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_run_advance_rejects_inconsistent_smoke_options(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=CHANGE_ID,
+            run_id=None,
+            json_output=False,
+            smoke_digest_header="X-Version",  # no --smoke-url: the base of the set
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "requires --smoke-digest-url" in capsys.readouterr().err
+
+
+def test_run_advance_publishes_the_run_record_after_a_completed_advance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.COMPLETED)
+    monkeypatch.setenv("DARK_FACTORY_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner_module, "collect_run_manifest", lambda env: make_manifest())
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_OK
+    # The record landed in the deterministic layout of the runs repository.
+    published = list(tmp_path.rglob("snapshot.json"))
+    assert len(published) == 1
+
+
+def test_run_advance_does_not_publish_without_a_runs_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.COMPLETED)  # _stub removed the env var
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_OK
+    assert not any(tmp_path.iterdir()) if tmp_path.exists() else True
+
+
+def test_run_advance_skips_the_publication_for_a_waiting_advance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # Only a terminal run is indexed: waiting/blocked/advanced runs are in flight.
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    monkeypatch.setenv("DARK_FACTORY_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner_module, "collect_run_manifest", lambda env: make_manifest())
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_WAITING
+    assert not any(tmp_path.iterdir()) if tmp_path.exists() else True
+
+
+def test_run_advance_warns_and_keeps_the_exit_code_when_publication_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.COMPLETED)
+    monkeypatch.setenv("DARK_FACTORY_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner_module, "collect_run_manifest", lambda env: make_manifest())
+
+    class ExplodingStore:
+        def __init__(self, root: Any) -> None: ...
+
+        def publish(self, record: Any) -> Any:
+            raise UnsafeRunRecordError("record carries a secret")
+
+    monkeypatch.setattr(runner_module, "RunRecordStore", ExplodingStore)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_OK  # the advance succeeded; the publication is best-effort
+    assert "was not published" in capsys.readouterr().err

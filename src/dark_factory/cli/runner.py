@@ -74,6 +74,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
@@ -83,6 +84,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from dark_factory.changes.enums import Route, StageStatus
 from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.run import Change, ChangeRun
+from dark_factory.changes.run_records import RunRecord
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.cli.main import (
     EXIT_BLOCKED,
@@ -93,8 +95,17 @@ from dark_factory.cli.main import (
     RunAdvanceArgs,
     RunStatusArgs,
 )
+from dark_factory.cli.release import (
+    ReleaseVerifyError,
+    resolve_expected_digest,
+    validate_smoke_options,
+)
+from dark_factory.cli.release_facts import CliReleaseFactsProvider
+from dark_factory.cli.run_records import RunRecordError, collect_run_manifest
+from dark_factory.execution.runs.store import RunRecordStore
 from dark_factory.orchestration.runner import (
     FactsProvider,
+    ReleaseFactsProvider,
     RevisionResolver,
     RunAdvance,
     RunAdvanceOutcome,
@@ -117,6 +128,9 @@ DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
 
 RUN_OWNER_ID_ENV_VAR: Final[str] = "DARK_FACTORY_RUN_OWNER_ID"
 """Optional stable owner id of the run lease; a unique default otherwise."""
+
+RUNS_ROOT_ENV_VAR: Final[str] = "DARK_FACTORY_RUNS_ROOT"
+"""Checkout of the ``dark-factory-runs`` repository (ADR-015 p.4); ``--runs-root`` wins."""
 
 DEFAULT_RUN_ROUTE: Final[Route] = Route.STANDARD
 """Route of a run created by the CLI (ADR-005): the full gate set, never a shortcut."""
@@ -175,6 +189,30 @@ def _default_owner_id() -> str:
     return f"factory-run-{os.getpid()}-{uuid4().hex[:8]}"
 
 
+def _validate_release_options(args: RunAdvanceArgs) -> str | None:
+    """Validate the release options of the advance and resolve the expected digest.
+
+    The XOR of ``--expected-digest``/``--digest-json`` holds when either is
+    given (both set is a conflict, none set is a valid pre-S4 call — the
+    digest is optional here, unlike ``release verify``); the smoke options
+    must be consistent, and their URLs http(s). Raises
+    :class:`ReleaseVerifyError` (a ``ValueError``) naming the rule, never
+    echoing a value (ADR-009).
+    """
+    if args.expected_digest is not None and args.digest_json is not None:
+        raise ReleaseVerifyError("--expected-digest and --digest-json are mutually exclusive")
+    validate_smoke_options(
+        smoke_url=args.smoke_url,
+        smoke_digest_url=args.smoke_digest_url,
+        smoke_digest_header=args.smoke_digest_header,
+    )
+    if args.expected_digest is None and args.digest_json is None:
+        return None
+    return resolve_expected_digest(
+        expected_digest=args.expected_digest, digest_json=args.digest_json
+    )
+
+
 def run_advance_command(
     args: RunAdvanceArgs,
     *,
@@ -184,18 +222,37 @@ def run_advance_command(
     executor: StageExecutor | None = None,
     revision_of: RevisionResolver | None = None,
     gate_facts: FactsProvider | None = None,
+    release_facts: ReleaseFactsProvider | None = None,
 ) -> int:
     """Handle ``factory run advance``; return the process exit code (contract cli.md).
 
     ``session_factory``, ``owner_id`` and ``now`` are injection seams for tests;
-    ``executor``, ``revision_of`` and ``gate_facts`` are how the composition
-    root (``dark_factory.runtime``) plugs the harness-backed executor, the
-    SCM-derived revision resolver and the provider-facts observer of the wait
-    resolution (T-092 S3) into the working path: this module is core and may
-    not import ``runtime`` (ADR-024 p.5), so the bindings arrive as arguments.
-    Without them the deterministic stage path runs and a waiting stage is
-    never resolved by observed facts — exactly as before.
+    ``executor``, ``revision_of``, ``gate_facts`` and ``release_facts`` are how
+    the composition root (``dark_factory.runtime``) plugs the harness-backed
+    executor, the SCM-derived revision resolver and the facts observers of the
+    wait resolution (T-092 S3/S4) into the working path: this module is core
+    and may not import ``runtime`` (ADR-024 p.5), so the bindings arrive as
+    arguments. Without them the deterministic stage path runs and a waiting
+    stage is never resolved by observed facts — exactly as before.
+
+    The release options (T-092 S4) are validated and wired here, core-side:
+    the expected digest must come from exactly one source (the XOR of
+    ``--expected-digest``/``--digest-json``) and the smoke options must be
+    consistent (exit 2 otherwise, before anything is observed); when any
+    observation option is set, the value-level release facts provider of
+    ``cli.release_facts`` observes the waiting release attempts. A terminal
+    advance publishes the run record into the ``dark-factory-runs`` checkout
+    (ADR-015 p.4) when ``--runs-root``/``DARK_FACTORY_RUNS_ROOT`` is set —
+    best-effort, a publication failure never changes the exit code.
     """
+    try:
+        _validate_release_options(args)
+    except ReleaseVerifyError as exc:
+        return _report(
+            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
+        )
+    if release_facts is None:
+        release_facts = CliReleaseFactsProvider.from_options(args)
     resolved_owner = owner_id if owner_id is not None else _default_owner_id()
     if session_factory is not None:
         return _advance(
@@ -206,6 +263,7 @@ def run_advance_command(
             executor=executor,
             revision_of=revision_of,
             gate_facts=gate_facts,
+            release_facts=release_facts,
         )
     try:
         engine = create_state_engine(_database_url())
@@ -223,6 +281,7 @@ def run_advance_command(
             executor=executor,
             revision_of=revision_of,
             gate_facts=gate_facts,
+            release_facts=release_facts,
         )
     finally:
         engine.dispose()
@@ -334,6 +393,7 @@ def _advance(
     executor: StageExecutor | None,
     revision_of: RevisionResolver | None,
     gate_facts: FactsProvider | None,
+    release_facts: ReleaseFactsProvider | None,
 ) -> int:
     """Advance one stage in one transaction and emit the outcome (contract cli.md)."""
     try:
@@ -346,6 +406,7 @@ def _advance(
                 executor=executor,
                 revision_of=revision_of,
                 gate_facts=gate_facts,
+                release_facts=release_facts,
             )
     except InvalidRunnerInput as exc:
         return _report(
@@ -372,6 +433,7 @@ def _advance(
     except SQLAlchemyError:
         return _unreachable("run advance", args.json_output)
     print(render_advance_json(advance) if args.json_output else render_advance_text(advance))
+    _publish_run_record(factory, advance, args)
     return exit_code_for(advance)
 
 
@@ -384,6 +446,7 @@ def _advance_in_session(
     executor: StageExecutor | None,
     revision_of: RevisionResolver | None,
     gate_facts: FactsProvider | None,
+    release_facts: ReleaseFactsProvider | None,
 ) -> RunAdvance:
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
@@ -396,6 +459,7 @@ def _advance_in_session(
         executor=executor,
         revision_of=revision_of,
         gate_facts=gate_facts,
+        release_facts=release_facts,
         now=now,
     )
 
@@ -426,6 +490,75 @@ def _resolve_run(session: Session, store: RunStore, args: RunAdvanceArgs) -> tup
             f"run {run.id!r} references change {run.change_id!r}, which is not in intake"
         )
     return run.id, change
+
+
+def _publish_run_record(
+    factory: sessionmaker[Session], advance: RunAdvance, args: RunAdvanceArgs
+) -> None:
+    """Publish the run record after a terminal advance (S4, ADR-015 p.4) — best-effort.
+
+    Only a run that reached a terminal status is indexed: ``completed``
+    (``succeeded``) and ``failed``; the intermediate outcomes advance/waiting/
+    blocked/replayed are still in flight and are published when they land.
+    The record is built from the committed state (a fresh read transaction —
+    the advance's transaction is already closed) and written into the
+    ``dark-factory-runs`` checkout idempotently: the same record publishing
+    again is ``UNCHANGED`` (T-061). The runs root comes from ``--runs-root``,
+    falling back to ``DARK_FACTORY_RUNS_ROOT``; without either the publication
+    is skipped silently. A failure prints one warning line on stderr and never
+    changes the exit code: the advance itself succeeded and is reported as it
+    is (ADR-009 hygiene — the database URL and raw provider texts are never
+    echoed).
+    """
+    if advance.outcome not in (RunAdvanceOutcome.COMPLETED, RunAdvanceOutcome.FAILED):
+        return
+    root = (args.runs_root or os.environ.get(RUNS_ROOT_ENV_VAR, "")).strip()
+    if not root:
+        return
+    try:
+        record = _build_run_record(factory, advance)
+        RunRecordStore(Path(root)).publish(record)
+    except SQLAlchemyError:
+        print(
+            "factory run advance: the run record was not published:"
+            " the state store is not reachable",
+            file=sys.stderr,
+        )
+    except (OSError, ValueError) as exc:
+        # Domain record errors (RunRecordError, RunRecordStoreError, validation)
+        # are operator-actionable and safe to echo; OSError names its reason.
+        reason = exc.strerror or exc if isinstance(exc, OSError) else exc
+        print(f"factory run advance: the run record was not published: {reason}", file=sys.stderr)
+
+
+def _build_run_record(factory: sessionmaker[Session], advance: RunAdvance) -> RunRecord:
+    """Rebuild the run record from the committed state the advance left behind.
+
+    The run and its stage results are read back from the store, the change
+    snapshot from intake, and the manifest from the environment (ADR-015 p.5
+    — exact revisions, never ``latest``); the release section of the terminal
+    result, when the advance carried one, becomes the record's release
+    section. Raises :class:`RunRecordError` when the manifest cannot resolve
+    its commits — the caller warns and skips.
+    """
+    with session_scope(factory) as session:
+        store = RunStore(session)
+        run = store.load(advance.result.run_id)
+        if run is None:
+            raise RunRecordError(f"unknown run {advance.result.run_id!r}")
+        change = ChangeRepository(session).get(run.change_id)
+        if change is None:
+            raise RunRecordError(
+                f"run {run.id!r} references change {run.change_id!r}, which is not in intake"
+            )
+        history = store.load_history(run.id)
+    return RunRecord(
+        manifest=collect_run_manifest(os.environ),
+        change=change,
+        run=run,
+        stage_results=history,
+        release=advance.result.release,
+    )
 
 
 def _show_status(factory: sessionmaker[Session], args: RunStatusArgs) -> int:
