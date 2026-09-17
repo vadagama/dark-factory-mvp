@@ -56,3 +56,4 @@
 | [ADR-024](ADR-024-durable-run-driver-and-composition-root.md) | Durable run driver and the composition root | принято с условиями |
 | [ADR-025](ADR-025-process-entry-point-and-lazy-composition.md) | Process entry point and lazy composition | принято |
 | [ADR-026](ADR-026-parameterizable-ci-stages.md) | Параметризуемые этапы CI: выключатели `CI_SKIP_<JOB>` через repository variables, opt-out и fail-safe | принято |
+| [ADR-027](ADR-027-console-ci-stage-toggles.md) | Управление этапами CI из консоли: репозиторные переменные за API (`ci:write` + operator, fail-closed) | принято |

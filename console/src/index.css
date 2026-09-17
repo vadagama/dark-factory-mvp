@@ -322,6 +322,11 @@ textarea {
   color: var(--color-danger);
 }
 
+.notice--warning {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
 .muted {
   color: var(--color-text-muted);
 }
@@ -392,4 +397,107 @@ details.profile {
 details.profile summary {
   cursor: pointer;
   font-weight: 600;
+}
+
+/* --- CI stage switches (T059, ADR-026) -------------------------------------- */
+
+.ci-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.stage-group__title {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+}
+
+.stage-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.stage-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.stage-row__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.stage-row__summary {
+  margin: 0;
+}
+
+.stage-row__command {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+.stage-row__control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+  min-width: 96px;
+  font-size: 12px;
+}
+
+/* Plain styled button[role=switch]: no @radix-ui/react-switch dependency. */
+.switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-muted-soft);
+  cursor: pointer;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  transition: transform 120ms ease;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--color-success);
+  border-color: var(--color-success);
+}
+
+.switch[aria-checked="true"]::after {
+  transform: translateX(20px);
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }

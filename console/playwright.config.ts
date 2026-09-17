@@ -1,8 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
-// Playwright smoke (T036 DoD, ADR-021 p.6): 5 scenarios against the production
-// build served by `vite preview`, with every api/v1 call intercepted on
-// synthetic fixtures (e2e/fixtures/api.ts) — hermetic, no API/PostgreSQL needed.
+// Playwright smoke (T036 DoD, ADR-021 p.6): one scenario per screen against the
+// production build served by `vite preview`, with every api/v1 call intercepted
+// on synthetic fixtures (e2e/fixtures/api.ts) — hermetic, no API/PostgreSQL needed.
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,

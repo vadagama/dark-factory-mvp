@@ -7,11 +7,13 @@ name: CI
 #   gh variable set CI_SKIP_UIKIT_STORYBOOK --body true   # skip this stage
 #   gh variable delete CI_SKIP_UIKIT_STORYBOOK            # run it again
 #
-# Contract: a stage runs unless its CI_SKIP_<JOB> variable is exactly `true`
-# (lower case). An unset variable, a typo or any other value keeps the gate
-# enabled — no gate can be dropped by accident. Toggles are a development
-# convenience only: the full set is restored before merge (ADR-011), and the
-# trusted image jobs never run past a failed or cancelled gate.
+# Contract: a stage runs unless its CI_SKIP_<JOB> variable is `true`. GitHub
+# ignores case when comparing expression strings, so `True`/`TRUE` switch a
+# stage off as well, while an unset variable, `false` or any other value (a
+# typo included) keeps the gate enabled — no gate can be dropped by accident.
+# Toggles are a development convenience only: the full set is restored before
+# merge (ADR-011), and the trusted image jobs never run past a failed or
+# cancelled gate. The console drives the same variables (ADR-027).
 # Stage-by-stage guide: docs/instructions/manage-ci-stages.md.
 
 on:

@@ -1,9 +1,9 @@
 # Dark Factory Console
 
 Operator web console of the Software Dark Factory (task T036, delivery per
-[ADR-021](../docs/adr/ADR-021-console-mvp-delivery.md)). Five screens over the
-T035 API: changes list, change card, gates/approvals, budgets/limits,
-settings/profiles.
+[ADR-021](../docs/adr/ADR-021-console-mvp-delivery.md)). Six screens over the
+T035 API: changes list, change card, gates/approvals, budgets/limits, CI stage
+toggles, settings/profiles.
 
 Stack: **React 19 + TypeScript (strict) + Vite 8**, Radix primitives, plain CSS
 design tokens, `react-router` v7. No Tailwind, no react-query/axios (see
@@ -45,6 +45,7 @@ API or database needed. First run needs a browser:
 | `/changes/:id` | Change card: runs, stages, evidence, usage, blockers, stage chain (SC-007) | `GET /changes/{id}`, `/changes/{id}/trace`, `/runs/{id}`, `/runs/{id}/evidence`, `/runs/{id}/findings` |
 | `/changes/:id/gates` | Gates, open blocker findings, approvals history, version-bound approval form | `GET /runs/{id}/gates`, `/runs/{id}/findings`, `/changes/{id}/approvals`; `POST /changes/{id}/approvals` |
 | `/budgets` | Configured limits vs actual usage | limits from `src/generated/meta.json`; usage from `GET /runs` + `GET /runs/{id}` |
+| `/ci` | Этапы CI: on/off switches for the factory CI stages (T058/ADR-026) | `GET /ci/stages`; `PUT /ci/stages/{job}` |
 | `/settings` | Operator token, API base URL, factory mode, role profiles | localStorage + `meta.json` |
 
 ## Architecture
@@ -58,14 +59,14 @@ console/
 │   ├── components/       # Section/badges/Layout, Radix token dialog, intake form
 │   ├── generated/        # meta.json — COMMITTED snapshot, generated from Python sources
 │   ├── lib/              # formatting, meta accessors, id helpers
-│   ├── pages/            # five screens (react-router)
+│   ├── pages/            # six screens (react-router)
 │   └── test/             # vitest setup + shared fixtures / fetch stub
 └── tools/
     └── export_meta.py    # regenerates src/generated/meta.json (see below)
 ```
 
 **API client** (`src/api/client.ts`): plain `fetch`, no client libraries.
-Reads (GET) never carry the token; writes (POST) attach
+Reads (GET) never carry the token; writes (POST/PUT) attach
 `Authorization: Bearer <token>` and an `Idempotency-Key` (UUID v4). Errors are
 RFC 7807-like bodies surfaced as `ApiError` with `isUnauthorized` (401),
 `isForbidden` (403) and `isStateRevisionConflict` (409) helpers. Wire types in
@@ -115,7 +116,7 @@ and the test runs in the plain pytest CI job.
   shape (Radix primitive + styled wrapper) and can graduate to a real UI kit
   without API changes. The console does **not** define the product UI kit
   (ADR-014 p.4).
-- **No react-query/axios.** Five read-mostly screens; a `useAsync` hook over
+- **No react-query/axios.** Read-mostly screens; a `useAsync` hook over
   the typed client is enough. Cache invalidation is an explicit `reload()`.
 - **react-router v7** in declarative mode with plain hooks — data loaders /
   framework mode were skipped to keep the toolchain minimal; `useAsync` covers
@@ -131,3 +132,13 @@ and the test runs in the plain pytest CI job.
 - **E2E fixtures are inline TypeScript** (`e2e/fixtures/api.ts`) instead of
   JSON files — the same synthetic data, but type-checked against the wire
   types.
+- **CI stage switches are GitHub repository variables.** `/ci` toggles the
+  `CI_SKIP_<JOB>` repository variables of the factory repository through
+  `GET`/`PUT /api/v1/ci/stages` (T058, [ADR-026](../docs/adr/ADR-026-parameterizable-ci-stages.md);
+  operator guide `docs/instructions/manage-ci-stages.md`). The API is
+  fail-closed when its GitHub credentials are absent: it answers
+  `available: false` with a human-readable `reason`, `enabled` is null and the
+  screen disables every control. A failed write never flips the row — the
+  switch keeps the server state and shows the error. The switch is a plain
+  styled `button[role="switch"]` (`src/index.css`): no new dependency
+  (`@radix-ui/react-switch` was deliberately not added).

@@ -165,6 +165,35 @@ def test_database_url_comes_from_secret_ref(default_docs: list[dict[str, Any]]) 
     assert "DARK_FACTORY_API_TOKENS" not in deployment_env
 
 
+@pytest.fixture(scope="module")
+def ci_toggles_docs() -> list[dict[str, Any]]:
+    return _render(
+        "--set",
+        "ciToggles.existingSecret=factory-github-app",
+        "--set",
+        "ciToggles.repositorySlug=vadagama/dark-factory-mvp",
+    )
+
+
+def test_ci_toggle_credentials_are_optional_and_referenced_only(
+    default_docs: list[dict[str, Any]], ci_toggles_docs: list[dict[str, Any]]
+) -> None:
+    # Default contour: no GitHub credential reaches the API pod at all (T059).
+    container = _api_container(_first(default_docs, "Deployment"))
+    assert "DARK_FACTORY_GITHUB_REPOSITORY_SLUG" not in _container_env(container)
+    assert "envFrom" not in container
+    # Configured: the slug arrives as a plain value, the App credentials as a
+    # secret reference — optional, so a contour without that secret still starts
+    # and the /ci endpoints report themselves unconfigured (fail-closed, ADR-027).
+    configured = _api_container(_first(ci_toggles_docs, "Deployment"))
+    slug = _container_env(configured)["DARK_FACTORY_GITHUB_REPOSITORY_SLUG"]
+    assert slug["value"] == "vadagama/dark-factory-mvp"
+    assert configured["envFrom"] == [
+        {"secretRef": {"name": "factory-github-app", "optional": True}}
+    ]
+    assert not _by_kind(ci_toggles_docs, "Secret"), "credentials are never chart-created"
+
+
 def test_local_values_enable_ingress(local_docs: list[dict[str, Any]]) -> None:
     ingress = _first(local_docs, "Ingress")
     assert ingress["spec"]["ingressClassName"] == "nginx"

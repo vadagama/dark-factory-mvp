@@ -19,12 +19,26 @@ from dark_factory.orchestration.state.engine import (
     create_session_factory,
     create_state_engine,
 )
+from dark_factory.ports import CiStageTogglePort
 
 DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
 
 
-def run_api_serve_command(args: ApiServeArgs) -> int:
-    """Serve the API until interrupted; fail fast with exit 2 on misconfiguration."""
+def run_api_serve_command(
+    args: ApiServeArgs,
+    *,
+    ci_toggles: CiStageTogglePort | None = None,
+    ci_repository: str | None = None,
+) -> int:
+    """Serve the API until interrupted; fail fast with exit 2 on misconfiguration.
+
+    ``ci_toggles``/``ci_repository`` are the CI stage switchboard seam (T059,
+    ADR-027): they arrive as arguments from the composition root
+    (``runtime.entrypoint``) because this module is core and may not name the
+    adapters (ADR-024 p.5). Both default to ``None`` — the ``/ci`` endpoints
+    then serve the catalog as unavailable, which is exactly the behaviour of
+    the runtime-free path (``python -m dark_factory.cli``).
+    """
     database_url = os.environ.get(DATABASE_URL_ENV_VAR, "").strip()
     if not database_url:
         print(f"factory api serve: {DATABASE_URL_ENV_VAR} is not configured", file=sys.stderr)
@@ -40,7 +54,11 @@ def run_api_serve_command(args: ApiServeArgs) -> int:
             file=sys.stderr,
         )
         return EXIT_INVALID_INPUT
-    app = create_app(create_session_factory(engine))
+    app = create_app(
+        create_session_factory(engine),
+        ci_toggles=ci_toggles,
+        ci_repository=ci_repository,
+    )
     try:
         import uvicorn
 

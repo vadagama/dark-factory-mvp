@@ -54,6 +54,23 @@ spec:
                   name: {{ .Values.auth.existingSecret }}
                   key: {{ .Values.auth.secretKey }}
             {{- end }}
+            {{- if .Values.ciToggles.existingSecret }}
+            # CI stage toggles (T059, ADR-027): the repository whose variables
+            # the console switches. The GitHub App credentials arrive through
+            # the secretRef below.
+            - name: DARK_FACTORY_GITHUB_REPOSITORY_SLUG
+              value: {{ required "ciToggles.repositorySlug is required when ciToggles.existingSecret is set" .Values.ciToggles.repositorySlug | quote }}
+            {{- end }}
+          {{- if .Values.ciToggles.existingSecret }}
+          envFrom:
+            # Same convention as the runner (deploy/ci/manifests/
+            # runner-deployment.yaml): credentials created OUTSIDE git, and
+            # optional: true keeps the pod startable without the secret — the
+            # /ci endpoints then report themselves unconfigured (fail-closed).
+            - secretRef:
+                name: {{ .Values.ciToggles.existingSecret }}
+                optional: true
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.api.port }}

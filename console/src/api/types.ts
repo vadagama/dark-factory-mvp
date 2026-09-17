@@ -296,3 +296,34 @@ export interface ErrorBody {
   status: number;
   detail: string;
 }
+
+// ---------------------------------------------------------------------------
+// CI stages (T058/ADR-026 — the `CI_SKIP_<JOB>` repository variables)
+// ---------------------------------------------------------------------------
+
+export type CiStageGroup = "python" | "factory" | "console" | "uikit" | "image";
+export type CiStageWeight = "light" | "medium" | "heavy";
+
+/** One switchable CI stage: an element of `stages` and the PUT response. */
+export interface CiStage {
+  job: string;
+  title: string;
+  group: CiStageGroup;
+  summary: string;
+  local_command: string;
+  weight: CiStageWeight;
+  variable: string;
+  /** true = the stage runs; false = switched off; null = unknown (`available: false`). */
+  enabled: boolean | null;
+}
+
+/** `GET /ci/stages`: the toggles of the repository whose CI is controlled. */
+export interface CiStages {
+  schema_version: 1;
+  /** `owner/name` of the controlled repository; null when `available` is false. */
+  repository: string | null;
+  available: boolean;
+  /** Human-readable English reason when `available` is false (GitHub unreachable). */
+  reason: string | null;
+  stages: CiStage[];
+}

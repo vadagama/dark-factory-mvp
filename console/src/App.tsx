@@ -3,6 +3,7 @@ import { Layout } from "./components/Layout";
 import { BudgetsPage } from "./pages/BudgetsPage";
 import { ChangeCardPage } from "./pages/ChangeCardPage";
 import { ChangesListPage } from "./pages/ChangesListPage";
+import { CiStagesPage } from "./pages/CiStagesPage";
 import { GatesPage } from "./pages/GatesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
@@ -19,6 +20,7 @@ export function App() {
         <Route path="changes/:changeId" element={<ChangeCardPage />} />
         <Route path="changes/:changeId/gates" element={<GatesPage />} />
         <Route path="budgets" element={<BudgetsPage />} />
+        <Route path="ci" element={<CiStagesPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<ChangesListPage />} />
       </Route>

@@ -142,3 +142,54 @@ describe("ApiClient auth semantics", () => {
     expect(error.name).toBe("ApiNetworkError");
   });
 });
+
+describe("ApiClient CI stages (T058/ADR-026)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("lists the stages without a token", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("secret-token");
+    const payload = { schema_version: 1, repository: "acme/repo", available: true, reason: null, stages: [] };
+    const fetchImpl = vi.fn(async () => jsonResponse(200, payload));
+    const client = new ApiClient({ fetchImpl });
+
+    await expect(client.listCiStages()).resolves.toEqual(payload);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://localhost:3000/api/v1/ci/stages");
+    expect(init.method).toBe("GET");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(headers["Idempotency-Key"]).toBeUndefined();
+  });
+
+  it("PUTs one stage as a write: Bearer + Idempotency-Key + {enabled}", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("secret-token");
+    const updated = { job: "lint", title: "Lint", group: "python", summary: "", local_command: "", weight: "light", variable: "CI_SKIP_LINT", enabled: false };
+    const fetchImpl = vi.fn(async () => jsonResponse(200, updated));
+    const client = new ApiClient({ fetchImpl });
+
+    await expect(client.setCiStageEnabled("lint", false)).resolves.toEqual(updated);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://localhost:3000/api/v1/ci/stages/lint");
+    expect(init.method).toBe("PUT");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer secret-token");
+    expect(headers["Idempotency-Key"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(JSON.parse(init.body as string)).toEqual({ enabled: false });
+  });
+
+  it("maps 502 (GitHub) and 503 (not configured) to plain ApiError statuses", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(502, { type: "about:blank", title: "Bad Gateway", status: 502, detail: "GitHub call failed" }),
+    );
+    const client = new ApiClient({ fetchImpl, tokenProvider: () => "secret-token" });
+    const error = (await client
+      .setCiStageEnabled("lint", true)
+      .catch((caught: unknown) => caught)) as ApiError;
+    expect(error.status).toBe(502);
+    expect(error.detail).toBe("GitHub call failed");
+  });
+});

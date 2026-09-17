@@ -32,6 +32,17 @@ PostgreSQL **не бандлится**: chart использует bootstrap-о�
 
    и `--set auth.existingSecret=factory-api-tokens` при установке.
 
+4. Опционально — секрет с GitHub App, чтобы консоль могла читать и переключать этапы CI (экран `/ci`, T059/ADR-027). Установке приложения нужен доступ **Variables: read/write** к репозиторию фабрики (создание App и ключа — `deploy/ci/README.md`):
+
+   ```bash
+   kubectl -n factory create secret generic factory-github-app \
+     --from-literal=DARK_FACTORY_GITHUB_APP_ID='<app id>' \
+     --from-literal=DARK_FACTORY_GITHUB_INSTALLATION_ID='<installation id>' \
+     --from-file=DARK_FACTORY_GITHUB_APP_PRIVATE_KEY=app.pem
+   ```
+
+   и `--set ciToggles.existingSecret=factory-github-app --set ciToggles.repositorySlug=<owner>/<name>`. Без этого `/api/v1/ci/stages` отдаёт каталог этапов без состояния, а переключение отвечает 503 (fail-closed): консоль честно показывает, что контролы не сконфигурированы, вместо фиктивного выключателя.
+
 ## Установка
 
 ```bash
@@ -57,6 +68,8 @@ helm upgrade --install dark-factory charts/dark-factory -n factory \
 | `api.strategy` | `Recreate` | RollingUpdate при квоте приведёт к перекрытию подов → отказ планирования |
 | `database.existingSecret` | `factory-api-database` | Секрет с полным `DATABASE_URL` в ключе `DATABASE_URL` (создаётся вне git) |
 | `auth.existingSecret` | `""` | Опциональный секрет с `DARK_FACTORY_API_TOKENS`; пусто = mutating fail-closed |
+| `ciToggles.existingSecret` | `""` | Опциональный секрет с `DARK_FACTORY_GITHUB_*` (App с доступом **Variables: read/write**); пусто = переключатели этапов CI не сконфигурированы (`/ci` без состояния) |
+| `ciToggles.repositorySlug` | `""` | `owner/name` репозитория, чьи этапы CI переключает консоль; обязателен при заданном `ciToggles.existingSecret` |
 | `migrations.enabled` / `migrations.command` | `true` / `["alembic","upgrade","head"]` | Hook-Job `pre-install,pre-upgrade`, weight 0, `before-hook-creation,hook-succeeded` |
 | `ingress.enabled` / `className` / `host` | `false` / `nginx` / `factory.localhost` | В `values-local.yaml` включён; без контроллера объект инертен |
 | `resources` | requests `100m/128Mi`, limits `500m/512Mi` | Вписывается в LimitRange (max 2CPU/2Gi) и квоту T029 |

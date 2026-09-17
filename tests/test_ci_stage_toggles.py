@@ -1,14 +1,17 @@
-"""Parameterizable CI stages (T058, ADR-026): one ``CI_SKIP_*`` toggle per ci.yml job.
+"""Parameterizable CI stages (T058/T059, ADR-026/ADR-027): one toggle per ci.yml job.
 
 The contract these tests pin without running CI:
 
 * every job of ``ci.yml`` is a stage with its own repository-variable toggle
   ``CI_SKIP_<JOB>`` (``-`` → ``_``, upper case) evaluated in a job-level ``if``;
-* a stage runs unless the variable is exactly ``true`` — the opt-out/fail-safe
-  rule, so a typo can never drop a gate from the pipeline;
+* a stage runs unless the variable is ``true`` — the opt-out/fail-safe rule, so
+  a value that is not ``true`` can never drop a gate from the pipeline;
 * the trusted image jobs keep their ``needs`` chain and the final SHA, tolerate
   a gate skipped on purpose, and still refuse to build after a failed or
   cancelled gate;
+* the catalog (``dark_factory.ci.stages``) covers exactly the workflow jobs and
+  agrees with them on titles and toggle variables — it is what the API serves
+  and what the console renders (T059);
 * the instruction (``docs/instructions/manage-ci-stages.md``) and the ADR
   (``docs/adr/ADR-026-parameterizable-ci-stages.md``) stay in sync with the
   workflow — documentation drift fails the suite instead of going unnoticed.
@@ -19,6 +22,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from dark_factory.ci import (
+    CI_STAGES,
+    CiStageGroup,
+    CiStageWeight,
+    is_skipped_value,
+    stage_by_job,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -129,3 +140,65 @@ def test_workflow_header_points_to_the_guide() -> None:
     raw = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "docs/instructions/manage-ci-stages.md" in raw
     assert "ADR-026" in raw
+
+
+# --- Catalog: the same stages as a value the API and console serve (T059) ----
+
+
+def test_catalog_covers_exactly_the_workflow_jobs() -> None:
+    """The catalog cannot silently lose or invent a stage."""
+    jobs = set(_ci()["jobs"])
+    catalog = {stage.job for stage in CI_STAGES}
+    assert catalog == jobs, (
+        "catalog and ci.yml drifted: only in catalog "
+        f"{sorted(catalog - jobs)}, only in the workflow {sorted(jobs - catalog)}"
+    )
+
+
+def test_catalog_titles_and_variables_match_the_workflow() -> None:
+    """Every catalog entry names its job, its title and the variable its ``if`` reads."""
+    jobs = _ci()["jobs"]
+    for stage in CI_STAGES:
+        job = jobs[stage.job]
+        assert stage.title == job["name"], (stage.job, stage.title, job["name"])
+        assert stage.variable == _skip_variable(stage.job), stage.job
+        assert f"vars.{stage.variable} != 'true'" in str(job["if"]), stage.job
+
+
+def test_catalog_entries_are_complete_and_unique() -> None:
+    """Operator-facing fields are filled in, job ids are unique, lookup is total."""
+    for stage in CI_STAGES:
+        assert stage.summary.strip(), stage.job
+        assert stage.local_command.strip(), stage.job
+        assert isinstance(stage.group, CiStageGroup), stage.job
+        assert isinstance(stage.weight, CiStageWeight), stage.job
+    jobs = [stage.job for stage in CI_STAGES]
+    assert len(jobs) == len(set(jobs)), "catalog job ids must be unique"
+    assert stage_by_job(CI_STAGES[0].job) is CI_STAGES[0]
+    assert stage_by_job("no-such-stage") is None
+
+
+def test_catalog_is_grouped_in_console_order() -> None:
+    """Groups appear contiguously in enum order: the console renders sections as served."""
+    seen: list[CiStageGroup] = []
+    for stage in CI_STAGES:
+        if not seen or seen[-1] is not stage.group:
+            assert stage.group not in seen, f"group {stage.group} is not contiguous"
+            seen.append(stage.group)
+    assert seen == list(CiStageGroup), seen
+
+
+def test_skip_value_semantics_match_the_workflow_condition() -> None:
+    """``true`` in any case switches a stage off; anything else keeps it enabled."""
+    # GitHub ignores case when comparing expression strings, so the workflow
+    # condition and this predicate must agree on every spelling of `true`.
+    assert is_skipped_value("true")
+    assert is_skipped_value("True")
+    assert is_skipped_value("TRUE")
+    # The fail-safe direction: absent, false and typos all keep the gate enabled.
+    assert not is_skipped_value(None)
+    assert not is_skipped_value("false")
+    assert not is_skipped_value("yes")
+    assert not is_skipped_value("1")
+    assert not is_skipped_value("ofl")
+    assert not is_skipped_value("true "), "padding is not the literal value"

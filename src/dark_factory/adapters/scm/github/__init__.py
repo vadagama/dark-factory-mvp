@@ -25,6 +25,7 @@ from dark_factory.adapters.scm.github.config import (
     GITHUB_APP_ID_ENV_VAR,
     GITHUB_APP_PRIVATE_KEY_ENV_VAR,
     GITHUB_INSTALLATION_ID_ENV_VAR,
+    GITHUB_REPOSITORY_SLUG_ENV_VAR,
     GITHUB_WORKFLOW_ID_ENV_VAR,
     GitHubConfig,
 )
@@ -36,6 +37,7 @@ from dark_factory.adapters.scm.github.pull_requests import (
     GitHubPullRequests,
 )
 from dark_factory.adapters.scm.github.repository import GitHubRepository
+from dark_factory.adapters.scm.github.variables import GitHubCiStageToggles
 
 __all__ = [
     "CHANGE_MARKER_PREFIX",
@@ -46,14 +48,16 @@ __all__ = [
     "GITHUB_API_URL_ENV_VAR",
     "GITHUB_APP_ID_ENV_VAR",
     "GITHUB_APP_PRIVATE_KEY_ENV_VAR",
-    "GITHUB_INSTALLATION_ID_ENV_VAR",
-    "GITHUB_WORKFLOW_ID_ENV_VAR",
+    GITHUB_INSTALLATION_ID_ENV_VAR,
+    GITHUB_REPOSITORY_SLUG_ENV_VAR,
+    GITHUB_WORKFLOW_ID_ENV_VAR,
     "IDEMPOTENCY_MARKER_TEMPLATE",
     "GitHubAPIError",
     "GitHubAdapter",
     "GitHubAppAuth",
     "GitHubAuthError",
     "GitHubCI",
+    "GitHubCiStageToggles",
     "GitHubClient",
     "GitHubConfig",
     "GitHubPipelines",

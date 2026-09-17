@@ -58,6 +58,7 @@ from dark_factory.ports.events import DomainEvent, EventType
 from dark_factory.ports.protocols import (
     ArtifactStorePort,
     CIPort,
+    CiStageTogglePort,
     EventPublisherPort,
     ExecutionPort,
     HarnessPort,
@@ -89,6 +90,7 @@ __all__ = [
     "ChangeRequestStatus",
     "ChangeSet",
     "ChangeSource",
+    "CiStageTogglePort",
     "ContextBundle",
     "ContextRequest",
     "ContextSchemaVersion",

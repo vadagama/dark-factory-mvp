@@ -29,6 +29,7 @@ _ROLE_VALUES: Final[frozenset[str]] = frozenset({OPERATOR_ROLE, SERVICE_ROLE})
 
 SCOPE_CHANGES_WRITE: Final[str] = "changes:write"
 SCOPE_APPROVALS_WRITE: Final[str] = "approvals:write"
+SCOPE_CI_WRITE: Final[str] = "ci:write"
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,6 +8,7 @@ core never imports ``dark_factory.adapters`` (enforced by
 (FR-017, ADR-006 p.3); one run executes in exactly one provider (ADR-019 §5).
 """
 
+from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
@@ -85,6 +86,31 @@ class CIPort(Protocol):
     async def run_stage_job(self, request: StageJobRequest, *, idempotency_key: str) -> str: ...
     async def gate_status(self, job_ref: str, /) -> GateResult: ...
     async def artifacts(self, job_ref: str, /) -> list[ArtifactRef]: ...
+
+
+@runtime_checkable
+class CiStageTogglePort(Protocol):
+    """Repository-variable store of the CI stage toggles (T059, ADR-026/ADR-027).
+
+    Bound to one configured repository at construction: no request can point a
+    read or a write at another repository. The contract is deliberately
+    value-level — *which* value switches a stage off belongs to the catalog
+    (``dark_factory.ci.stages``), not to the provider — so any provider that
+    stores non-secret configuration variables can implement it.
+    """
+
+    async def values(self) -> Mapping[str, str]:
+        """Current values of the repository variables (name → value)."""
+        ...
+
+    async def set_value(self, variable: str, value: str | None) -> None:
+        """Set ``variable`` to ``value``, or delete it when ``value`` is ``None``.
+
+        Idempotent: deleting an absent variable and re-writing the same value
+        are both no-ops. Naming an unknown variable is the caller's bug — the
+        API gates every call through the catalog first.
+        """
+        ...
 
 
 @runtime_checkable

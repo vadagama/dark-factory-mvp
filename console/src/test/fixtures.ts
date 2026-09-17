@@ -7,6 +7,8 @@ import type {
   Change,
   ChangeCard,
   ChangeTrace,
+  CiStage,
+  CiStages,
   Decision,
   Evidence,
   Finding,
@@ -162,4 +164,44 @@ export const runTrace: RunTrace = {
 export const changeTrace: ChangeTrace = {
   change_id: "chg_demo_001",
   runs: [runTrace],
+};
+
+export const ciStage: CiStage = {
+  job: "lint",
+  title: "Ruff lint + format",
+  group: "python",
+  summary: "Стиль, импорты и форматирование (ruff check и ruff format --check).",
+  local_command: "uv run ruff check . && uv run ruff format --check .",
+  weight: "light",
+  variable: "CI_SKIP_LINT",
+  enabled: true,
+};
+
+/** A stage that is currently switched off — the bulk action has to pick it up. */
+export const ciStageOff: CiStage = {
+  job: "console-e2e",
+  title: "Playwright smoke",
+  group: "console",
+  summary: "Сборка, vite preview и smoke-сценарии с установкой Chromium.",
+  local_command: "cd console && npx playwright install chromium && npm run e2e",
+  weight: "heavy",
+  variable: "CI_SKIP_CONSOLE_E2E",
+  enabled: false,
+};
+
+export const ciStages: CiStages = {
+  schema_version: 1,
+  repository: "vadagama/dark-factory-mvp",
+  available: true,
+  reason: null,
+  stages: [ciStage, ciStageOff],
+};
+
+/** The API cannot reach GitHub: `repository` is null, every state is unknown. */
+export const ciStagesUnavailable: CiStages = {
+  schema_version: 1,
+  repository: null,
+  available: false,
+  reason: "GitHub credentials are not configured on this contour",
+  stages: [{ ...ciStage, enabled: null }],
 };

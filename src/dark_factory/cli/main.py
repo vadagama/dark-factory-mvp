@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     # Type-only: the CLI is core and must not pull the driver (or anything it
     # imports) into the import of the command tree. The seams arrive as values.
     from dark_factory.orchestration.runner import RevisionResolver, StageExecutor
+    from dark_factory.ports import CiStageTogglePort
 
 # Exit codes of the CLI (contract cli.md).
 EXIT_OK = 0
@@ -644,12 +645,17 @@ def _doctor(args: DoctorArgs) -> int:
     return EXIT_INVALID_INPUT if report.has_errors else EXIT_OK
 
 
-def _serve_api(args: ApiServeArgs) -> int:
+def _serve_api(
+    args: ApiServeArgs,
+    *,
+    ci_toggles: "CiStageTogglePort | None" = None,
+    ci_repository: str | None = None,
+) -> int:
     # Imported here: cli.api imports ApiServeArgs and the exit codes from this
     # module, so a module-level import would be circular.
     from dark_factory.cli import api
 
-    return api.run_api_serve_command(args)
+    return api.run_api_serve_command(args, ci_toggles=ci_toggles, ci_repository=ci_repository)
 
 
 def _release_verify(args: ReleaseVerifyArgs) -> int:
@@ -665,15 +671,19 @@ def dispatch(
     *,
     executor: "StageExecutor | None" = None,
     revision_of: "RevisionResolver | None" = None,
+    ci_toggles: "CiStageTogglePort | None" = None,
+    ci_repository: str | None = None,
 ) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree).
 
     ``executor`` and ``revision_of`` are the optional binding seams of
-    ``factory run advance`` and are consumed only by that branch. They are values,
-    not imports: this module is core and must not name ``dark_factory.runtime``
-    (ADR-024 p.5), so the composition root (``runtime.entrypoint``) hands the
-    assembled bindings over as arguments. Every other command ignores them, and
-    both default to ``None`` — the deterministic stage path, as before.
+    ``factory run advance`` and are consumed only by that branch;
+    ``ci_toggles``/``ci_repository`` are the CI stage switchboard seam of
+    ``factory api serve`` (T059). They are values, not imports: this module is
+    core and must not name ``dark_factory.runtime`` (ADR-024 p.5), so the
+    composition root (``runtime.entrypoint``) hands the assembled bindings over
+    as arguments. Every other command ignores them, and all four default to
+    ``None`` — the deterministic stage path and the unconfigured API, as before.
     """
     match command:
         case StageRunArgs():
@@ -697,7 +707,7 @@ def dispatch(
         case DoctorArgs():
             return _doctor(command)
         case ApiServeArgs():
-            return _serve_api(command)
+            return _serve_api(command, ci_toggles=ci_toggles, ci_repository=ci_repository)
         case ReleaseVerifyArgs():
             return _release_verify(command)
         case _:
@@ -709,17 +719,27 @@ def main(
     *,
     executor: "StageExecutor | None" = None,
     revision_of: "RevisionResolver | None" = None,
+    ci_toggles: "CiStageTogglePort | None" = None,
+    ci_repository: str | None = None,
 ) -> int:
     """Run one command from ``argv``; return the process exit code.
 
     Not the console-script target any more: ``factory`` points at
     ``dark_factory.runtime.entrypoint:main``, the composition root that assembles
-    the runtime and passes ``executor``/``revision_of`` (ADR-025). This function
+    the runtime and passes ``executor``/``revision_of`` (ADR-025) and the CI
+    stage switchboard (``ci_toggles``/``ci_repository``, T059). This function
     stays the command tree's own entry point, usable without seams — ``python -m
     dark_factory.cli`` is the explicit core path, and both the wrapper and
     ``__main__.py`` raise ``SystemExit`` with the returned code.
 
-    Without ``executor``/``revision_of`` the deterministic stage path runs: this
+    Without ``executor``/``revision_of`` the deterministic stage path runs, and
+    without ``ci_toggles`` ``api serve`` reports the CI toggles unconfigured: this
     module cannot reach the composition root itself (ADR-024 p.5).
     """
-    return dispatch(parse_command(argv), executor=executor, revision_of=revision_of)
+    return dispatch(
+        parse_command(argv),
+        executor=executor,
+        revision_of=revision_of,
+        ci_toggles=ci_toggles,
+        ci_repository=ci_repository,
+    )
