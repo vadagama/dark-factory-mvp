@@ -63,6 +63,10 @@ flowchart LR
 | GET | `/changes/{change_id}/trace` | Полная SC-007-цепочка по всем run change | `ChangeTrace` | открыто |
 | GET | `/changes/{change_id}/approvals` | Решения по change | `Decision[]` | открыто |
 | POST | `/changes/{change_id}/approvals` | Запись version-bound решения оператора | `Decision`; 201, 200 replay, 409 | Bearer + `approvals:write` + роль `operator` |
+| GET | `/ci/stages` | Каталог этапов CI фабрики и текущее состояние их переключателей (T059, ADR-027) | `CiStagesView`; `available=false` + `reason`, когда контур не сконфигурирован | открыто |
+| PUT | `/ci/stages/{job}` | Включение/выключение одного этапа CI (идемпотентное целевое состояние) | `CiStageView`; 404 неизвестный этап, 502 ошибка GitHub, 503 не сконфигурировано | Bearer + `ci:write` + роль `operator` |
+
+`/ci/*` — единственные эндпоинты, которые ходят во внешнего провайдера (repository variables GitHub), а не в state store: каталог этапов берётся из кода (`dark_factory.ci.stages`), состояние — из переменных `CI_SKIP_<JOB>` репозитория фабрики. Неизвестный `job` — всегда 404: имя переменной выводит каталог, запрос не может назвать произвольную переменную. Без GitHub App (`DARK_FACTORY_GITHUB_*` + `DARK_FACTORY_GITHUB_REPOSITORY_SLUG`) чтение отдаёт каталог с `available=false`, а запись отвечает 503 — фиктивный выключатель не показывается.
 
 Тела и параметры:
 
@@ -71,6 +75,7 @@ flowchart LR
 | `Change` (тело) | `POST /changes` | доменный документ: `id`, `title`, `source` (tracker/console/cli/api), `product`, `risk_class` (R0–R4), опц. `external_ref`, `change_request` |
 | `ApprovalRequest` (тело) | `POST .../approvals` | `gate` (7 значений Gate), `outcome` (approved/rejected/waived), `subject_revision` — обязателен (min_length=1), опц. `comment`, `expected_state_revision` |
 | `Idempotency-Key` (заголовок) | оба POST | опционален; повтор возвращает прежний результат |
+| `CiStageToggleRequest` (тело) | `PUT /ci/stages/{job}` | `enabled` — строгий bool (`strict=True`): `"yes"`/`1` не коэрцятся, ответ 422 |
 | `limit` / `offset` | `GET /runs`, `GET /changes` | 1–200 (default 50) / ≥ 0 (default 0); сортировка `(created_at, id)` |
 | `status`, `stage` | `GET /runs` | значения `RunStatus` (8) и `Stage` (5); stage-фильтр — подзапрос по таблице `stage` |
 | `severity`, `status` | `GET /runs/{run_id}/findings` | `FindingSeverity` (4 значения), `FindingStatus` (4 значения) |
@@ -84,7 +89,7 @@ flowchart LR
 | Переменная среды | `DARK_FACTORY_API_TOKENS` |
 | Формат | JSON-массив записей `{token, actor, role, scopes}` |
 | Роли | только `operator` и `service` (иное значение — ошибка разбора конфига) |
-| Скоупы | `changes:write`, `approvals:write` |
+| Скоупы | `changes:write`, `approvals:write`, `ci:write` |
 | Заголовок | `Authorization: Bearer <token>`, схема без учёта регистра |
 | Хранение | только SHA-256-дайджесты; сравнение `hmac.compare_digest`; сырые токены не хранятся и не логируются |
 | Пустая/отсутствующая переменная | пустой store — любая мутация отвечает 401 (fail closed) |
@@ -97,6 +102,7 @@ flowchart LR
 | Заголовка нет, схема не Bearer, значение пустое или токен неизвестен | 401 + `WWW-Authenticate: Bearer`, detail «A valid bearer token is required» |
 | Токен валиден, скоуп не выдан | 403, detail «Scope 'changes:write' is required» (или 'approvals:write') |
 | Approval от роли `service` | 403, detail «The operator role is required» — агенты никогда не аппрувят |
+| Запись переключателя этапа CI от роли `service` | 403, detail «The operator role is required» — агенты не перенастраивают пайплайн, который их гейтит (ADR-027) |
 
 `ApiToken(actor, role, scopes)` возвращается зависимостью и попадает в аудит. Нюансы разбора заголовка: `Bearer` без значения — 401, схема сравнивается в нижнем регистре.
 
@@ -183,7 +189,9 @@ flowchart TD
 
 - [`tests/test_api_auth.py`](../../tests/test_api_auth.py) — AuthN/AuthZ и форма контракта без БД: 401/403, fail-closed пустого store, malformed-заголовки, RFC 7807-тела, состав путей OpenAPI;
 - [`tests/integration/test_api.py`](../../tests/integration/test_api.py) — сквозные сценарии против PostgreSQL (требует `DARK_FACTORY_TEST_DATABASE_URL`, без него пропускаются): intake/replay/external_ref-дедуп, идемпотентность и 409 approvals, агрегаты `RunCard`, канонический порядок trace, фильтры `/runs`, идемпотентность `stage_result` по attempt_id;
-- [`tests/test_chart_dark_factory.py`](../../tests/test_chart_dark_factory.py) — контракт деплоя API: пробы (`/openapi.json` liveness, `/api/v1/runs` readiness), `DATABASE_URL` из секрета, отсутствие токен-секрета по умолчанию, команда `factory api serve --host 0.0.0.0 --port 8000`.
+- [`tests/test_chart_dark_factory.py`](../../tests/test_chart_dark_factory.py) — контракт деплоя API: пробы (`/openapi.json` liveness, `/api/v1/runs` readiness), `DATABASE_URL` из секрета, отсутствие токен-секрета по умолчанию, команда `factory api serve --host 0.0.0.0 --port 8000`, опциональная обвязка `ciToggles` (slug + `envFrom` секрета App);
+- [`tests/test_api_ci_stages.py`](../../tests/test_api_ci_stages.py) — эндпоинты переключателей этапов CI: каталог и состояние, `available=false` без конфигурации, 401/403 (scope `ci:write` и роль `operator`), 404 неизвестного этапа, 502 провайдера, строгий bool в теле;
+- [`tests/test_adapters_github_variables.py`](../../tests/test_adapters_github_variables.py) — адаптер repository variables: пагинация, PATCH→POST при 404, идемпотентный DELETE, маппинг ошибок без эха токена.
 
 ## 10. Связанные решения
 
@@ -192,7 +200,9 @@ flowchart TD
 - [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge в MVP — только человек; approvals API — точка фиксации решений оператора перед release;
 - [ADR-014](../adr/ADR-014-react-uikit-storybook.md) — Console на React + Radix/shadcn — планируемый потребитель API;
 - [ADR-015](../adr/ADR-015-repository-boundaries.md) — wire format API = версионируемые run-record контракты;
-- [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — участие человека: решение approvals всегда `human`, автономным агентам approval недоступен.
+- [ADR-018](../adr/ADR-018-human-participation-autonomous-execution.md) — участие человека: решение approvals всегда `human`, автономным агентам approval недоступен;
+- [ADR-026](../adr/ADR-026-parameterizable-ci-stages.md) — переключатели этапов CI как repository variables: opt-out семантика и fail-safe;
+- [ADR-027](../adr/ADR-027-console-ci-stage-toggles.md) — `/ci/*`: каталог этапов в коде, `ci:write` + роль operator, fail-closed без конфигурации.
 
 ## 11. Связь с другими модулями
 

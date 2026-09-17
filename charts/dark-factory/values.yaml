@@ -33,6 +33,23 @@ auth:
   existingSecret: ""
   secretKey: DARK_FACTORY_API_TOKENS
 
+ciToggles:
+  # Optional: the CI stage toggles of the factory repository (T059, ADR-027).
+  # With a secret name the API pod receives the GitHub App credentials from it,
+  # so the console screen /ci can read and switch the repository variables
+  # behind the CI stages. The App installation needs the "Variables" repository
+  # permission (read/write) — it is the credential that matters here, not the
+  # operator token.
+  #
+  # The secret carries DARK_FACTORY_GITHUB_APP_ID,
+  # DARK_FACTORY_GITHUB_APP_PRIVATE_KEY and DARK_FACTORY_GITHUB_INSTALLATION_ID
+  # (the same trio as the runner, deploy/ci/README.md) and is created OUTSIDE
+  # git. Empty name = the endpoints report themselves unconfigured and the
+  # console shows the stage catalog with the controls disabled (fail-closed).
+  existingSecret: ""
+  # Slug (owner/name) of the repository whose CI stages the console controls.
+  repositorySlug: ""
+
 migrations:
   # Pre-install/pre-upgrade hook Job running the schema migrations.
   # Requires the image to ship alembic and migrations/ (T033 requirement).

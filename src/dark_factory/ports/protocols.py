@@ -122,6 +122,31 @@ class CIPort(Protocol):
 
 
 @runtime_checkable
+class CiStageTogglePort(Protocol):
+    """Repository-variable store of the CI stage toggles (T059, ADR-026/ADR-027).
+
+    Bound to one configured repository at construction: no request can point a
+    read or a write at another repository. The contract is deliberately
+    value-level — *which* value switches a stage off belongs to the catalog
+    (``dark_factory.ci.stages``), not to the provider — so any provider that
+    stores non-secret configuration variables can implement it.
+    """
+
+    async def values(self) -> Mapping[str, str]:
+        """Current values of the repository variables (name → value)."""
+        ...
+
+    async def set_value(self, variable: str, value: str | None) -> None:
+        """Set ``variable`` to ``value``, or delete it when ``value`` is ``None``.
+
+        Idempotent: deleting an absent variable and re-writing the same value
+        are both no-ops. Naming an unknown variable is the caller's bug — the
+        API gates every call through the catalog first.
+        """
+        ...
+
+
+@runtime_checkable
 class TrackerPort(Protocol):
     """External work tracker (Plane); unavailability must not block CLI/Console (FR-020)."""
 

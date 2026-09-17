@@ -3,6 +3,11 @@
 One adapter owns one authenticated HTTP client; the four ports it exposes —
 ``repository``, ``pull_requests``, ``pipelines`` and ``ci`` — share it, so
 installation tokens are fetched, cached and refreshed in exactly one place.
+When the configuration names a repository (``repository_slug``), it
+exposes ``ci_stage_toggles`` as well — the same client and the same
+installation token, now used to read and switch the CI stage variables of that
+repository (T059, ADR-027); without a slug that port stays ``None`` and the
+console is told the toggles are unconfigured (fail-closed).
 The token source and HTTP transport are injectable: tests bind the contract
 emulator (``httpx2.MockTransport``) and a static token, production wiring uses
 ``GitHubConfig.from_env`` with the GitHub App credentials.
@@ -21,6 +26,8 @@ from dark_factory.adapters.scm.github.config import GitHubConfig
 from dark_factory.adapters.scm.github.pipelines import GitHubPipelines
 from dark_factory.adapters.scm.github.pull_requests import GitHubPullRequests
 from dark_factory.adapters.scm.github.repository import GitHubRepository
+from dark_factory.adapters.scm.github.variables import GitHubCiStageToggles
+from dark_factory.ports import CiStageTogglePort
 
 
 class GitHubAdapter:
@@ -47,6 +54,11 @@ class GitHubAdapter:
         self.pull_requests = GitHubPullRequests(client)
         self.pipelines = GitHubPipelines(client)
         self.ci = GitHubCI(client, workflow_id=config.workflow_id)
+        self.ci_stage_toggles: CiStageTogglePort | None = (
+            GitHubCiStageToggles(client, slug=config.repository_slug)
+            if config.repository_slug
+            else None
+        )
 
     async def aclose(self) -> None:
         """Release the underlying HTTP connection pool."""

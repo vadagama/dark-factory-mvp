@@ -9,6 +9,8 @@ Optional pieces stay absent rather than degrading silently:
 
 - no ``DARK_FACTORY_LLM_*`` → no harness (``harness_of`` raises when asked);
 - no ``DARK_FACTORY_GITHUB_*`` → no repository/change-request ports;
+- no ``DARK_FACTORY_GITHUB_REPOSITORY_SLUG`` → no CI stage toggle port
+  (``ci_stage_toggles`` is ``None``; T059/ADR-027);
 - no ``ExecutionPort`` → no agent stage executor. The isolated-worktree adapter
   is not implemented yet (``docs/descriptions/execution.md`` §1: it arrives in
   the execution layer as a provider of T-012); until then the composition root
@@ -36,6 +38,7 @@ from dark_factory.orchestration.stages.agent import (
 )
 from dark_factory.orchestration.stages.tools import ToolFunction
 from dark_factory.ports import (
+    CiStageTogglePort,
     ExecutionPort,
     HarnessPort,
     MergeRequestPort,
@@ -78,6 +81,21 @@ class Runtime:
     def merge_requests(self) -> MergeRequestPort | None:
         """The change-request port, or ``None`` without a configured provider."""
         return None if self.github is None else self.github.pull_requests
+
+    @property
+    def ci_stage_toggles(self) -> CiStageTogglePort | None:
+        """CI stage toggles of the factory repository (T059, ADR-027).
+
+        ``None`` while no repository slug is configured: the console then shows
+        the stage catalog with the controls disabled instead of a switchboard
+        that cannot reach anything (fail-closed).
+        """
+        return None if self.github is None else self.github.ci_stage_toggles
+
+    @property
+    def ci_repository(self) -> str | None:
+        """Slug of the repository whose CI stages the console controls, when configured."""
+        return None if self.github_config is None else self.github_config.repository_slug
 
     def harness_of(self, profile: AgentProfile, tools: Sequence[ToolFunction]) -> HarnessPort:
         """Build the harness of one stage with the role's tools bound (ADR-007 p.3).

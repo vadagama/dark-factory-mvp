@@ -41,7 +41,13 @@ export function ErrorState({ message }: { message: string }) {
   );
 }
 
-export function Notice({ tone, children }: { tone: "success" | "error"; children: ReactNode }) {
+export function Notice({
+  tone,
+  children,
+}: {
+  tone: "success" | "error" | "warning";
+  children: ReactNode;
+}) {
   return (
     <p className={`notice notice--${tone}`} role={tone === "error" ? "alert" : "status"}>
       {children}

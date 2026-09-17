@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from "react-router";
 import { meta, factoryModeLabel } from "../lib/meta";
 
-/** App shell: same nav for all five screens, mode badge from the snapshot. */
+/** App shell: one nav for every screen, mode badge from the snapshot. */
 export function Layout() {
   const mode = meta.factory_mode;
   return (
@@ -17,6 +17,7 @@ export function Layout() {
           Изменения
         </NavLink>
         <NavLink to="/budgets">Бюджеты</NavLink>
+        <NavLink to="/ci">Этапы CI</NavLink>
         <NavLink to="/settings">Настройки</NavLink>
       </nav>
       <main className="layout__main">

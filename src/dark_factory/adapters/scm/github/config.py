@@ -18,6 +18,10 @@ Environment variables:
   is ``https://api.github.com``, GHES sets its own).
 - ``DARK_FACTORY_GITHUB_WORKFLOW_ID`` — workflow the CI port dispatches
   (optional; the default is ``factory.yml``, T-031 templates).
+- ``DARK_FACTORY_GITHUB_REPOSITORY_SLUG`` — ``owner/name`` of the repository
+  whose CI stage toggles the console controls (optional; T059/ADR-027). Absent
+  means the toggle endpoints report themselves unconfigured — fail-closed —
+  while every other GitHub-backed port keeps working.
 """
 
 import os
@@ -38,7 +42,10 @@ GITHUB_INSTALLATION_ID_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_INSTALLATION_I
 """Installation id of the App on the target repositories."""
 
 GITHUB_WORKFLOW_ID_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_WORKFLOW_ID"
-"""Workflow the CI port dispatches (default ``factory.yml``, T-031 templates)."""
+"""Workflow the CI port dispatches (default ``factory.yml``, T-031)."""
+
+GITHUB_REPOSITORY_SLUG_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_REPOSITORY_SLUG"
+"""``owner/name`` of the repository whose CI stage toggles are exposed (optional, T059)."""
 
 _REQUIRED_ENV_VARS: Final[tuple[str, ...]] = (
     GITHUB_APP_ID_ENV_VAR,
@@ -64,6 +71,9 @@ class GitHubConfig:
     installation_id: str | None = None
     private_key: str | None = None
     workflow_id: str = DEFAULT_WORKFLOW_ID
+    repository_slug: str | None = None
+    """Repository whose CI stage toggles the console controls (optional, T059);
+    ``None`` leaves ``GitHubAdapter.ci_stage_toggles`` unbuilt."""
 
     @classmethod
     def missing_env_vars(cls, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
@@ -83,4 +93,5 @@ class GitHubConfig:
             installation_id=(source.get(GITHUB_INSTALLATION_ID_ENV_VAR) or "").strip(),
             private_key=source.get(GITHUB_APP_PRIVATE_KEY_ENV_VAR) or "",
             workflow_id=(source.get(GITHUB_WORKFLOW_ID_ENV_VAR) or DEFAULT_WORKFLOW_ID).strip(),
+            repository_slug=(source.get(GITHUB_REPOSITORY_SLUG_ENV_VAR) or "").strip() or None,
         )

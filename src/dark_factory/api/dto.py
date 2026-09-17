@@ -15,6 +15,7 @@ from dark_factory.changes.enums import Gate
 from dark_factory.changes.findings import GateResult
 from dark_factory.changes.refs import ArtifactRef
 from dark_factory.changes.run import Change
+from dark_factory.ci.stages import CiStage, CiStageGroup, CiStageWeight
 
 
 class ErrorBody(BaseModel):
@@ -130,3 +131,57 @@ class ChangeTrace(BaseModel):
 
     change_id: str
     runs: list[RunTrace]
+
+
+class CiStageView(BaseModel):
+    """One CI stage of ``GET /ci/stages`` (T059, ADR-027).
+
+    ``enabled`` is ``True`` when the stage runs, ``False`` when its toggle
+    variable switches it off, and ``None`` when this contour cannot reach the
+    repository (``available=false``): an unknown state is reported as unknown
+    rather than guessed (fail-closed).
+    """
+
+    job: str
+    title: str
+    group: CiStageGroup
+    summary: str
+    local_command: str
+    weight: CiStageWeight
+    variable: str
+    enabled: bool | None = None
+
+    @classmethod
+    def of(cls, stage: CiStage, enabled: bool | None) -> "CiStageView":
+        """View of one catalog entry with its current (or unknown) state."""
+        return cls(
+            job=stage.job,
+            title=stage.title,
+            group=stage.group,
+            summary=stage.summary,
+            local_command=stage.local_command,
+            weight=stage.weight,
+            variable=stage.variable,
+            enabled=enabled,
+        )
+
+
+class CiStagesView(BaseModel):
+    """Response of ``GET /ci/stages``: the catalog plus the current toggle state."""
+
+    schema_version: int = 1
+    repository: str | None = None
+    available: bool
+    reason: str | None = None
+    stages: list[CiStageView]
+
+
+class CiStageToggleRequest(BaseModel):
+    """Body of ``PUT /ci/stages/{job}``: the wanted state, not an event (idempotent).
+
+    ``strict=True``: a toggle is a boolean, and pydantic must not coerce
+    ``"yes"`` or ``1`` into it — the state of a pipeline gate is not a place for
+    a lenient parse.
+    """
+
+    enabled: bool = Field(strict=True)

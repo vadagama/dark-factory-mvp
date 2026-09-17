@@ -19,7 +19,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from dark_factory.api.auth import ApiTokenStore
 from dark_factory.api.dto import ErrorBody
 from dark_factory.api.routes_changes import create_changes_router
+from dark_factory.api.routes_ci import create_ci_router
 from dark_factory.api.routes_runs import create_runs_router
+from dark_factory.ports import CiStageTogglePort
 
 API_PREFIX: Final[str] = "/api/v1"
 
@@ -79,13 +81,21 @@ def create_session_dependency(
 
 
 def create_app(
-    session_factory: sessionmaker[Session], tokens: ApiTokenStore | None = None
+    session_factory: sessionmaker[Session],
+    tokens: ApiTokenStore | None = None,
+    *,
+    ci_toggles: CiStageTogglePort | None = None,
+    ci_repository: str | None = None,
 ) -> FastAPI:
     """Build the API app over the given session factory and token store.
 
     ``tokens=None`` builds the store from ``DARK_FACTORY_API_TOKENS``; an
     absent variable yields an empty store, which fails closed on every
-    mutating request (ADR-009 p.7).
+    mutating request (ADR-009 p.7). ``ci_toggles`` is the repository-variable
+    port of the CI stage switches (T059, ADR-027): with ``None`` the ``/ci``
+    endpoints still serve the stage catalog but report themselves unavailable
+    and refuse writes — the core path (``python -m dark_factory.cli``) and any
+    contour without GitHub credentials stay honest instead of failing later.
     """
     token_store = tokens if tokens is not None else ApiTokenStore.from_env()
     session_dependency = create_session_dependency(session_factory)
@@ -99,6 +109,7 @@ def create_app(
     app.state.token_store = token_store
     app.include_router(create_runs_router(session_dependency), prefix=API_PREFIX)
     app.include_router(create_changes_router(session_dependency, token_store), prefix=API_PREFIX)
+    app.include_router(create_ci_router(token_store, ci_toggles, ci_repository), prefix=API_PREFIX)
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
     app.add_exception_handler(Exception, _unhandled_exception_handler)

@@ -3,7 +3,7 @@
  *
  * Auth rules (ADR-009 p.7 local contour, ADR-021 p.4):
  * - GET requests carry no token (reads are open, exposure minimized);
- * - POST requests attach `Authorization: Bearer <operator token>` and an
+ * - writes (POST/PUT) attach `Authorization: Bearer <operator token>` and an
  *   `Idempotency-Key` (UUID v4, generated once per logical operation).
  *
  * Errors: every failed response carries the RFC 7807-like `ErrorBody`;
@@ -11,7 +11,7 @@
  * "state_revision mismatch" (`isStateRevisionConflict`).
  */
 
-import type { ApprovalRequest, Change, ChangeCard, ChangeTrace, Decision, Evidence, Finding, FindingSeverity, FindingStatus, GateResult, RunCard, RunSummary, RunTrace, StageResult, ErrorBody } from "./types";
+import type { ApprovalRequest, Change, ChangeCard, ChangeTrace, CiStage, CiStages, Decision, Evidence, Finding, FindingSeverity, FindingStatus, GateResult, RunCard, RunSummary, RunTrace, StageResult, ErrorBody } from "./types";
 import { getToken } from "./token";
 import { uuidV4 } from "../lib/id";
 
@@ -56,7 +56,7 @@ export class ApiNetworkError extends ApiError {
 export interface ClientOptions {
   /** Base URL of the API, default "/api/v1" (same origin, dev proxy / nginx). */
   baseUrl?: string;
-  /** Idempotency-Key for POSTs; a UUID v4 is generated when omitted. */
+  /** Idempotency-Key for writes; a UUID v4 is generated when omitted. */
   idempotencyKey?: string;
   /** Test seam: replaces global fetch. */
   fetchImpl?: typeof fetch;
@@ -76,7 +76,7 @@ export class ApiClient {
   }
 
   private async request<T>(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PUT",
     path: string,
     init?: { body?: unknown; params?: Record<string, string | number | undefined>; idempotencyKey?: string },
   ): Promise<T> {
@@ -92,8 +92,8 @@ export class ApiClient {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(init.body);
     }
-    if (method === "POST") {
-      // Writes only: the token is never attached to reads (ADR-021 p.4).
+    if (method !== "GET") {
+      // Writes only (POST/PUT): the token is never attached to reads (ADR-021 p.4).
       const token = this.tokenProvider();
       if (token) {
         headers.Authorization = `Bearer ${token}`;
@@ -206,6 +206,22 @@ export class ApiClient {
       body,
       idempotencyKey: options?.idempotencyKey,
     });
+  }
+
+  // -- ci stages (T058/ADR-026) -------------------------------------------
+
+  /** The current on/off state of every factory CI stage. */
+  listCiStages(): Promise<CiStages> {
+    return this.request("GET", "/ci/stages");
+  }
+
+  /**
+   * Switch one stage on/off. The body is a target state, not an event — the
+   * call is idempotent, so no retry logic is needed. Requires a token with
+   * `ci:write` and the operator role; the updated `CiStage` is returned.
+   */
+  setCiStageEnabled(job: string, enabled: boolean): Promise<CiStage> {
+    return this.request("PUT", `/ci/stages/${encodeURIComponent(job)}`, { body: { enabled } });
   }
 }
 

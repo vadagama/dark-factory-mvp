@@ -9,6 +9,8 @@ import type {
   Change,
   ChangeCard,
   ChangeTrace,
+  CiStage,
+  CiStages,
   Decision,
   Evidence,
   Finding,
@@ -197,6 +199,59 @@ const evidence1: Evidence = {
   available: true,
 };
 
+// CI stage toggles (T059/ADR-026); one stage is off so the bulk action and the
+// "выключен" state are exercised by the smoke suite.
+const ciStageFixtures: CiStage[] = [
+  {
+    job: "lint",
+    title: "Ruff lint + format",
+    group: "python",
+    summary: "Стиль, импорты и форматирование (ruff check и ruff format --check).",
+    local_command: "uv run ruff check . && uv run ruff format --check .",
+    weight: "light",
+    variable: "CI_SKIP_LINT",
+    enabled: true,
+  },
+  {
+    job: "factory-us1-parity",
+    title: "Factory US1 parity",
+    group: "factory",
+    summary: "factory doctor и stage run по фикстуре — walking skeleton без LLM.",
+    local_command: "uv run factory doctor --json",
+    weight: "medium",
+    variable: "CI_SKIP_FACTORY_US1_PARITY",
+    enabled: true,
+  },
+  {
+    job: "console-e2e",
+    title: "Playwright smoke",
+    group: "console",
+    summary: "Сборка, vite preview и smoke-сценарии с установкой Chromium.",
+    local_command: "cd console && npx playwright install chromium && npm run e2e",
+    weight: "heavy",
+    variable: "CI_SKIP_CONSOLE_E2E",
+    enabled: false,
+  },
+  {
+    job: "console-image",
+    title: "Console image",
+    group: "image",
+    summary: "gitleaks, сборка бандла, multi-arch образ консоли, trivy и SBOM.",
+    local_command: "cd console && npm ci && npm run build && docker build -t dark-factory-console:local .",
+    weight: "heavy",
+    variable: "CI_SKIP_CONSOLE_IMAGE",
+    enabled: true,
+  },
+];
+
+const ciStagesFixture: CiStages = {
+  schema_version: 1,
+  repository: "vadagama/dark-factory-mvp",
+  available: true,
+  reason: null,
+  stages: ciStageFixtures,
+};
+
 function problem(status: number, title: string, detail: string): object {
   return { type: "about:blank", title, status, detail };
 }
@@ -208,21 +263,38 @@ export interface CapturedPost {
   headers: Record<string, string>;
 }
 
+/** Recorded write requests (POST/PUT), for assertions in the specs. */
+export interface CapturedWrite extends CapturedPost {
+  method: string;
+}
+
 // Routes every request under the api/v1 path prefix to the synthetic
-// dataset. Returns the capture list of POSTs made by the app under test.
-export async function stubApi(page: Page): Promise<{ posts: CapturedPost[] }> {
+// dataset. Returns the captured POSTs and all writes (POST/PUT) made by the
+// app under test.
+export async function stubApi(
+  page: Page,
+): Promise<{ posts: CapturedPost[]; writes: CapturedWrite[] }> {
   const posts: CapturedPost[] = [];
+  const writes: CapturedWrite[] = [];
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const { pathname } = new URL(request.url());
     const method = request.method();
 
-    if (method === "POST") {
-      posts.push({
+    if (method === "POST" || method === "PUT") {
+      const capture = {
+        method,
         pathname,
         body: request.postDataJSON(),
         headers: request.headers(),
-      });
+      };
+      writes.push(capture);
+      if (method === "POST") {
+        posts.push(capture);
+      }
+    }
+
+    if (method === "POST") {
       if (pathname === "/api/v1/changes") {
         await route.fulfill({ status: 201, json: request.postDataJSON() });
         return;
@@ -232,6 +304,24 @@ export async function stubApi(page: Page): Promise<{ posts: CapturedPost[] }> {
         return;
       }
       await route.fulfill({ status: 404, json: problem(404, "Not Found", `unmatched POST ${pathname}`) });
+      return;
+    }
+
+    if (method === "PUT") {
+      // CI stage toggle: a target state, answered with the single updated stage.
+      const prefix = "/api/v1/ci/stages/";
+      if (pathname.startsWith(prefix)) {
+        const job = decodeURIComponent(pathname.slice(prefix.length));
+        const stage = ciStagesFixture.stages.find((candidate) => candidate.job === job);
+        if (stage === undefined) {
+          await route.fulfill({ status: 404, json: problem(404, "Not Found", `unknown stage ${job}`) });
+          return;
+        }
+        const body = request.postDataJSON() as { enabled: boolean };
+        await route.fulfill({ status: 200, json: { ...stage, enabled: body.enabled } });
+        return;
+      }
+      await route.fulfill({ status: 404, json: problem(404, "Not Found", `unmatched PUT ${pathname}`) });
       return;
     }
 
@@ -252,6 +342,7 @@ export async function stubApi(page: Page): Promise<{ posts: CapturedPost[] }> {
       "/api/v1/runs/run_demo_002/findings": [],
       "/api/v1/runs/run_demo_001/evidence": [evidence1],
       "/api/v1/runs/run_demo_002/evidence": [],
+      "/api/v1/ci/stages": ciStagesFixture,
     };
     const body = getRoutes[pathname];
     if (body === undefined) {
@@ -260,7 +351,7 @@ export async function stubApi(page: Page): Promise<{ posts: CapturedPost[] }> {
     }
     await route.fulfill({ status: 200, json: body });
   });
-  return { posts };
+  return { posts, writes };
 }
 
 export const E2E_TOKEN = "synthetic-e2e-operator-token";

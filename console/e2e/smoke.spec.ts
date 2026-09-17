@@ -144,3 +144,30 @@ test("screen 5: settings manage the masked token and show mode and profiles", as
   await expect(profiles).toContainText("Product");
   await expect(profiles).toContainText("Quality");
 });
+
+test("screen 6: CI stages list with switches and a stage toggle PUT", async ({ page }) => {
+  const { writes } = await stubApi(page);
+  await page.goto("/ci");
+
+  await expect(page.getByRole("heading", { name: "Этапы CI" })).toBeVisible();
+  await expect(page.getByTestId("ci-repository")).toContainText("vadagama/dark-factory-mvp");
+  await expect(page.getByTestId("ci-safety-banner")).toContainText("Перед merge верните");
+
+  await expect(page.getByTestId("ci-stage-lint")).toContainText("Ruff lint + format");
+  await expect(page.getByTestId("ci-stage-lint")).toContainText("CI_SKIP_LINT");
+  await expect(page.getByText("Python-гейты")).toBeVisible();
+  await expect(page.getByText("Factory-гейты (dogfooding)")).toBeVisible();
+  await expect(page.getByText("Console-гейты")).toBeVisible();
+  await expect(page.getByText("Доверенные сборки образов")).toBeVisible();
+  await expect(page.getByTestId("ci-stage-state-console-e2e")).toHaveText("выключен");
+
+  const lintSwitch = page.getByRole("switch", { name: "Переключатель этапа lint" });
+  await expect(lintSwitch).toHaveAttribute("aria-checked", "true");
+  await lintSwitch.click();
+
+  await expect(page.getByTestId("ci-stage-state-lint")).toHaveText("выключен");
+  const toggle = writes.find((write) => write.pathname === "/api/v1/ci/stages/lint");
+  expect(toggle).toBeDefined();
+  expect(toggle?.method).toBe("PUT");
+  expect(toggle?.body).toEqual({ enabled: false });
+});
