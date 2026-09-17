@@ -114,6 +114,9 @@ def gate_resolved(observation: GateObservation | None, *, stage: Stage) -> bool:
     """
     if observation is None:
         return False
+    # Release resolves only through release facts, never pipeline observations.
+    if stage is Stage.RELEASE:
+        return False
     if observation.merged:
         return stage is Stage.REVIEW_VERIFICATION
     if observation.pipeline_status == _PIPELINE_SUCCESS:

@@ -118,6 +118,23 @@ def test_gate_resolved_truth_table(
     assert gate_resolved(observation, stage=Stage.REVIEW_VERIFICATION) is review
 
 
+@pytest.mark.parametrize(
+    ("pipeline_status", "merged"),
+    [
+        ("success", False),
+        ("failure", False),
+        (None, True),
+    ],
+)
+def test_the_release_wait_never_resolves_from_pipeline_observations(
+    pipeline_status: str | None, merged: bool
+) -> None:
+    # Release resolves only through release facts, never pipeline observations.
+    observation = GateObservation(head_sha=HEAD, merged=merged, pipeline_status=pipeline_status)
+
+    assert gate_resolved(observation, stage=Stage.RELEASE) is False
+
+
 def test_construction_resolution_passes_the_machine_gates_at_the_head_sha() -> None:
     """A green pipeline at the head SHA passes every machine gate of the stage (FR-009)."""
     resolution = _build(
