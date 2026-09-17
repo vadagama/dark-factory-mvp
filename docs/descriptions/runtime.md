@@ -52,12 +52,13 @@ dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
         └─────► cli.main.main(argv, …) ──► run_advance_command ──► advance_run ──► StageExecutor
 ```
 
-Точка входа процесса — `dark_factory.runtime.entrypoint:main` (console-script `factory` в `pyproject [project.scripts]`, ADR-025). Модуль — **связывание, а не логика** (ADR-024 п.5): он разбирает команду через `cli.main.parse_command` и только для `run advance` собирает runtime из окружения процесса (`build_runtime()`), после чего вызывает `cli.main.main(argv, executor=…, revision_of=…)`. Швы протащены значениями: `cli.main.main` → `dispatch` → `_advance_run` → `cli.runner.run_advance_command`. Типы `StageExecutor`/`RevisionResolver` живут в `orchestration.runner` и подключены в CLI под `TYPE_CHECKING`: модуль остаётся core и не тянет драйвер в свой импорт.
+Точка входа процесса — `dark_factory.runtime.entrypoint:main` (console-script `factory` в `pyproject [project.scripts]`, ADR-025). Модуль — **связывание, а не логика** (ADR-024 п.5): он разбирает команду через `cli.main.parse_command` и собирает runtime из окружения процесса (`build_runtime()`) только для команд, которым нужны биндинги: `run advance` (исполнитель стадии и резолвер ревизии) и `api serve` (переключатели этапов CI, T059), после чего вызывает `cli.main.main(argv, …)` с соответствующими биндингами. Швы протащены значениями: `cli.main.main` → `dispatch` → `_advance_run` → `cli.runner.run_advance_command`. Типы `StageExecutor`/`RevisionResolver` живут в `orchestration.runner` и подключены в CLI под `TYPE_CHECKING`: модуль остаётся core и не тянет драйвер в свой импорт.
 
 Композиция **ленивая по команде**:
 
-- `run advance` — единственная команда, чей рабочий путь потребляет швы. Runtime собирается, швы передаются, а собранные адаптеры освобождаются в `finally` (`asyncio.run(runtime.aclose())`) — в том числе когда команда завершилась ошибкой;
-- `doctor`, `stage run`, `run status`, `reconcile`, outbox-команды, `api serve`, `release verify` — зависят только от core: runtime не собирается, окружение сверх нужного самой команде не читается, поведение — ровно как у CLI;
+- `run advance` — рабочий путь потребляет швы `executor`/`revision_of`. Runtime собирается, швы передаются, а собранные адаптеры освобождаются в `finally` (`asyncio.run(runtime.aclose())`) — в том числе когда команда завершилась ошибкой;
+- `api serve` — собирает runtime ради переключателей этапов CI (T059, ADR-027): биндинги `ci_toggles`/`ci_repository` передаются в CLI аргументом (значения, не импорты), runtime освобождается в `finally`; без `DARK_FACTORY_GITHUB_*` и `DARK_FACTORY_GITHUB_REPOSITORY_SLUG` адаптер не строится, и `/ci/*` честно отвечают «не сконфигурировано»;
+- `doctor`, `stage run`, `run status`, `reconcile`, outbox-команды, `release verify` — зависят только от core: runtime не собирается, окружение сверх нужного самой команде не читается, поведение — ровно как у CLI;
 - `python -m dark_factory.cli` — **явный core-путь**: та же команда без сборки процесса (`executor`/`revision_of` = `None`, детерминированный исполнитель).
 
 `advance_run` и `cli.runner.run_advance_command` имеют необязательные швы `executor` и `revision_of`; без них работает детерминированный путь (`waiting`/`blocked`) и digest снапшота как ревизия — поведение среза S1 не меняется, и `run_advance_command` остаётся вызываемым напрямую.
@@ -75,7 +76,7 @@ dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
 
 ## 6. Где искать проверки
 
-- [`test_runtime_entrypoint.py`](../../tests/test_runtime_entrypoint.py) — точка входа процесса: `run advance` собирает runtime и передаёт швы в CLI, runtime закрывается (в том числе при ошибке команды), команда без швов runtime не собирает и швов не передаёт, ошибка разбора не собирает runtime, `cli.main` доносит швы до `runner.run_advance_command`, а без швов ведёт себя как раньше;
+- [`test_runtime_entrypoint.py`](../../tests/test_runtime_entrypoint.py) — точка входа процесса: `run advance` и `api serve` собирают runtime и передают свои биндинги в CLI, runtime закрывается (в том числе при ошибке команды), команда без связывания runtime не собирает и биндингов не передаёт, ошибка разбора не собирает runtime, `cli.main` доносит швы до `runner.run_advance_command`, а биндинги этапов CI — до `cli.api.run_api_serve_command`, и без швов ведёт себя как раньше;
 - [`test_runtime_composition.py`](../../tests/test_runtime_composition.py) — пустая и полная конфигурация, сборка исполнителя и её отсутствие без `ExecutionPort`, привязка инструментов роли к harness, громкий отказ `harness_of`, fail-closed telemetry, `aclose`;
 - [`test_import_boundaries.py`](../../tests/test_import_boundaries.py) — allowlist `runtime` в правиле A, запрет обратного ребра (правило D: ядро вне `runtime` — `dark_factory.cli`, `dark_factory.orchestration` и т.п. — не импортирует `runtime` и его подпакеты; `adapters → runtime` — правило B) и запрет соседям (`dark_factory.cli` и т.п.) импортировать адаптеры;
 - [`test_orchestration_agent_stage.py`](../../tests/test_orchestration_agent_stage.py) — агентный исполнитель и инструменты, которые `runtime` связывает.
