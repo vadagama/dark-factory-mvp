@@ -103,6 +103,17 @@ class CIPort(Protocol):
 
 Провайдер: GitHub Actions (MVP), GitLab CI (T-034).
 
+## CiStageTogglePort
+
+```python
+@runtime_checkable
+class CiStageTogglePort(Protocol):
+    async def values(self) -> Mapping[str, str]: ...
+    async def set_value(self, variable: str, value: str | None) -> None: ...
+```
+
+Провайдер: GitHub repository variables (MVP, T059/ADR-027). Порт **привязан к одному репозиторию при конструировании** — запрос не может перенаправить чтение или запись. `set_value(variable, None)` удаляет переменную; значение, выключающее этап, знает каталог `dark_factory.ci.stages` (ADR-026), а не порт. Нужное право App — Variables (read/write).
+
 ## TrackerPort
 
 ```python
