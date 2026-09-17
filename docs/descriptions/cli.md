@@ -76,7 +76,7 @@ flowchart TD
 Что пока **не подключено** к production-обвязке (явные заглушки и упрощения):
 
 - `stage resume` — парсится, но всегда возвращает exit 2; его будущий читатель `load_run_record` уже есть;
-- `run advance` исполняет ровно одну стадию; исполнитель инжектируется. `runtime.entrypoint` передаёт собранный агентный `StageExecutor` только когда окружение полное, а реального адаптера `ExecutionPort` пока нет (TD-022), поэтому в проде `agent_stage_executor()` = `None` и работает детерминированный исполнитель (`orchestration/stages/`): честный исход — `waiting`/`blocked`, `succeeded` без гейтов по product SHA не достигается (FR-009);
+- `run advance` исполняет ровно одну стадию; исполнитель инжектируется. `runtime.entrypoint` передаёт собранный агентный `StageExecutor` только когда окружение полное (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*` и workspace-переменные `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` для реального адаптера `WorktreeExecution`, TD-022): без полного набора `agent_stage_executor()` = `None` и работает детерминированный исполнитель (`orchestration/stages/`) — честный исход `waiting`/`blocked`; `succeeded` без гейтов по product SHA не достигается (FR-009). Живой прогон агентной стадии — T-072;
 - `stage run` не пишет в PostgreSQL state store — персистентность только через `--evidence-dir`; run-стейт подключится вместе с durable state-store wiring;
 - бюджет стадии — дефолтный `BudgetSnapshot` без накопленного usage, `attempt_number` всегда 1, `usage = None` в StageResult;
 - `pack_name`/`pack_version`/`blueprint_version`/`gitops_commit`/`okf_revision` в манифесте остаются незаполненными;

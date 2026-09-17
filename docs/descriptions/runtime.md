@@ -14,8 +14,8 @@
 
 | Входит | Не входит |
 |---|---|
-| Чтение конфигураций адаптеров (`HarnessConfig`, `GitHubConfig`, `TelemetryConfig`) | Решения о переходах, статусах, гейтах, риске |
-| Сборка адаптеров (`PydanticAIHarness`, `GitHubAdapter`, `OtlpTelemetryAdapter`) | Драйвер запуска (`orchestration/runner`) — он зависит только от портов |
+| Чтение конфигураций адаптеров (`HarnessConfig`, `GitHubConfig`, `TelemetryConfig`, `WorktreeExecutionConfig`) | Решения о переходах, статусах, гейтах, риске |
+| Сборка адаптеров (`PydanticAIHarness`, `GitHubAdapter`, `OtlpTelemetryAdapter`, `WorktreeExecution`) | Драйвер запуска (`orchestration/runner`) — он зависит только от портов |
 | Привязка инструментов роли к harness (`Runtime.harness_of`) | Реализации инструментов (`orchestration/stages/tools`) — это ядро |
 | Выдача швов рабочего пути: `agent_stage_executor()`, `revision_of()` | Персистентность, идемпотентность, транзакции — это `orchestration/state` |
 | Точка входа процесса `factory` (`runtime.entrypoint:main`, ADR-025): ленивая сборка под команду и передача швов в CLI | Логика команд, разбор аргументов, коды выхода — это `cli/` |
@@ -30,9 +30,9 @@
 |---|---|
 | `DARK_FACTORY_LLM_*` | `harness_config` пуст; `harness_of` бросает `RuntimeNotConfiguredError` с подсказкой |
 | `DARK_FACTORY_GITHUB_*` | Нет `GitHubAdapter` → `repository`/`merge_requests`/`revision_of()` — `None` |
-| `ExecutionPort` (реализации пока нет, TD-022) | `agent_stage_executor()` — `None` |
+| `DARK_FACTORY_WORKSPACE_ROOT` / `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` | Нет `WorktreeExecution` (TD-022) → `agent_stage_executor()` — `None` |
 
-Исключение — telemetry: её конфигурация **fail-closed** (`TelemetryConfig.from_env` бросает `ValueError` на неизвестный exporter или `file` без пути), потому что тихая подмена скрыла бы опечатку; адаптер присутствует всегда (в MVP — console).
+Исключение — telemetry: её конфигурация **fail-closed** (`TelemetryConfig.from_env` бросает `ValueError` на неизвестный exporter или `file` без пути), потому что тихая подмена скрыла бы опечатку; адаптер присутствует всегда (в MVP — console). `WorktreeExecutionConfig` fail-closed в той же степени, в какой это возможно: незаданные переменные — отсутствующий адаптер, а заданные криво (относительный путь, нечисловой таймаут) — `ValueError`, не тихое игнорирование.
 
 `Runtime` — frozen dataclass и пассивный держатель адаптеров. Его методы — только связывание:
 
@@ -71,7 +71,7 @@ dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
 - Команда, которой связывание не нужно (`doctor`, `stage run`, `run status`, …), — runtime не собирается, `build_runtime` не вызывается.
 - Ошибка разбора команды (`factory bogus`, недопустимое значение, `--help`) — argparse выходит с кодом 2/0 **до** решения о сборке: runtime не собирается.
 - Сбой внутри `run advance` (исключение из CLI) — runtime всё равно закрыт (`finally`), ресурсы адаптеров не утекают.
-- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of` = `None`, и команда идёт детерминированным путём (TD-022: реального адаптера `ExecutionPort` пока нет).
+- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of` = `None`, и команда идёт детерминированным путём. Агентный путь активируется, когда полный набор (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*`, `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT`) задан; работа в worktree идёт от локального зеркала, подготовленного оператором (TD-022), живой прогон на пилотном репозитории — T-072.
 
 ## 6. Где искать проверки
 

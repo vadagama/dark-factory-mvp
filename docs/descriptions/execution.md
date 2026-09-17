@@ -12,22 +12,55 @@
 `ArtifactStorePort`: в Git едет только индекс.
 
 Вторая подсистема слоя — провайдер `ExecutionPort` (изолированный workspace,
-исполнение команд, evidence; T-012). Контракт уже описан в слое портов и
-расширен аддитивно дважды: `write_file` (T-092 S2) — write-половина
-`collect_evidence`, через которую инструменты роли правят рабочее дерево, и
-`collect_changes` (T-092, TD-024) — read-половина публикации: копия текущего
-файлового множества workspace для `RepositoryPort.publish_commit`; реального
-адаптера пока нет (TD-022), в P0 живёт in-memory фейк. Роль
+исполнение команд, evidence; T-012). Контракт описан в слое портов и расширен
+аддитивно дважды: `write_file` (T-092 S2) — write-половина `collect_evidence`,
+через которую инструменты роли правят рабочее дерево, и `collect_changes`
+(T-092, TD-024) — read-половина публикации: дельта workspace относительно
+закреплённой ревизии для `RepositoryPort.publish_commit`. Реальный адаптер —
+`workspace.py`: `WorktreeExecution` изолирует каждую стадию в git-worktree,
+изготовленном от закреплённой ревизии (TD-022); в P0 рядом живёт in-memory фейк
+и контрактная сюита (парамeтризована по обоим биндингам). Роль
 `idempotency_key` задана по методам (ADR-015 п.3, `protocols.py`): replay-дедуп —
 только у `prepare_workspace`, `write_file` идемпотентен по состоянию (last write
 wins), а у `run_command`/`collect_evidence`/`collect_changes` ключ — только
 адрес в effect ledger/аудите: они читают текущее состояние и не кэшируют
 результат по ключу.
 
+### 1.1. `WorktreeExecution` — реальный адаптер (TD-022)
+
+`execution/workspace.py` изолирует каждую агентную попытку в git-worktree:
+
+- **Источник — локальное зеркало, не сеть.** Оператор готовит зеркала под
+  `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` в разметке `<provider>/<slug>` (тот же
+  оператор-prepared-checkout паттерн, что `DARK_FACTORY_RUNS_ROOT`); адаптер
+  делает `git fetch origin` (если remote есть) и `git worktree add --detach`
+  от закреплённой ревизии в `DARK_FACTORY_WORKSPACE_ROOT/workspaces/<id>`.
+  Клонирование с credentials — явный non-goal MVP (путь к worktree остаётся
+  без секретов, ADR-009); режим «клон с провайдера» — вместе с подами T-091.
+- **Идемпотентность replay без состояния.** Идентификатор и каталог workspace
+  выводятся из `idempotency_key` детерминированно (ограниченный слаг + префикс
+  sha256 полного ключа), поэтому replay — в том числе после холодного
+  рестарта — адресует тот же каталог: валидный worktree переиспользуется как
+  есть (правки агента переживают retry), сломанный пересоздаётся от
+  закреплённой ревизии — replay всегда сходится к пригодному workspace.
+- **`collect_changes` — дельта, не дерево.** `git status --porcelain=v1 -z`
+  относительно HEAD worktree (закреплён на ревизии запроса): свежий workspace
+  пуст — «нет изменений» остаётся решением стадии (TD-024); удаления
+  пропускаются — файловое множество их не выражает (MVP-ограничение).
+- **Гигиена и границы.** Сбои git поднимаются value-free `WorkspaceError`
+  (текст провайдера не доходит до blocked-причины — ADR-009); пути
+  `write_file`/`collect_evidence` проверяются на выход за пределы workspace
+  (включая symlink-escape); `run_command` исполняет argv без shell с таймаутом
+  (`DARK_FACTORY_WORKSPACE_COMMAND_TIMEOUT`, по умолчанию 600 с) и лимитом
+  вывода 1 МиБ на поток; конфигурация без заданных обязательных переменных
+  означает отсутствие адаптера (composition root честно отдаёт `None`),
+  заданные криво — fail-closed `ValueError`.
+
 ## 2. Состав пакета
 
 | Модуль | Ответственность |
 |---|---|
+| `workspace.py` | `WorktreeExecution` (TD-022): git-worktree от закреплённой ревизии, `write_file` с path safety, `run_command` с таймаутом и лимитом вывода, `collect_evidence`, `collect_changes` — дельта относительно ревизии; `WorktreeExecutionConfig.from_env` |
 | `runs/store.py` | `RunRecordStore`: запись, чтение, поиск, индекс evidence, проверка цепочки, производные представления (`build_usage_summary`, `render_decisions`) |
 | `runs/models.py` | `RunEvidenceIndex`/`RunEvidenceEntry`, `RunUsageSummary`, `RunRecordRef`, `PublishResult` |
 | `runs/layout.py` | Partitioning `<root>/runs/<YYYY>/<MM>/<change>/<run>` и безопасность путей |
@@ -148,6 +181,20 @@ ADR-009 п.9) и `standard` для остальных.
   ничего не записано.
 
 ## 9. Где искать проверки
+
+`tests/test_execution_workspace.py` — `WorktreeExecution`: изготовление
+worktree от закреплённой ревизии, replay-идемпотентность (тот же ключ → тот же
+workspace, в том числе после удаления каталога), отказы (нет зеркала,
+неизвестная ревизия), path safety записи, таймаут и лимит вывода команд,
+dельта `collect_changes` (свежий workspace пуст, удаления пропускаются);
+
+`tests/contract/test_execution_port.py` — контрактная сюита `ExecutionPort`,
+парамeтризованная по биндингам fake/worktree: replay-дедуп `prepare_workspace`,
+last-write-wins `write_file`, чтение текущего состояния (не кэш по ключу),
+хешированная evidence, пустая дельта свежего workspace;
+
+`tests/test_runtime_composition.py` — сборка `WorktreeExecution` из окружения,
+приоритет явной инъекции, fail-closed на кривых путях.
 
 `tests/test_execution_runs.py` — разметка и path safety, идемпотентность,
 immutability, скрины секретов и размера, цепочка evidence, checksum-проверка,

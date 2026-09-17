@@ -7,6 +7,8 @@ holds no behaviour of its own.
 """
 
 import asyncio
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +17,11 @@ from dark_factory.adapters.harness import PydanticAIHarness
 from dark_factory.adapters.scm.github import GitHubAdapter, StaticTokenProvider
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter
 from dark_factory.agents.profiles.registry import DEVELOP_PROFILE
+from dark_factory.execution import (
+    WORKSPACE_MIRROR_ROOT_ENV_VAR,
+    WORKSPACE_ROOT_ENV_VAR,
+    WorktreeExecution,
+)
 from dark_factory.orchestration.stages.agent import AgentStageExecutor, ScmRevision
 from dark_factory.orchestration.stages.tools import WorkspaceTools
 from dark_factory.ports import WorkspaceRequest
@@ -35,6 +42,44 @@ GITHUB_ENV = {
 
 def _static_tokens() -> StaticTokenProvider:
     return StaticTokenProvider("installation-token")
+
+
+def _git(cwd: Path, *argv: str) -> None:
+    """Run one git command in ``cwd`` (local repository, no network)."""
+    subprocess.run(
+        ("git", "-C", str(cwd), "-c", "commit.gpgsign=false", *argv),
+        check=True,
+        capture_output=True,
+    )
+
+
+def _seeded_mirror(tmp_path: Path) -> Path:
+    """An operator-prepared local mirror of the product repository (T-092)."""
+    source = tmp_path / "mirror" / "github" / "small" / "pilot"
+    source.mkdir(parents=True)
+    _git(source, "init", "-b", "main")
+    (source / "docs").mkdir()
+    (source / "docs" / "note.md").write_bytes(b"note\n")
+    _git(source, "add", ".")
+    _git(
+        source,
+        "-c",
+        "user.email=factory@example.com",
+        "-c",
+        "user.name=Dark Factory",
+        "commit",
+        "-m",
+        "seed",
+    )
+    return tmp_path / "mirror"
+
+
+def _workspace_env(tmp_path: Path, mirror_root: Path) -> dict[str, str]:
+    """A complete workspace configuration: absolute workspace and mirror roots."""
+    return {
+        WORKSPACE_ROOT_ENV_VAR: str(tmp_path / "workspaces-root"),
+        WORKSPACE_MIRROR_ROOT_ENV_VAR: str(mirror_root),
+    }
 
 
 def test_unconfigured_runtime_is_valid_but_has_no_provider_or_harness() -> None:
@@ -59,6 +104,7 @@ def test_configured_runtime_assembles_the_provider_ports() -> None:
 
 
 def test_complete_runtime_builds_the_agent_stage_executor() -> None:
+    # An explicitly injected execution port wins over the environment.
     runtime = build_runtime(
         env={**LLM_ENV, **GITHUB_ENV},
         execution=FakeExecution(),
@@ -70,10 +116,51 @@ def test_complete_runtime_builds_the_agent_stage_executor() -> None:
 
 
 def test_executor_needs_the_execution_port_as_well() -> None:
-    # The isolated-workspace adapter does not exist yet: a runtime without it
-    # cannot run an agent stage and says so instead of failing later.
+    # Without the workspace configuration the worktree adapter stays absent:
+    # a runtime without it cannot run an agent stage and says so instead of
+    # failing later.
     runtime = build_runtime(env={**LLM_ENV, **GITHUB_ENV}, token_provider=_static_tokens())
+    assert runtime.execution is None
     assert runtime.agent_stage_executor() is None
+
+
+def test_workspace_configuration_builds_the_worktree_execution_adapter(tmp_path: Path) -> None:
+    mirror_root = _seeded_mirror(tmp_path)
+
+    runtime = build_runtime(
+        env={**LLM_ENV, **GITHUB_ENV, **_workspace_env(tmp_path, mirror_root)},
+        token_provider=_static_tokens(),
+    )
+
+    assert isinstance(runtime.execution, WorktreeExecution)
+    assert runtime.agent_stage_executor() is not None
+
+
+def test_explicit_execution_injection_wins_over_the_environment(tmp_path: Path) -> None:
+    injected = FakeExecution()
+
+    runtime = build_runtime(
+        env={**LLM_ENV, **GITHUB_ENV, **_workspace_env(tmp_path, _seeded_mirror(tmp_path))},
+        execution=injected,
+        token_provider=_static_tokens(),
+    )
+
+    assert runtime.execution is injected
+
+
+def test_broken_workspace_configuration_is_not_swallowed(tmp_path: Path) -> None:
+    # Fail-closed like telemetry: a set-but-invalid workspace variable is a
+    # misconfiguration (an error), not an absent adapter.
+    with pytest.raises(ValueError, match=WORKSPACE_ROOT_ENV_VAR):
+        build_runtime(
+            env={
+                **LLM_ENV,
+                **GITHUB_ENV,
+                WORKSPACE_ROOT_ENV_VAR: "relative/workspaces",
+                WORKSPACE_MIRROR_ROOT_ENV_VAR: str(tmp_path / "mirror"),
+            },
+            token_provider=_static_tokens(),
+        )
 
 
 def test_harness_factory_binds_the_role_tools() -> None:

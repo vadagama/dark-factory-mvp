@@ -11,15 +11,18 @@ Optional pieces stay absent rather than degrading silently:
 - no ``DARK_FACTORY_GITHUB_*`` → no repository/change-request ports;
 - no ``DARK_FACTORY_GITHUB_REPOSITORY_SLUG`` → no CI stage toggle port
   (``ci_stage_toggles`` is ``None``; T059/ADR-027);
-- no ``ExecutionPort`` → no agent stage executor. The isolated-worktree adapter
-  is not implemented yet (``docs/descriptions/execution.md`` §1: it arrives in
-  the execution layer as a provider of T-012); until then the composition root
-  accepts one through ``execution`` so the binding itself is exercised, and the
-  production runtime honestly reports that it cannot run agent stages.
+- no workspace configuration (``DARK_FACTORY_WORKSPACE_ROOT`` /
+  ``DARK_FACTORY_WORKSPACE_MIRROR_ROOT``) → no execution port → no agent stage
+  executor. The isolated-worktree adapter (T-092) mints workspaces from an
+  operator-prepared local mirror, because cloning from a provider with
+  credentials is a non-goal of the MVP (T-091 pods). An explicitly injected
+  ``execution`` wins over the environment, like ``token_provider``/``transport``.
 
-Telemetry is the exception: its configuration is fail-closed (an unknown exporter
-or a ``file`` exporter without a path is a `ValueError`, not an absent adapter),
-because a silent fallback would hide a typo (``adapters/telemetry/config.py``).
+A configuration that is set must also be valid — fail-closed, because a silent
+fallback would hide a typo: telemetry raises on an unknown exporter or a
+``file`` exporter without a path (``adapters/telemetry/config.py``), and the
+workspace configuration raises on a set-but-invalid variable instead of
+treating it as an absence (``WorktreeExecutionConfig.from_env``, ADR-009).
 """
 
 from collections.abc import Mapping, Sequence
@@ -30,6 +33,7 @@ from dark_factory.adapters.harness import HarnessConfig, PydanticAIHarness
 from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, TokenProvider
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter, TelemetryConfig
 from dark_factory.agents.profiles.manifest import AgentProfile
+from dark_factory.execution import WorktreeExecution, WorktreeExecutionConfig
 from dark_factory.orchestration.stages.agent import (
     DEFAULT_BRANCH_PREFIX,
     DEFAULT_TARGET_BRANCH,
@@ -162,11 +166,13 @@ def build_runtime(
 ) -> Runtime:
     """Assemble a :class:`Runtime` from ``env`` (default: the process environment).
 
-    ``execution`` supplies the isolated-workspace port — the real adapter is a
-    later task, so a caller (or a test) injects it; ``token_provider`` and
-    ``transport`` replace the GitHub App flow and HTTP transport (the contract
-    emulator). Secrets are read from ``env`` only and never stored beyond the
-    adapter that needs them (ADR-009).
+    ``execution`` supplies the isolated-workspace port; an explicit injection
+    wins over the environment, which otherwise builds the real worktree adapter
+    from the ``DARK_FACTORY_WORKSPACE_*`` variables (``from_env`` returning
+    ``None`` leaves the port absent). ``token_provider`` and ``transport``
+    replace the GitHub App flow and HTTP transport (the contract emulator).
+    Secrets are read from ``env`` only and never stored beyond the adapter that
+    needs them (ADR-009).
     """
     telemetry = OtlpTelemetryAdapter(TelemetryConfig.from_env(env))
     github_config = GitHubConfig.from_env(env)
@@ -175,6 +181,9 @@ def build_runtime(
         if github_config is not None
         else None
     )
+    if execution is None:
+        workspace_config = WorktreeExecutionConfig.from_env(env)
+        execution = None if workspace_config is None else WorktreeExecution(workspace_config)
     return Runtime(
         telemetry=telemetry,
         github=github,
