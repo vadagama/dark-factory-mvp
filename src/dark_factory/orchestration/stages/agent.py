@@ -9,8 +9,9 @@ branch plus a change request for CI to judge (TD-024).
 
 What one attempt does, in order:
 
-1. resolve the role of the stage and its profile (ADR-007; the release stage has
-   no core profile yet, so it stops honestly instead of inventing one);
+1. resolve the role of the stage and its profile (ADR-007; every stage role
+   has a profile now, and the release stage — not agent work per ADR-024 §7
+   S4 — maps to no skill and stops honestly instead of inventing one);
 2. prepare the isolated workspace of the pinned input revision through
    ``ExecutionPort`` (FR-001: the revision is fixed before any work starts);
 3. bind the profile's tools to that workspace (``WorkspaceTools``): only the
@@ -83,9 +84,10 @@ STAGE_ROLE: Final[Mapping[Stage, Role]] = {
 
 Specification and planning are product work (requirements and the proposed
 change), construction is development, review/verification is quality, and
-release is delivery. ``ci_cd`` has no core profile yet, so the release stage
-stops in ``blocked`` until its profile lands — the honest outcome, not a
-fabricated agent.
+release is delivery. Release itself is not agent work (ADR-024 §7 S4): the
+stage's ``ci_cd`` profile exists, but the stage maps to no skill in
+:data:`STAGE_SKILL`, so an agent attempt of it stops in ``blocked`` — the
+honest outcome, not a fabricated agent.
 """
 
 STAGE_SKILL: Final[Mapping[Stage, str]] = {

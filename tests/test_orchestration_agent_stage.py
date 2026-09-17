@@ -319,14 +319,17 @@ def test_telemetry_records_one_span_per_attempt() -> None:
 # --- the honest stops -------------------------------------------------------
 
 
-def test_stage_without_a_core_profile_is_blocked() -> None:
-    # The release stage is owned by ci_cd, which has no core profile yet (ADR-007 p.4).
+def test_release_stage_without_a_mapped_skill_is_blocked() -> None:
+    # Release is not agent work (ADR-024 §7 S4): the stage's role ci_cd has a
+    # profile now, but no skill is mapped to the stage, so the attempt stops
+    # honestly instead of running an agent.
     executor, recorder, _, _ = _executor()
     result = executor(_context(stage=Stage.RELEASE))
 
     assert result.status is StageStatus.BLOCKED
     assert isinstance(result.next_action, StopAction)
-    assert "ci_cd" in result.next_action.reason
+    assert "no skill is mapped to this stage" in result.next_action.reason
+    assert "'ci_cd'" in result.next_action.reason
     assert recorder.calls == []
 
 

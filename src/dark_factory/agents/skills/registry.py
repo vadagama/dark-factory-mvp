@@ -1,10 +1,14 @@
-"""Registry of the built-in skill manifests (T-011, T-046).
+"""Registry of the built-in skill manifests (T-011, T-046, T-047).
 
-Twelve skills: product drives intake through the change request, design
+Twenty skills: product drives intake through the change request, design
 turns the specification into UX artifacts, architect assesses impact and
-drafts ADRs, develop implements and reworks, quality reviews and verifies.
-Binding checks (a skill belongs to its role, a profile references only its
-own skills) live in the contract builder and the tests, not here — the
+drafts ADRs, develop implements and reworks, quality reviews and verifies,
+security threat-models and analyzes (IAM, secrets, dependencies),
+infrastructure designs and implements infrastructure as code, ci_cd delivers
+the pipeline and runs the task git cycle, and operation verifies smoke and
+analyzes rollback for the Operation verdict of the release gate. Binding
+checks (a skill belongs to its role, a profile references only its own
+skills) live in the contract builder and the tests, not here — the
 registries stay decoupled from each other.
 """
 
@@ -250,6 +254,196 @@ _SKILLS: Final[Mapping[str, SkillManifest]] = {
         stop_conditions=(
             "An acceptance criterion cannot be verified from the produced evidence.",
             "The verdict depends on a check that cannot run in the current workspace.",
+        ),
+    ),
+    "threat-model": SkillManifest(
+        id="threat-model",
+        version="1.0.0",
+        role=Role.SECURITY,
+        purpose=(
+            "Threat-model the change: trust boundaries, data flows and access,"
+            " and the security requirements the design must carry."
+        ),
+        inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.SECURITY_REVIEW,),
+        instruction=(
+            "You threat-model the change. Identify the trust boundaries, data"
+            " flows and access paths it creates or touches, enumerate the"
+            " plausible threats per boundary and record concrete security"
+            " requirements. A boundary without recorded requirements is a"
+            " finding, not a pass."
+        ),
+        stop_conditions=(
+            "The specification leaves a trust boundary undecidable and"
+            " clarification is unavailable.",
+            "A threat requires accepting a product or architecture risk -"
+            " escalate to a human decision.",
+        ),
+    ),
+    "security-analysis": SkillManifest(
+        id="security-analysis",
+        version="1.0.0",
+        role=Role.SECURITY,
+        purpose=(
+            "Analyze the change for security defects: IAM, secrets handling and"
+            " dependencies (supply chain), each finding with severity and a"
+            " required action."
+        ),
+        inputs=(ArtifactKind.CODE, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.SECURITY_REVIEW,),
+        instruction=(
+            "You analyze security. Check the change at the pinned revision for"
+            " IAM over-grants, secrets in code or configuration, unsafe data"
+            " handling and dependency risks (known vulnerabilities, unpinned"
+            " sources). Report every finding with severity, location and a"
+            " required action; name an exposure without reproducing the secret"
+            " itself."
+        ),
+        stop_conditions=(
+            "A finding requires a decision outside the reviewed scope - escalate.",
+            "Analysis evidence cannot be produced from the provided context.",
+        ),
+    ),
+    "infra-design": SkillManifest(
+        id="infra-design",
+        version="1.0.0",
+        role=Role.INFRASTRUCTURE,
+        purpose=(
+            "Design the infrastructure change: environments, Helm/Kubernetes"
+            " manifests, network and IAM as code, before anything is applied."
+        ),
+        inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.INFRASTRUCTURE_CHANGE,),
+        instruction=(
+            "You design the infrastructure change. Translate the specification"
+            " into infrastructure as code: name the affected environments, the"
+            " Helm and Kubernetes resources, and the network and IAM deltas,"
+            " keeping the definitions vendor-neutral where the stack allows."
+            " Prefer the smallest reversible change and state what stays manual"
+            " and why. The design is a plan for review, not an applied state."
+        ),
+        stop_conditions=(
+            "The design requires cloud resources the current provider setup cannot express.",
+            "The design would change the stack or introduce a new platform"
+            " component - an ADR is required.",
+            "The live environment contradicts the repository state (drift,"
+            " access) and the facts cannot be confirmed.",
+        ),
+    ),
+    "infra-change": SkillManifest(
+        id="infra-change",
+        version="1.0.0",
+        role=Role.INFRASTRUCTURE,
+        purpose=(
+            "Implement the approved infrastructure design as reviewed,"
+            " applicable IaC with validation evidence."
+        ),
+        inputs=(ArtifactKind.INFRASTRUCTURE_CHANGE, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.INFRASTRUCTURE_CHANGE,),
+        instruction=(
+            "You implement the infrastructure change. Write the IaC delta in the"
+            " repository's existing layout and style, validate it (plan, diff or"
+            " template validation) and record the evidence. Keep the change"
+            " idempotent and reversible; reference secrets by name from the"
+            " secret store and never put credentials into the code."
+        ),
+        stop_conditions=(
+            "The validation cannot run in the current workspace or needs"
+            " credentials that are not available.",
+            "The change requires a manual console action - stop; it contradicts"
+            " infrastructure as code.",
+        ),
+    ),
+    "pipeline-delivery": SkillManifest(
+        id="pipeline-delivery",
+        version="1.0.0",
+        role=Role.CI_CD,
+        purpose=(
+            "Build and keep the delivery pipeline as code: build, repository"
+            " checks, release packaging and promotion."
+        ),
+        inputs=(ArtifactKind.CODE, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.PIPELINE_CONFIG,),
+        instruction=(
+            "You deliver the pipeline. Express build, checks and release"
+            " packaging as pipeline code in the repository's existing CI layout,"
+            " mirroring the local checks (lint, typecheck, tests). Keep the gates"
+            " honest: a check that cannot run in CI needs explicit justification,"
+            " never a silent skip, and secrets are referenced by name from the"
+            " secret store."
+        ),
+        stop_conditions=(
+            "The pipeline needs an external service or secret that is not provisioned.",
+            "A required gate cannot run in CI without being weakened - escalate.",
+        ),
+    ),
+    "task-git-cycle": SkillManifest(
+        id="task-git-cycle",
+        version="1.0.0",
+        role=Role.CI_CD,
+        purpose=(
+            "Run the git cycle of the task: task branch from the current main,"
+            " conventional commits and a merge request with evidence; the merge"
+            " itself stays a human decision."
+        ),
+        inputs=(ArtifactKind.CODE, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.CHANGE_REQUEST,),
+        instruction=(
+            "You run the git cycle of the task. Create the task branch from the"
+            " current main, keep the commits conventional and focused, push the"
+            " branch and open the merge request against main with the evidence"
+            " of the checks you ran. Prepare the merge but never perform it:"
+            " merging is a human decision (ADR-011)."
+        ),
+        stop_conditions=(
+            "The merge request needs an approval or a decision that belongs to a human.",
+            "The task branch cannot be created from a stable main.",
+        ),
+    ),
+    "smoke-verification": SkillManifest(
+        id="smoke-verification",
+        version="1.0.0",
+        role=Role.OPERATION,
+        purpose=(
+            "Run the operational smoke checks of a released revision and record"
+            " the evidence the Operation verdict of the release gate rests on."
+        ),
+        inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.OPS_VERDICT,),
+        instruction=(
+            "You verify the release in operation. Run the smoke checks that prove"
+            " the released revision serves its basic function and record the"
+            " evidence: the checks, their outcomes and the revision they pin. A"
+            " check that cannot run or stays inconclusive is a failed verdict,"
+            " not a pass."
+        ),
+        stop_conditions=(
+            "The smoke evidence cannot be produced for the pinned revision.",
+            "A smoke failure indicates an incident beyond the runbook - escalate.",
+        ),
+    ),
+    "rollback-analysis": SkillManifest(
+        id="rollback-analysis",
+        version="1.0.0",
+        role=Role.OPERATION,
+        purpose=(
+            "Analyze the rollback path of the release and supply the rollback"
+            " evidence for the Operation verdict of the release gate."
+        ),
+        inputs=(ArtifactKind.CODE, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.OPS_VERDICT,),
+        instruction=(
+            "You analyze the rollback. Trace how the released revision would be"
+            " undone: data and schema effects, configuration and environment"
+            " deltas, and the cost of rolling back versus fixing forward. Record"
+            " the evidence the Operation verdict of the release gate rests on;"
+            " the verdict machine itself is the deterministic release policy, and"
+            " the definition of the human/operational verdict remains a separate"
+            " decision (ADR-023)."
+        ),
+        stop_conditions=(
+            "The rollback path cannot be traced from the provided context.",
+            "A rollback decision requires a human risk acceptance - stop and ask.",
         ),
     ),
 }
