@@ -8,7 +8,7 @@ change request — is exercised without a network, a database or an LLM.
 
 import asyncio
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import pytest
 
@@ -57,16 +57,43 @@ RUN_ID = "run-001"
 USAGE = Usage(prompt_tokens=3, completion_tokens=5, total_tokens=8)
 
 
+class ProducingHarness(HarnessPort):
+    """Harness that edits the workspace through the bound ``write_file`` tool.
+
+    The canned ``FakeHarness`` writes nothing, which would make every attempt
+    stop in "no changes" — the honest outcome of the new publication step, but
+    useless for exercising the success path. This fake produces the way a real
+    agent does: through the role tools the executor bound, not around them. A
+    profile without ``write_file`` (product stages read and search only)
+    produces nothing — an honest empty workspace.
+    """
+
+    def __init__(self, tools: Sequence[ToolFunction]) -> None:
+        self._write = next((tool for tool in tools if tool.__name__ == "write_file"), None)
+
+    async def run_stage(self, envelope: TaskEnvelope, /) -> AgentResult:
+        if self._write is not None:
+            await self._write("docs/note.md", "produced\n")
+        return AgentResult(ok=True, output=f"fake produced:{envelope.stage.value}")
+
+    async def health(self, /) -> HealthStatus:
+        return HealthStatus(healthy=True, detail="producing fake harness")
+
+
 class RecordingHarnessFactory:
-    """Harness factory that records the tools each role was given."""
+    """Harness factory that records the tools each role was given.
+
+    Without an explicit harness it builds a :class:`ProducingHarness` over the
+    bound tools, so the default attempt really publishes something.
+    """
 
     def __init__(self, harness: HarnessPort | None = None) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
-        self._harness = harness or FakeHarness()
+        self._harness = harness
 
     def __call__(self, profile: AgentProfile, tools: Sequence[ToolFunction]) -> HarnessPort:
         self.calls.append((profile.role.value, tuple(tool.__name__ for tool in tools)))
-        return self._harness
+        return self._harness if self._harness is not None else ProducingHarness(tools)
 
 
 class FailingHarness(HarnessPort):
@@ -88,6 +115,22 @@ class ExplodingRepository(FakeRepository):
         branch: str,
         *,
         from_revision: str,
+        idempotency_key: str,
+    ) -> str:
+        raise RuntimeError("provider failed at https://token@scm.example/api")
+
+
+class ExplodingPublishRepository(FakeRepository):
+    """Repository whose commit publication fails with a provider error."""
+
+    async def publish_commit(
+        self,
+        repository: RepositoryRef,
+        branch: str,
+        changes: Mapping[str, bytes],
+        /,
+        *,
+        message: str,
         idempotency_key: str,
     ) -> str:
         raise RuntimeError("provider failed at https://token@scm.example/api")
@@ -156,6 +199,8 @@ def _executor(
 def test_successful_stage_waits_for_ci_with_a_change_request() -> None:
     executor, recorder, repo, _changes = _executor()
     result = executor(_context())
+    repository = make_change().product
+    branch = branch_name("chg-001")
 
     assert result.status is StageStatus.WAITING
     assert isinstance(result.next_action, WaitForCIAction)
@@ -164,10 +209,12 @@ def test_successful_stage_waits_for_ci_with_a_change_request() -> None:
     assert result.attempt_number == 1
     assert result.input_revision == REVISION
     assert [artifact.artifact_type for artifact in result.artifacts] == ["change_request"]
-    assert result.artifacts[0].revision == REVISION
     assert result.artifacts[0].producer == "develop"
-    # The branch exists at the pinned revision the stage started from.
-    assert asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001"))) == REVISION
+    # The change request carries the commit the stage published, not the
+    # pinned input revision (TD-024).
+    head = asyncio.run(repo.get_revision(repository, branch))
+    assert result.artifacts[0].revision == head
+    assert repo.commits_of(repository, branch) == (head,)
     assert recorder.calls == [("develop", DEVELOP_PROFILE.tools)]
 
 
@@ -193,7 +240,7 @@ def test_usage_of_the_harness_call_reaches_the_result() -> None:
 
 
 def test_a_retry_reuses_the_branch_and_the_change_request() -> None:
-    executor, _, _, changes = _executor()
+    executor, _, repo, changes = _executor()
     first = executor(_context())
     second = executor(_context(attempt=2))
 
@@ -203,6 +250,53 @@ def test_a_retry_reuses_the_branch_and_the_change_request() -> None:
     # One change request, not two: the second attempt found the existing one
     # (FR-011) and the branch ensure is keyed per operation (FR-017).
     assert asyncio.run(changes.find_existing(make_change().product, "chg-001")) is not None
+    # One commit, not two: the replayed publication returns the commit SHA
+    # recorded at the first call (TD-024).
+    assert repo.commits_of(make_change().product, branch_name("chg-001")) == (
+        first.artifacts[0].revision,
+    )
+    assert second.artifacts[0].revision == first.artifacts[0].revision
+
+
+def test_stage_publishes_the_workspace_changes_as_one_commit() -> None:
+    executor, _, repo, _ = _executor()
+    result = executor(_context())
+    repository = make_change().product
+
+    commits = repo.commits_of(repository, branch_name("chg-001"))
+    assert len(commits) == 1
+    assert repo.commit_files(commits[0]) == {"docs/note.md": b"produced\n"}
+    assert result.artifacts[0].revision == commits[0]
+
+
+def test_an_attempt_without_changes_blocks_before_any_external_effect() -> None:
+    # A canned harness writes nothing: "no changes" is the stage's honest
+    # decision — a retryable blocked attempt, never a silent empty change
+    # request, and the branch/commit must not exist either.
+    executor, _, repo, changes = _executor(harness=FakeHarness())
+    result = executor(_context())
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "no changes" in result.next_action.reason
+    assert asyncio.run(changes.find_existing(make_change().product, "chg-001")) is None
+    with pytest.raises(KeyError):
+        asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001")))
+
+
+def test_a_publish_failure_blocks_without_leaking_provider_text() -> None:
+    executor, _, repo, changes = _executor(repository=ExplodingPublishRepository())
+    result = executor(_context())
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "RuntimeError" in result.next_action.reason
+    assert "token" not in result.next_action.reason
+    assert "scm.example" not in result.next_action.reason
+    # The branch effect happened before the failing commit; the change request
+    # never did.
+    assert asyncio.run(changes.find_existing(make_change().product, "chg-001")) is None
+    assert asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001"))) == "abc123"
 
 
 def test_product_stages_bind_the_product_tools() -> None:

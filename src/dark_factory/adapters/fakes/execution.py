@@ -1,5 +1,6 @@
 """In-memory fake of the execution port (real worktree adapter arrives later)."""
 
+from collections.abc import Mapping
 from hashlib import sha256
 
 from dark_factory.ports import (
@@ -24,10 +25,13 @@ class FakeExecution(ExecutionPort):
       afterwards, and a repeated key never turns the write into a no-op. It is
       the write half of ``collect_evidence``: both address the seeded file
       store, so content written by an agent tool is readable back as evidence;
-    * ``run_command`` derives its result from ``argv`` only and
-      ``collect_evidence`` from the seeded files only, so both read the *current*
-      state. Neither keeps a per-key result ledger: a replay with the same key
-      still reports the state as it is now (an agent edits and re-runs).
+    * ``run_command`` derives its result from ``argv`` only,
+      ``collect_evidence`` from the seeded files only, and ``collect_changes``
+      from the whole file store, so all three read the *current* state. None
+      of them keeps a per-key result ledger: a replay with the same key still
+      reports the state as it is now (an agent edits and re-runs, and the
+      publication must carry what the workspace holds *now*, not what it held
+      at the first call).
 
     An unknown workspace or path raises ``KeyError``.
     """
@@ -89,6 +93,15 @@ class FakeExecution(ExecutionPort):
                 f"no evidence file {path!r} in workspace {workspace.workspace_id!r}"
             ) from None
         return EvidenceFile(path=path, content_hash=sha256(content).hexdigest(), content=content)
+
+    async def collect_changes(
+        self, workspace: WorkspaceHandle, /, *, idempotency_key: str
+    ) -> Mapping[str, bytes]:
+        # Read-side like collect_evidence: the key addresses the call in the
+        # effect ledger only; the *current* file set is returned as a copy, so
+        # later writes never mutate an already-returned mapping.
+        self._workspace(workspace)
+        return dict(self._files.get(workspace.workspace_id, {}))
 
     def _workspace(self, workspace: WorkspaceHandle) -> WorkspaceHandle:
         try:

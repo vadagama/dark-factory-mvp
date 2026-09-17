@@ -8,9 +8,11 @@ starts from the same repository (``main`` at ``DEFAULT_HEAD``).
 The emulator enforces one authentication rule — API routes (everything except
 the installation-token exchange) must carry the installation token as a bearer
 — so the adapter's auth plumbing is exercised without real keys. Test-side
-helpers (``parse_job_ref``, ``visible_comment``) encode the adapter's
-documented conventions: the job-ref format and the invisible idempotency
-markers inside PR comments.
+helpers (``parse_job_ref``, ``visible_comment``, ``commit_journal``,
+``commit_files``) encode the adapter's documented conventions: the job-ref
+format, the invisible idempotency markers inside PR comments and commit
+messages, and the Git data API (trees, commit objects, ref updates) behind
+``publish_commit``.
 """
 
 import json
@@ -42,6 +44,16 @@ def parse_job_ref(job_ref: str, /) -> tuple[str, str, int]:
     """``(slug, stage, run id)`` from the adapter's ``github:<slug>:<stage>:<run>`` ref."""
     slug, stage, run_id = job_ref.removeprefix("github:").rsplit(":", 2)
     return slug, stage, int(run_id)
+
+
+@dataclass
+class _Commit:
+    """Provider-side state of one commit object created through the Git data API."""
+
+    sha: str
+    message: str
+    tree: str
+    parents: tuple[str, ...]
 
 
 @dataclass
@@ -83,6 +95,9 @@ class GitHubApiEmulator:
     def __init__(self, *, token: str = GITHUB_INSTALLATION_TOKEN) -> None:
         self._token = token
         self.branches: dict[str, str] = {"main": DEFAULT_HEAD}
+        self.commits: dict[str, _Commit] = {}
+        self.trees: dict[str, dict[str, bytes]] = {}
+        self._next_object_id = 0
         self._pulls: dict[int, _Pull] = {}
         self._next_pull_number = 1
         self._check_runs: list[_CheckRun] = []
@@ -98,6 +113,27 @@ class GitHubApiEmulator:
     def comments_of(self, number: int, /) -> tuple[str, ...]:
         """Raw comment bodies of a pull request (markers included)."""
         return tuple(self._pulls[number].comments)
+
+    def commit_journal(self, branch: str, /) -> tuple[str, ...]:
+        """Commit SHAs on ``branch``, oldest first (parent walk over commit objects).
+
+        A branch head that is a raw SHA without a commit object (a branch
+        created at a revision the emulator holds no commit for) ends the walk,
+        so the journal counts only commits created through the Git data API.
+        """
+        shas: list[str] = []
+        current: str | None = self.branches.get(branch)
+        while current is not None and current in self.commits:
+            shas.append(current)
+            current = self.commits[current].parents[0] if self.commits[current].parents else None
+        return tuple(reversed(shas))
+
+    def commit_files(self, sha: str, /) -> dict[str, bytes]:
+        """The file set a commit carries (the tree it points at)."""
+        try:
+            return dict(self.trees[self.commits[sha].tree])
+        except KeyError:
+            raise KeyError(f"unknown commit {sha!r}") from None
 
     def run_count(self) -> int:
         """Number of workflow runs; dispatches are their only origin."""
@@ -155,6 +191,8 @@ class GitHubApiEmulator:
 
     def _repo_route(self, request: httpx2.Request, route: str) -> httpx2.Response:
         method = request.method
+        if route == "commits" and method == "GET":
+            return self._commits_list(request.url.params)
         if route.startswith("commits/") and route.endswith("/check-runs"):
             ref = route.removeprefix("commits/").removesuffix("/check-runs")
             return self._check_runs_route(ref)
@@ -164,6 +202,12 @@ class GitHubApiEmulator:
             return self._git_ref_route(route.removeprefix("git/ref/heads/"))
         if route == "git/refs" and method == "POST":
             return self._git_refs_create(_body(request))
+        if route.startswith("git/refs/heads/") and method == "PATCH":
+            return self._git_ref_update(route.removeprefix("git/refs/heads/"), _body(request))
+        if route == "git/trees" and method == "POST":
+            return self._git_trees_create(_body(request))
+        if route == "git/commits" and method == "POST":
+            return self._git_commits_create(_body(request))
         if route == "pulls" and method == "GET":
             return self._pulls_list(request.url.params)
         if route == "pulls" and method == "POST":
@@ -186,7 +230,70 @@ class GitHubApiEmulator:
         sha = self._resolve_ref(ref)
         if sha is None:
             return _json_response(404, {"message": "No commit found for SHA: " + ref})
+        commit = self.commits.get(sha)
+        if commit is not None:
+            return _json_response(200, self._commit_json(commit))
+        # A raw SHA the emulator holds no commit object for (a branch seeded at
+        # a revision): ``get_revision`` reads only ``sha``, tree-less is honest.
         return _json_response(200, {"sha": sha})
+
+    def _commits_list(self, params: httpx2.QueryParams) -> httpx2.Response:
+        ref = params.get("sha") or "main"
+        head = self._resolve_ref(ref)
+        if head is None:
+            return _json_response(404, {"message": "No commit found for SHA: " + ref})
+        commits: list[dict[str, Any]] = []
+        current: str | None = head
+        while current is not None and current in self.commits:
+            commit = self.commits[current]
+            commits.append(self._commit_json(commit))
+            current = commit.parents[0] if commit.parents else None
+        return _json_response(200, commits)
+
+    def _commit_json(self, commit: _Commit) -> dict[str, Any]:
+        return {
+            "sha": commit.sha,
+            "commit": {"message": commit.message, "tree": {"sha": commit.tree}},
+            "parents": [{"sha": parent} for parent in commit.parents],
+        }
+
+    def _git_ref_update(self, branch: str, body: dict[str, Any]) -> httpx2.Response:
+        if branch not in self.branches:
+            return _json_response(404, {"message": "Not Found"})
+        sha = str(body.get("sha") or "")
+        if not self._is_descendant(sha, self.branches[branch]):
+            return _json_response(422, {"message": "Update is not a fast forward"})
+        self.branches[branch] = sha
+        ref = {"ref": f"refs/heads/{branch}", "object": {"sha": sha, "type": "commit"}}
+        return _json_response(200, ref)
+
+    def _git_trees_create(self, body: dict[str, Any]) -> httpx2.Response:
+        base_tree = str(body.get("base_tree") or "")
+        if base_tree and base_tree not in self.trees:
+            return _json_response(422, {"message": "Base tree does not exist"})
+        entries: dict[str, bytes] = dict(self.trees.get(base_tree, {}))
+        for entry in body.get("tree", []):
+            if entry.get("type", "blob") != "blob":
+                return _json_response(422, {"message": "Unsupported tree entry type"})
+            entries[str(entry["path"])] = str(entry.get("content") or "").encode("utf-8")
+        tree_sha = self._next_sha()
+        self.trees[tree_sha] = entries
+        return _json_response(201, {"sha": tree_sha})
+
+    def _git_commits_create(self, body: dict[str, Any]) -> httpx2.Response:
+        tree = str(body.get("tree") or "")
+        if tree not in self.trees:
+            return _json_response(422, {"message": "Tree does not exist"})
+        parents = tuple(str(parent) for parent in body.get("parents", []))
+        if not parents:
+            return _json_response(422, {"message": "parents is required"})
+        if any(self._resolve_ref(parent) is None for parent in parents):
+            return _json_response(422, {"message": "parents is invalid"})
+        sha = self._next_sha()
+        self.commits[sha] = _Commit(
+            sha=sha, message=str(body.get("message") or ""), tree=tree, parents=parents
+        )
+        return _json_response(201, self._commit_json(self.commits[sha]))
 
     def _git_ref_route(self, branch: str) -> httpx2.Response:
         sha = self.branches.get(branch)
@@ -297,6 +404,27 @@ class GitHubApiEmulator:
         if re.fullmatch(r"[0-9a-f]{7,40}", ref):
             return ref
         return None
+
+    def _next_sha(self) -> str:
+        """Deterministic 40-hex SHA of the next Git object (no wall clock, no random)."""
+        self._next_object_id += 1
+        return f"{self._next_object_id:040x}"
+
+    def _is_descendant(self, sha: str, ancestor: str) -> bool:
+        """Whether ``sha`` can land on ``ancestor`` by a fast-forward ref update."""
+        seen: set[str] = set()
+        frontier: list[str] = [sha]
+        while frontier:
+            current = frontier.pop()
+            if current == ancestor:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            commit = self.commits.get(current)
+            if commit is not None:
+                frontier.extend(commit.parents)
+        return False
 
     def _pull_json(self, pull: _Pull) -> dict[str, Any]:
         return {

@@ -160,3 +160,62 @@ def test_write_file_rejects_unknown_workspace(execution_port: ExecutionPort) -> 
     )
     with pytest.raises(KeyError):
         asyncio.run(execution_port.write_file(unknown, "src/app.py", b"v1", idempotency_key="wf-1"))
+
+
+def test_collect_changes_of_a_fresh_workspace_is_empty(
+    execution_port: ExecutionPort,
+) -> None:
+    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    changes = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    assert changes == {}
+
+
+def test_collect_changes_returns_the_current_file_set(
+    execution_port: ExecutionPort,
+) -> None:
+    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1"))
+    asyncio.run(execution_port.write_file(handle, "docs/note.md", b"note", idempotency_key="wf-2"))
+
+    changes = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+
+    assert changes == {"src/app.py": b"v1", "docs/note.md": b"note"}
+
+
+def test_collect_changes_reflects_current_state_not_the_first_call(
+    execution_port: ExecutionPort,
+) -> None:
+    # Like run_command/collect_evidence, the key is a ledger address, not a
+    # result cache: the publication must carry what the workspace holds now.
+    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1"))
+    first = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    assert first == {"src/app.py": b"v1"}
+
+    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v2", idempotency_key="wf-2"))
+
+    second = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    assert second == {"src/app.py": b"v2"}
+
+
+def test_collect_changes_returns_a_copy(execution_port: ExecutionPort) -> None:
+    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1"))
+    first = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+
+    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v2", idempotency_key="wf-2"))
+
+    # The earlier mapping is a snapshot: a later write never mutates it.
+    assert first == {"src/app.py": b"v1"}
+    again = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-3"))
+    assert again == {"src/app.py": b"v2"}
+
+
+def test_collect_changes_rejects_unknown_workspace(execution_port: ExecutionPort) -> None:
+    unknown = WorkspaceHandle(
+        workspace_id="ws-9999",
+        repository=PRODUCT,
+        revision="abc123",
+    )
+    with pytest.raises(KeyError):
+        asyncio.run(execution_port.collect_changes(unknown, idempotency_key="cc-1"))

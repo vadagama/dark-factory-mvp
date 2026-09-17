@@ -6,14 +6,30 @@ revision recorded at the first call even if the branch head moved since; a new
 key on an existing branch creates no second branch and returns its current
 head; a missing branch is created at ``from_revision``. ``get_revision``
 resolves branches (and raw SHAs) through ``GET /repos/.../commits/{ref}``.
+
+``publish_commit`` lands the workspace file set on the branch as one external
+effect through the Git data API: a tree of the changes over the branch head's
+tree, a commit object carrying the invisible idempotency marker in its
+message, and a fast-forward move of the branch ref. Replay-dedup is
+lookup-first, like ``MergeRequestPort.add_comment``: the commits of the branch
+are scanned for the marker before anything is created, so a replay (or a cold
+adapter after a crash between commit and bookkeeping) returns the recorded SHA
+and creates no second commit. A missing branch is a ``KeyError`` (404 =
+absent, the same convention as ``get_revision``).
 """
 
+from collections.abc import Mapping
+from typing import Any, Final
+
 from dark_factory.adapters.scm.github.client import GitHubClient
+from dark_factory.adapters.scm.github.pull_requests import IDEMPOTENCY_MARKER_TEMPLATE
 from dark_factory.ports import RepositoryPort, RepositoryRef
+
+_PER_PAGE: Final[int] = 100
 
 
 class GitHubRepository(RepositoryPort):
-    """``RepositoryPort`` backed by the Git refs API."""
+    """``RepositoryPort`` backed by the Git refs and Git data APIs."""
 
     def __init__(self, client: GitHubClient) -> None:
         self._client = client
@@ -53,3 +69,90 @@ class GitHubRepository(RepositoryPort):
             self._client.expect(ref_response, 200)
         self._branch_keys[idempotency_key] = head
         return head
+
+    async def publish_commit(
+        self,
+        repository: RepositoryRef,
+        branch: str,
+        changes: Mapping[str, bytes],
+        /,
+        *,
+        message: str,
+        idempotency_key: str,
+    ) -> str:
+        if not changes:
+            raise ValueError("publish_commit requires a non-empty change set")
+        marker = IDEMPOTENCY_MARKER_TEMPLATE.format(key=idempotency_key)
+        replayed = await self._marker_commit(repository, branch, marker)
+        if replayed is not None:
+            return replayed
+        head = await self._head(repository, branch)
+        tree = await self._create_tree(repository, head["tree"], changes)
+        created = await self._client.request(
+            "POST",
+            f"/repos/{repository.slug}/git/commits",
+            json={"message": f"{message}\n\n{marker}", "tree": tree, "parents": [head["sha"]]},
+        )
+        commit_sha = str(self._client.expect(created, 201).json()["sha"])
+        moved = await self._client.request(
+            "PATCH",
+            f"/repos/{repository.slug}/git/refs/heads/{branch}",
+            json={"sha": commit_sha},
+        )
+        self._client.expect(moved, 200)
+        return commit_sha
+
+    async def _marker_commit(
+        self, repository: RepositoryRef, branch: str, marker: str
+    ) -> str | None:
+        """The commit on ``branch`` already carrying ``marker``, or ``None``.
+
+        The scan survives a cold adapter: the marker lives in the provider-side
+        commit message, not in adapter memory (FR-017). A missing branch yields
+        an empty history here; the head lookup below reports the absence as a
+        ``KeyError``.
+        """
+        response = await self._client.request(
+            "GET",
+            f"/repos/{repository.slug}/commits",
+            params={"sha": branch, "per_page": str(_PER_PAGE)},
+        )
+        if response.status_code == 404:
+            return None
+        for commit in self._client.expect(response, 200).json():
+            info: dict[str, Any] = commit.get("commit") or {}
+            if marker in str(info.get("message") or ""):
+                return str(commit["sha"])
+        return None
+
+    async def _head(self, repository: RepositoryRef, branch: str) -> dict[str, str]:
+        """Head SHA and tree SHA of ``branch``; a missing branch is a ``KeyError``."""
+        response = await self._client.request("GET", f"/repos/{repository.slug}/commits/{branch}")
+        if response.status_code == 404:
+            raise KeyError(f"no revision recorded for {repository.slug!r}@{branch!r}")
+        data: dict[str, Any] = self._client.expect(response, 200).json()
+        info: dict[str, Any] = data.get("commit") or {}
+        tree: dict[str, Any] = info.get("tree") or {}
+        return {"sha": str(data["sha"]), "tree": str(tree.get("sha") or "")}
+
+    async def _create_tree(
+        self, repository: RepositoryRef, base_tree: str, changes: Mapping[str, bytes]
+    ) -> str:
+        """One tree carrying ``changes`` over ``base_tree`` (empty base = new tree).
+
+        The MVP transfer unit is text: the role tools write UTF-8 files, and the
+        trees API takes file content as a string. Binary payloads are not
+        expressible here (the fake passes bytes through; this adapter would
+        need the blob API first).
+        """
+        entries = [
+            {"path": path, "mode": "100644", "type": "blob", "content": content.decode("utf-8")}
+            for path, content in sorted(changes.items())
+        ]
+        payload: dict[str, Any] = {"tree": entries}
+        if base_tree:
+            payload["base_tree"] = base_tree
+        response = await self._client.request(
+            "POST", f"/repos/{repository.slug}/git/trees", json=payload
+        )
+        return str(self._client.expect(response, 201).json()["sha"])
