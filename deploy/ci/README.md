@@ -79,6 +79,8 @@ flowchart TD
 ./deploy/ci/verify.sh --context docker-desktop
 ```
 
+`verify.sh` перед созданием пробы канарейкой (пара подов в throwaway-namespace, одна под deny-all-egress политикой — перенос детекта из `deploy/bootstrap/scripts/negative-egress-test.sh`, TD-001) определяет, исполняет ли кластер NetworkPolicy. На кластере без enforcement (docker-desktop) сетевые негативные проверки пробы (`api_blocked`, `api_ip_blocked`, `http80_blocked`) деградируют в `SKIPPED` с предупреждением; positive- и credential-проверки (`dns`, `external_https`, `no_sa_token`, `env_clean`, uid/rootfs/tmp) остаются жёсткими в обоих режимах. Канарейный namespace и probe-job убираются при выходе.
+
 `install.sh` идемпотентен (`kubectl apply`), не создаёт секретов и падает с подсказкой, если bootstrap не применён. Без секрета установка продолжается: под раннера стартует, печатает точную команду создания секрета и ретраит (без CreateContainerConfigError благодаря `secretRef.optional: true`).
 
 ## Использование
