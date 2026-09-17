@@ -2,8 +2,8 @@
 
 Высокоуровневое описание архитектуры фабрики. Сводный документ: он описывает **актуальную архитектуру** и **связывает все принятые ADR** в единую картину. Каждое значимое решение — со ссылкой на ADR; ADR остаются источником истины по конкретному решению, HLD — по их сочетанию.
 
-- **Дата**: 2026-09-13
-- **Статус**: 🟡 pre-MVP — архитектурные решения приняты (ADR-001…ADR-019), каркас кода и базовый CI готовы (T-002)
+- **Дата**: 2026-09-17
+- **Статус**: 🟡 pre-MVP — архитектурные решения приняты (ADR-001…ADR-027); MVP-ядро реализовано (US1–US6, durable-раннер — ADR-024/025); впереди e2e-пилот (T043) и финальная приёмка (T056)
 - **Область**: архитектура MVP фабрики (один оператор, один пилотный продукт, локальный контур)
 - **Связанные документы**: `docs/vision-2026-09-13-v1.md` (зачем и что), `specs/001-dark-factory-mvp/tasks.md` (задачи и последовательность), `.specify/memory/constitution.md` (принципы и гейты), `docs/adr/` (решения)
 
@@ -58,6 +58,13 @@
 | [ADR-018](adr/ADR-018-human-participation-autonomous-execution.md) | Модель участия человека по фазам; Implementation Contract и условия эскалации | принято | §8, §17 |
 | [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) | Мультипровайдерный SC/CI: GitHub-адаптер первым, GitLab — вторым; `ChangeRequestRef`, инвариант «один run — один провайдер» | принято | §7, §13 |
 | [ADR-020](adr/ADR-020-native-sdd-core.md) | Native SDD Core: ChangeSet + Product Baseline `.factory/`; центральный OKF — федеративная проекция; Spec Kit/OpenSpec — bootstrap- и compatibility-адаптеры | принято | §12, §16 |
+| [ADR-021](adr/ADR-021-console-mvp-delivery.md) | Console MVP: отдельный сабпроект `console/`, сборка npm/Vite, отдельный nginx-образ + chart | принято | §5, §6 |
+| [ADR-022](adr/ADR-022-pure-psycopg-libpq.md) | Pure-Python psycopg с libpq дистрибутива (без `binary` extra) | принято | §2, §9 |
+| [ADR-023](adr/ADR-023-risk-classes-and-control-points.md) | Риск-классы R0–R4 и четыре точки контроля | принято | §8, §13 |
+| [ADR-024](adr/ADR-024-durable-run-driver-and-composition-root.md) | Durable run driver и composition root | принято с условиями | §5, §8, §9 |
+| [ADR-025](adr/ADR-025-process-entry-point-and-lazy-composition.md) | Точка входа процесса и ленивая композиция | принято | §5, §6 |
+| [ADR-026](adr/ADR-026-parameterizable-ci-stages.md) | Параметризуемые этапы CI: выключатели `CI_SKIP_<JOB>` (opt-out, fail-safe) | принято | §13 |
+| [ADR-027](adr/ADR-027-console-ci-stage-toggles.md) | Управление этапами CI из консоли: репозиторные переменные за API (`ci:write` + operator, fail-closed) | принято | §5, §13 |
 
 Шаблон новых решений — [`adr/ADR-000-template.md`](adr/ADR-000-template.md); правила процесса — [`adr/README.md`](adr/README.md).
 
@@ -113,10 +120,11 @@ flowchart TD
 | Компонент | Роль | ADR |
 |---|---|---|
 | Factory Runner (CLI) | Точка входа стадии; агенту не нужен постоянно живущий сервис | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) п.1 |
+| Durable run driver (`factory run advance` / `run status`) | Межстадийный драйвер: решение и outbox-событие в одной транзакции, replay-first; composition root лениво собирает адаптеры | [ADR-024](adr/ADR-024-durable-run-driver-and-composition-root.md), [ADR-025](adr/ADR-025-process-entry-point-and-lazy-composition.md) |
 | Reconciler CronJob | Идемпотентный проход каждые 2–5 мин: зависшие jobs, timeout, retry, superseded, WAIT-продолжение | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) п.5–6, п.12 |
 | Outbox Dispatcher CronJob | Доставка событий outbox, retry/dead-letter | [ADR-016](adr/ADR-016-postgresql-outbox.md) п.4 |
 | API (FastAPI) | runs, evidence, approvals, управление; mutating-операции — token-authenticated | [ADR-002](adr/ADR-002-python-core-stack.md), [ADR-009](adr/ADR-009-minimal-bootstrap-otel.md) п.7 |
-| Console (React) | Операторский контроль: 5 экранов MVP | [ADR-014](adr/ADR-014-react-uikit-storybook.md), [ADR-021](adr/ADR-021-console-mvp-delivery.md) |
+| Console (React) | Операторский контроль: 5 экранов MVP + экран управления этапами CI | [ADR-014](adr/ADR-014-react-uikit-storybook.md), [ADR-021](adr/ADR-021-console-mvp-delivery.md), [ADR-027](adr/ADR-027-console-ci-stage-toggles.md) |
 | PostgreSQL | Authoritative operational state | [ADR-004](adr/ADR-004-postgresql-factory-state.md) |
 
 ---
@@ -132,6 +140,8 @@ flowchart TD
 | `agents` | Ролевые профили как сменные исполнители стадий | [ADR-007](adr/ADR-007-nine-role-catalog.md), T-011 |
 | `context` | Сборка и фиксация `ContextBundle` для агентов | T-012 |
 | `execution` | Провайдеры исполнения агентной работы (worktree, контейнер, job) | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) |
+| `runtime` | Composition root и entry point: ленивая сборка `Runtime`; единственный слой, которому разрешён импорт адаптеров | [ADR-024](adr/ADR-024-durable-run-driver-and-composition-root.md), [ADR-025](adr/ADR-025-process-entry-point-and-lazy-composition.md) |
+| `ci` | Каталог этапов CI и их переключатели (единый источник истины с workflow) | [ADR-026](adr/ADR-026-parameterizable-ci-stages.md), [ADR-027](adr/ADR-027-console-ci-stage-toggles.md) |
 | `quality` | Детерминированные гейты качества результата изменения | [ADR-020](adr/ADR-020-native-sdd-core.md), T-013 |
 | `ports` | Абстрактные интерфейсы, развязывающие ядро и внешние системы | [ADR-002](adr/ADR-002-python-core-stack.md), [ADR-015](adr/ADR-015-repository-boundaries.md) п.3 |
 | `adapters` | Конкретные реализации портов для внешних систем и runtime | [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) |
@@ -183,6 +193,7 @@ flowchart LR
 
 - **Внутри стадии** — `pydantic-graph` `TaskGraph`: параллельные подзадачи (branch/join ≤2), reducers ([ADR-005](adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) п.1, T-015).
 - **Между стадиями** — собственный лёгкий durable workflow-core: единственный источник разрешённых переходов — неизменяемая таблица переходов; `StageResult`/`NextAction` типизированы ([ADR-005](adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) п.2). Гарантия корректности переходов — на трёх уровнях: типы (mypy strict, `assert_never`), рантайм (единственная функция сверки с таблицей), тесты (exhaustive-обход таблицы).
+- **Между стадиями — исполнение**: durable run driver `factory run advance` применяет решения через `flow.apply_result`, решение и outbox-событие — в одной транзакции, successor-стадии персистятся тем же решением; повтор инертен (replay-first), composition root собирает адаптеры лениво ([ADR-024](adr/ADR-024-durable-run-driver-and-composition-root.md), [ADR-025](adr/ADR-025-process-entry-point-and-lazy-composition.md)).
 
 ### 8.3. Риск-классы, гейты и участие человека
 
@@ -250,7 +261,7 @@ Transactional outbox в БД фабрики: изменение состояни
 
 ## 10. Агенты, роли и harness
 
-**Каталог — 9 широких ролей** (профили исполнения, не сервисы): Product, Design, Architect, Develop, Quality, Security, Infrastructure, CI/CD, Operation ([ADR-007](adr/ADR-007-nine-role-catalog.md) п.1). Ядро MVP — Product, Develop, Quality; остальные подключаются по маршруту/риску (T-081, T-082). Reviewer — режим независимой проверки соответствующим профилем, не отдельная роль.
+**Каталог — 9 широких ролей** (профили исполнения, не сервисы): Product, Design, Architect, Develop, Quality, Security, Infrastructure, CI/CD, Operation ([ADR-007](adr/ADR-007-nine-role-catalog.md) п.1). Профили зарегистрированы у всех девяти ролей каталога (T-081, T-082); привязка ролей к стадиям (`STAGE_ROLE`) пока покрывает подмножество — остальные стадии исполняются детерминированно. Reviewer — режим независимой проверки соответствующим профилем, не отдельная роль.
 
 - Профили — версионированные манифесты (входы/выходы, tools, ограничения, stop-conditions); контракт `AgentProfile → TaskEnvelope → AgentResult` (T-003).
 - Каталог расширяем: новая роль — плагин типа `agent` без изменения ядра и таблицы переходов.
@@ -320,6 +331,8 @@ flowchart TD
 - Контрактные тест-сюиты портов исполняются против каждого адаптера (fake → GitHub → GitLab) ([ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) п.6).
 
 **Release policy** ([ADR-011](adr/ADR-011-risk-based-merge-release-policy.md)): в MVP merge — только человек; низкорисковое изменение R0/R1 автономно доводится до готового к merge состояния; **после ручного merge** развёртывание в dev выполняет **trusted finalizer** (GitOps-MR с immutable digest, merge после зелёных гейтов и валидного evidence) — у agent pods таких credentials нет. Auto-merge R0/R1 — policy-controlled, отдельная задача T-085, после накопления статистики пилота. Prod — только вручную после валидации (пост-MVP, T-091).
+
+Релиз-стадия реализована в durable-раннере (T-092 S4): после merge `factory run advance` открывает GitOps-MR промоушена immutable digest и разрешает waiting-чекпоинт release-фактами той же попытки (`ReleaseFactsProvider`); наблюдаемое состояние деплоя и smoke подаёт `factory release verify`, evidence попадает в run record ([ADR-024](adr/ADR-024-durable-run-driver-and-composition-root.md) §7).
 
 ---
 

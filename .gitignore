@@ -32,3 +32,7 @@ htmlcov/
 # IDE
 .idea/
 .vscode/
+
+# Local agent/tooling scratch (worktrees задач; локально скачанные visual-бейслайны UI-кита)
+.worktrees/
+uikit-baselines-dl/
