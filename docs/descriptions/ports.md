@@ -63,6 +63,7 @@ flowchart TB
 ```python
 get_revision(repository, ref) -> str
 ensure_branch(repository, branch, *, from_revision, idempotency_key) -> str
+publish_commit(repository, branch, changes, /, *, message, idempotency_key) -> str
 # --- MergeRequestPort ---
 open(request, *, idempotency_key) -> ChangeRequestRef
 find_existing(repository, change_id) -> ChangeRequestRef | None
@@ -72,7 +73,7 @@ merge(cr, *, expected_sha, idempotency_key) -> None
 status(repository, ref) -> PipelineStatus
 ```
 
-`get_revision` возвращает SHA/revision ref; `ensure_branch` идемпотентно обеспечивает ветку от заданной revision и возвращает head. `OpenChangeRequest` содержит repository, factory `change_id`, source/target branches, title/description и `head_sha`; `change_id` — ключ дедупликации через `find_existing`. Безопасный merge требует `expected_sha`: при другом head адаптер отказывает с `HeadMismatchError`, не выполняя merge. `PipelinePort` наблюдает CI pipeline; документированный словарь статусов — `queued | in_progress | success | failure | canceled`, но поле имеет тип `str`, поэтому DTO сам этот набор не валидирует.
+`get_revision` возвращает SHA/revision ref; `ensure_branch` идемпотентно обеспечивает ветку от заданной revision и возвращает head. `publish_commit` публикует правки агентной стадии (TD-024): коммит и push — **один** внешний эффект с одним ключом (ADR-006 p.3); единица переноса — файловое множество (`path → bytes`), не дифф, а `WorkspaceHandle` в сигнатуре нет — SCM-адаптер не читает workspace, значения собираются через `ExecutionPort.collect_changes` и передаются по значению. Идемпотентность — replay-dedup по ключу с lookup-first по невидимому маркеру в commit message (переживает холодный адаптер); пустой `changes` — `ValueError` («нет изменений» — решение стадии), отсутствующая ветка — `KeyError`; возвращённый SHA — ревизия коммита, её стадия несёт как `head_sha` change request. `OpenChangeRequest` содержит repository, factory `change_id`, source/target branches, title/description и `head_sha`; `change_id` — ключ дедупликации через `find_existing`. Безопасный merge требует `expected_sha`: при другом head адаптер отказывает с `HeadMismatchError`, не выполняя merge. `PipelinePort` наблюдает CI pipeline; документированный словарь статусов — `queued | in_progress | success | failure | canceled`, но поле имеет тип `str`, поэтому DTO сам этот набор не валидирует.
 
 ```mermaid
 sequenceDiagram
@@ -208,13 +209,14 @@ prepare_workspace(request, *, idempotency_key) -> WorkspaceHandle
 write_file(workspace, path, content, *, idempotency_key) -> None
 run_command(workspace, argv, *, idempotency_key) -> ExecutionResult
 collect_evidence(workspace, path, *, idempotency_key) -> EvidenceFile
+collect_changes(workspace, /, *, idempotency_key) -> Mapping[str, bytes]
 # --- SDDPort ---
 create_change(change) -> str
 read_requirements(change_id) -> RequirementsSnapshot
 apply_delta(change_id, *, expected_revision) -> str
 ```
 
-`KnowledgePort` собирает источники контекста изменения в версионированный `ContextBundle` (T-012, FR-001); вход — `ContextRequest(change_id, run_id)`. Порт сознательно минимален: поиск и traversal источников придут вместе с реальными source providers, не раньше (YAGNI). В P0 реализация — `FakeKnowledge`: seed-хранилище, sha256 по содержимому, фиксированный `retrieved_at`; пустой bundle — валидный детерминированный результат, а не ошибка. `ExecutionPort` — изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (T-012): `prepare_workspace` идемпотентен по ключу (replay возвращает тот же handle, FR-017), `write_file` — write-половина `collect_evidence` (T-092 S2), `collect_evidence` возвращает файл с sha256-хешем содержимого. Роль `idempotency_key` различается по методам (см. §6): replay-дедуп — только у `prepare_workspace`; `write_file` идемпотентен по состоянию, а у `run_command`/`collect_evidence` ключ — только адрес в effect ledger/аудите. В P0 реализация — `FakeExecution` (результат команды детерминирован по `argv`, evidence из seed-файлов); реальный worktree-адаптер появится позже.
+`KnowledgePort` собирает источники контекста изменения в версионированный `ContextBundle` (T-012, FR-001); вход — `ContextRequest(change_id, run_id)`. Порт сознательно минимален: поиск и traversal источников придут вместе с реальными source providers, не раньше (YAGNI). В P0 реализация — `FakeKnowledge`: seed-хранилище, sha256 по содержимому, фиксированный `retrieved_at`; пустой bundle — валидный детерминированный результат, а не ошибка. `ExecutionPort` — изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (T-012): `prepare_workspace` идемпотентен по ключу (replay возвращает тот же handle, FR-017), `write_file` — write-половина `collect_evidence` (T-092 S2), `collect_evidence` возвращает файл с sha256-хешем содержимого, `collect_changes` — read-половина публикации (TD-024): копия текущего файлового множества workspace для `RepositoryPort.publish_commit`. Роль `idempotency_key` различается по методам (см. §6): replay-дедуп — только у `prepare_workspace`; `write_file` идемпотентен по состоянию, а у `run_command`/`collect_evidence`/`collect_changes` ключ — только адрес в effect ledger/аудите. В P0 реализация — `FakeExecution` (результат команды детерминирован по `argv`, evidence из seed-файлов); реальный worktree-адаптер появится позже.
 
 `SDDPort` — жизненный цикл ChangeSet над product baseline, Native SDD Core (ADR-020 p.8). Адаптеры: `NativeChangeSetAdapter` (основной), `SpecKitAdapter` (bootstrap-импорт legacy-артефактов `specs/`), `OpenSpecAdapter` (compatibility import/export). Все три реализуют Protocol **структурно** из `dark_factory.context.sdd` и не импортируют `dark_factory.ports` — runtime-checkable валидация работает и без этого импорта. `apply_delta` оптимистична: `expected_revision` закрепляет baseline, расхождение — `BaselineMismatchError` с expected/actual.
 
@@ -297,12 +299,12 @@ State-changing операции используют один из четырё�
 
 | Механизм | Где применяется |
 |---|---|
-| Явный `idempotency_key` | branch, CR, comment, tracker update, CI job dispatch, workspace prepare (replay-дедуп), workflow start/resume/cancel |
+| Явный `idempotency_key` | branch, commit (publish, replay-дедуп lookup-first по маркеру в message — TD-024), CR, comment, tracker update, CI job dispatch, workspace prepare (replay-дедуп), workflow start/resume/cancel |
 | Content hash | artifact `put` |
 | `expected_revision` | SDD `apply_delta` — optimistic concurrency |
 | `event_id` | event publication |
 
-`run_command`/`collect_evidence` принимают ключ по контракту, но он служит **только адресом в effect ledger/аудите**: оба обязаны исполнять/читать **текущее** состояние workspace и никогда не возвращать результат, закэшированный по ключу. Причина — цикл агента «правка → прогон тестов → правка → прогон тестов»: инструменты шлют стабильный ключ на прогон, и дедуп по ключу вернул бы первый (падающий) результат навсегда. Поэтому replay-дедуп по ключу обязателен только для `prepare_workspace` (минт внешнего ресурса), а `write_file` идемпотентен **по состоянию** (last write wins на пути) и не должен пропускаться по ключу. Порт принимает ключ, но durable effect ledger находится в state/application слое; сам Protocol не гарантирует хранение ключа между рестартами — это обязанность адаптера.
+`run_command`/`collect_evidence`/`collect_changes` принимают ключ по контракту, но он служит **только адресом в effect ledger/аудите**: они обязаны исполнять/читать **текущее** состояние workspace и никогда не возвращать результат, закэшированный по ключу. Причина — цикл агента «правка → прогон тестов → правка → прогон тестов»: инструменты шлют стабильный ключ на прогон, и дедуп по ключу вернул бы первый (падающий) результат навсегда. Поэтому replay-дедуп по ключу обязателен только для `prepare_workspace` (минт внешнего ресурса) и `publish_commit` (минт коммита), а `write_file` идемпотентен **по состоянию** (last write wins на пути) и не должен пропускаться по ключу. Порт принимает ключ, но durable effect ledger находится в state/application слое; сам Protocol не гарантирует хранение ключа между рестартами — это обязанность адаптера.
 
 ## 7. Правила реализации адаптера
 

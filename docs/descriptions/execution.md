@@ -13,13 +13,16 @@
 
 Вторая подсистема слоя — провайдер `ExecutionPort` (изолированный workspace,
 исполнение команд, evidence; T-012). Контракт уже описан в слое портов и
-расширен аддитивным `write_file` (T-092 S2) — это write-половина
-`collect_evidence`, через которую инструменты роли правят рабочее дерево;
-реального адаптера пока нет (TD-022), в P0 живёт in-memory фейк. Роль
+расширен аддитивно дважды: `write_file` (T-092 S2) — write-половина
+`collect_evidence`, через которую инструменты роли правят рабочее дерево, и
+`collect_changes` (T-092, TD-024) — read-половина публикации: копия текущего
+файлового множества workspace для `RepositoryPort.publish_commit`; реального
+адаптера пока нет (TD-022), в P0 живёт in-memory фейк. Роль
 `idempotency_key` задана по методам (ADR-015 п.3, `protocols.py`): replay-дедуп —
 только у `prepare_workspace`, `write_file` идемпотентен по состоянию (last write
-wins), а у `run_command`/`collect_evidence` ключ — только адрес в effect
-ledger/аудите: они читают текущее состояние и не кэшируют результат по ключу.
+wins), а у `run_command`/`collect_evidence`/`collect_changes` ключ — только
+адрес в effect ledger/аудите: они читают текущее состояние и не кэшируют
+результат по ключу.
 
 ## 2. Состав пакета
 

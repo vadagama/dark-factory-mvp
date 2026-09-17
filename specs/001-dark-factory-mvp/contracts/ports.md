@@ -73,6 +73,7 @@ class ReconciliationService(Protocol):
 class RepositoryPort(Protocol):
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str: ...
     async def ensure_branch(self, repository: RepositoryRef, branch: str, *, from_revision: str, idempotency_key: str) -> str: ...
+    async def publish_commit(self, repository: RepositoryRef, branch: str, changes: Mapping[str, bytes], /, *, message: str, idempotency_key: str) -> str: ...
 
 @runtime_checkable
 class MergeRequestPort(Protocol):
@@ -87,6 +88,8 @@ class PipelinePort(Protocol):
 ```
 
 `find_existing` и `expected_sha` перед merge — реализация FR-011/FR-017. Поля `status` CR берутся из единого `ChangeRequestStatus`.
+
+`publish_commit` — публикация правок агентной стадии (TD-024): коммит **и** push — один внешний эффект с одним `effect_key` (ADR-006 §3: локальный коммит без push — не внешний эффект, а разрыв одной публикации на два порта ломает per-effect ledger). Единица переноса — **файловое множество** (`path → bytes`, текущее содержимое файлов workspace), а не дифф: снапшот самосогласован и при replay сходится к тому же дереву, дифф же требует серверного apply. `WorkspaceHandle` сознательно не входит в сигнатуру: SCM-адаптер не читает workspace — стадия собирает значения через `ExecutionPort.collect_changes` и передаёт их по значению. Идемпотентность по ключу — replay-dedup: повтор возвращает SHA коммита первого вызова и не создаёт второй коммит; lookup обязан переживать холодный адаптер (невидимый маркер `<!-- dark-factory:idempotency:<key> -->` в теле commit message — тот же приём, что у `add_comment`). Пустой `changes` — `ValueError`: «нет изменений» — решение стадии, а не молчаливый пустой коммит. Ветка обязана существовать (`ensure_branch`) — иначе `KeyError` (конвенция «404 = отсутствует»); коммит встаёт на текущую голову ветки, возвращённый SHA — ревизия коммита, которую стадия несёт как `head_sha` change request и `revision` артефакта. Удаления файлов в MVP не представимы (инструменты ролей не удаляют) — задокументированное ограничение единицы переноса.
 
 ## CIPort
 
@@ -176,9 +179,10 @@ class ExecutionPort(Protocol):
     async def write_file(self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str) -> None: ...
     async def run_command(self, workspace: WorkspaceHandle, argv: tuple[str, ...], /, *, idempotency_key: str) -> ExecutionResult: ...
     async def collect_evidence(self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str) -> EvidenceFile: ...
+    async def collect_changes(self, workspace: WorkspaceHandle, /, *, idempotency_key: str) -> Mapping[str, bytes]: ...
 ```
 
-Изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; `write_file` кладёт содержимое в рабочее дерево — это write-половина `collect_evidence`, через неё инструменты роли правят изолированный workspace (T-092 S2). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. В P0 реализация — in-memory фейк.
+Изолированный worktree от закреплённой ревизии, запись файлов, исполнение команд и сбор evidence (план T-012). `WorkspaceRequest(repository, revision, change_id)` → `WorkspaceHandle(workspace_id, repository, revision)`; `write_file` кладёт содержимое в рабочее дерево — это write-половина `collect_evidence`, через неё инструменты роли правят изолированный workspace (T-092 S2). `run_command` исполняет команду и возвращает `ExecutionResult(ok, exit_code, stdout, stderr)`; `collect_evidence` возвращает `EvidenceFile(path, content_hash, content)` с sha256-хешем содержимого. `collect_changes` — read-половина публикации (TD-024): возвращает копию текущего файлового множества workspace, которое стадия передаёт в `RepositoryPort.publish_commit` по значению (SCM-адаптер не читает workspace). В P0 реализация — in-memory фейк.
 
 `idempotency_key` имеет **разную роль по методам**: replay-дедуп верен только там, где вызов минтует внешний ресурс (FR-017).
 
@@ -188,8 +192,9 @@ class ExecutionPort(Protocol):
 | `write_file` | путь + содержимое | состояние: после вызова путь держит записанные байты (last write wins); ключ не должен пропускать запись |
 | `run_command` | команда (`argv`) | только адрес в effect ledger/аудите: команда исполняется на **текущем** состоянии workspace |
 | `collect_evidence` | путь | только адрес в effect ledger/аудите: читается **текущее** содержимое |
+| `collect_changes` | workspace | только адрес в effect ledger/аудите: читается **текущее** файловое множество (копия, не кэш по ключу) |
 
-Причина несимметричности — цикл агента «правка → прогон тестов → правка → прогон тестов»: инструменты шлют стабильный ключ на прогон, и адаптер, дедуплицирующий по ключу все методы буквально, вернул бы агентy первый (падающий) результат навсегда. Поэтому дедуп по ключу обязателен только для `prepare_workspace`; `run_command`/`collect_evidence` никогда не возвращают закэшированный по ключу результат, а `write_file` не пропускается по ключу.
+Причина несимметричности — цикл агента «правка → прогон тестов → правка → прогон тестов»: инструменты шлют стабильный ключ на прогон, и адаптер, дедуплицирующий по ключу все методы буквально, вернул бы агентy первый (падающий) результат навсегда. Поэтому дедуп по ключу обязателен только для `prepare_workspace`; `run_command`/`collect_evidence`/`collect_changes` никогда не возвращают закэшированный по ключу результат, а `write_file` не пропускается по ключу.
 
 ## Порты, вводимые позже (не авансом)
 

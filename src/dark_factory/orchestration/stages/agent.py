@@ -4,8 +4,8 @@ The deterministic executor (``orchestration.stages.executor``) folds machine
 checks into a decision and never calls the harness (ADR-003). This module is the
 other half of the ``StageExecutor`` seam (``orchestration.runner``): it runs the
 stage through the LLM harness with the tools of the stage's role profile, in an
-isolated workspace, and leaves the produced work as a branch and a change
-request for CI to judge.
+isolated workspace, and publishes the produced work as one commit on a task
+branch plus a change request for CI to judge (TD-024).
 
 What one attempt does, in order:
 
@@ -16,10 +16,15 @@ What one attempt does, in order:
 3. bind the profile's tools to that workspace (``WorkspaceTools``): only the
    names the profile declares, so role isolation is enforced by construction;
 4. run one agent call with the skill's instruction as the prompt;
-5. on success: ensure the task branch at the pinned revision and open the change
-   request with the branch head, both through their ports with deterministic
-   idempotency keys (FR-017);
-6. on failure: stop the stage in ``blocked`` with a human-readable reason — a
+5. on success: read the changed file set back from the workspace
+   (``collect_changes``), ensure the task branch at the pinned revision and
+   publish the file set as one commit+push effect (``publish_commit``), then
+   open the change request with the commit as its head — every effect under its
+   deterministic idempotency key (FR-017, per-effect ledger of ADR-006 p.3);
+6. an attempt whose workspace holds no changes stops in ``blocked`` before any
+   external effect: "no changes" is a stage decision, never a silent empty
+   change request;
+7. on failure: stop the stage in ``blocked`` with a human-readable reason — a
    retryable attempt (ADR-006 p.7), not a papered-over success.
 
 The result is ``waiting``: no gate is evaluated here. Machine gates run on the
@@ -63,6 +68,7 @@ from dark_factory.ports import (
     TaskEnvelope,
     TelemetryPort,
     Usage,
+    WorkspaceHandle,
     WorkspaceRequest,
 )
 
@@ -113,7 +119,9 @@ one. Composition supplies the production factory (``PydanticAIHarness`` with
 
 _EFFECT_WORKSPACE: Final[str] = "workspace"
 _EFFECT_BRANCH: Final[str] = "branch"
+_EFFECT_COMMIT: Final[str] = "commit"
 _EFFECT_CHANGE_REQUEST: Final[str] = "change_request"
+_EFFECT_COLLECT_CHANGES: Final[str] = "collect_changes"
 
 
 def branch_name(change_id: str, *, prefix: str = DEFAULT_BRANCH_PREFIX) -> str:
@@ -234,27 +242,51 @@ class AgentStageExecutor:
                 usage=agent_result.usage,
             )
 
-        artifacts, change_request = await self._publish(context, identity)
+        published = await self._publish(context, identity, workspace)
+        if published is None:
+            return self._blocked(
+                context,
+                f"stage {context.stage.value}: the attempt produced no changes to publish",
+                usage=agent_result.usage,
+            )
+        artifacts, change_request = published
         return self._waiting(
             context, artifacts=artifacts, change_request=change_request, usage=agent_result.usage
         )
 
     async def _publish(
-        self, context: StageContext, identity: str
-    ) -> tuple[list[ArtifactRef], ChangeRequestRef]:
-        """Ensure the task branch and open the change request; return its artifacts.
+        self, context: StageContext, identity: str, workspace: WorkspaceHandle
+    ) -> tuple[list[ArtifactRef], ChangeRequestRef] | None:
+        """Publish the workspace changes as one commit; open the change request.
 
-        Both effects are keyed deterministically (FR-017): a retry of the same
-        logical operation resolves to the same branch and the same change
-        request instead of minting a second one (ADR-006 p.3).
+        Every effect is keyed deterministically (FR-017): a retry of the same
+        logical operation resolves to the same commit, the same branch and the
+        same change request instead of minting a second one (ADR-006 p.3). The
+        order matters for the "no changes" decision: the file set is collected
+        first, so an attempt with nothing to publish stops before the branch,
+        the commit or the change request exists. ``None`` is that decision; the
+        caller turns it into a retryable ``blocked`` attempt.
         """
         repository = context.change.product
         branch = branch_name(context.change.id, prefix=self._branch_prefix)
-        head = await self._repository.ensure_branch(
+        changes = await self._execution.collect_changes(
+            workspace,
+            idempotency_key=effect_key(identity, _EFFECT_COLLECT_CHANGES, context.change.id),
+        )
+        if not changes:
+            return None
+        await self._repository.ensure_branch(
             repository,
             branch,
             from_revision=context.input_revision or "",
             idempotency_key=effect_key(identity, _EFFECT_BRANCH, branch),
+        )
+        commit_sha = await self._repository.publish_commit(
+            repository,
+            branch,
+            changes,
+            message=f"factory: {context.change.id} ({context.stage.value})",
+            idempotency_key=effect_key(identity, _EFFECT_COMMIT, branch),
         )
         change_request = await self._merge_requests.find_existing(repository, context.change.id)
         if change_request is None:
@@ -266,7 +298,7 @@ class AgentStageExecutor:
                     target_branch=self._target_branch,
                     title=context.change.title,
                     description=context.change.description,
-                    head_sha=head,
+                    head_sha=commit_sha,
                 ),
                 idempotency_key=effect_key(identity, _EFFECT_CHANGE_REQUEST, branch),
             )
@@ -274,7 +306,7 @@ class AgentStageExecutor:
             ArtifactRef(
                 artifact_type=ArtifactKind.CHANGE_REQUEST.value,
                 uri=change_request.url or f"{repository.slug}#{change_request.number}",
-                revision=head,
+                revision=commit_sha,
                 producer=STAGE_ROLE[context.stage].value,
             )
         ]

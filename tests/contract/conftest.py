@@ -103,6 +103,14 @@ from tests.sdd_factories import seed_baseline
 PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
 
 
+class _RepositoryBinding(NamedTuple):
+    """RepositoryPort plus the commit journal and file view of the same binding."""
+
+    port: RepositoryPort
+    commit_journal: Callable[[str], tuple[str, ...]]
+    commit_files: Callable[[str], dict[str, bytes]]
+
+
 class _MergeRequestBinding(NamedTuple):
     """MergeRequestPort plus the comment journal of the same binding."""
 
@@ -185,12 +193,46 @@ def github_adapter(github_emulator: GitHubApiEmulator) -> GitHubAdapter:
 
 
 @pytest.fixture(params=["fake", "github"])
-def repository_port(request: pytest.FixtureRequest) -> RepositoryPort:
-    """RepositoryPort bound to the fake and the GitHub adapter (ADR-019 p.6)."""
+def repository_binding(
+    request: pytest.FixtureRequest, repository: RepositoryRef
+) -> _RepositoryBinding:
+    """RepositoryPort and its commit journal/file view, backed by the same adapter."""
     if request.param == "github":
         adapter: GitHubAdapter = request.getfixturevalue("github_adapter")
-        return adapter.repository
-    return FakeRepository()
+        emulator: GitHubApiEmulator = request.getfixturevalue("github_emulator")
+        return _RepositoryBinding(
+            port=adapter.repository,
+            commit_journal=emulator.commit_journal,
+            commit_files=emulator.commit_files,
+        )
+    fake = FakeRepository()
+    return _RepositoryBinding(
+        port=fake,
+        commit_journal=lambda branch: fake.commits_of(repository, branch),
+        commit_files=fake.commit_files,
+    )
+
+
+@pytest.fixture
+def repository_port(repository_binding: _RepositoryBinding) -> RepositoryPort:
+    """RepositoryPort bound to the fake and the GitHub adapter (ADR-019 p.6)."""
+    return repository_binding.port
+
+
+@pytest.fixture
+def commit_journal(
+    repository_binding: _RepositoryBinding,
+) -> Callable[[str], tuple[str, ...]]:
+    """Commit SHAs on a branch (oldest first) as the binding recorded them."""
+    return repository_binding.commit_journal
+
+
+@pytest.fixture
+def commit_files(
+    repository_binding: _RepositoryBinding,
+) -> Callable[[str], dict[str, bytes]]:
+    """The file set a commit carries, as the binding stored it."""
+    return repository_binding.commit_files
 
 
 @pytest.fixture

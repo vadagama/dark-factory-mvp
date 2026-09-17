@@ -1,5 +1,6 @@
 """In-memory fakes of the source control ports (ADR-019 p.2/p.6)."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from dark_factory.ports import (
@@ -27,11 +28,23 @@ class FakeRepository(RepositoryPort):
     call with a new key on an existing branch creates no second branch and
     returns its current head. Revisions resolve through created branches; the
     fake records no other refs.
+
+    ``publish_commit`` lands the file set on the branch head as one commit:
+    replay-dedup by ``idempotency_key`` (the SHA recorded at the first call,
+    even if later calls carry different changes — same-key semantics, like
+    ``ensure_branch``), an empty change set is a ``ValueError``, and a missing
+    branch is a ``KeyError``. The commit's files are the parent's files merged
+    with ``changes`` (deletions are not expressible, per the port contract);
+    ``commits_of`` and ``commit_files`` are read views for tests, not port
+    methods.
     """
 
     def __init__(self) -> None:
         self._branches: dict[tuple[str, str, str], str] = {}
         self._branch_keys: dict[str, str] = {}
+        self._commits: dict[str, _CommitRecord] = {}
+        self._commit_keys: dict[str, str] = {}
+        self._next_commit = 0
 
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str:
         try:
@@ -53,6 +66,61 @@ class FakeRepository(RepositoryPort):
         head = self._branches.setdefault((*_repo_key(repository), branch), from_revision)
         self._branch_keys[idempotency_key] = head
         return head
+
+    async def publish_commit(
+        self,
+        repository: RepositoryRef,
+        branch: str,
+        changes: Mapping[str, bytes],
+        /,
+        *,
+        message: str,
+        idempotency_key: str,
+    ) -> str:
+        if not changes:
+            raise ValueError("publish_commit requires a non-empty change set")
+        replayed = self._commit_keys.get(idempotency_key)
+        if replayed is not None:
+            return replayed
+        try:
+            parent = self._branches[(*_repo_key(repository), branch)]
+        except KeyError:
+            raise KeyError(f"no revision recorded for {repository.slug!r}@{branch!r}") from None
+        parent_files = self._commits[parent].files if parent in self._commits else {}
+        self._next_commit += 1
+        sha = f"c{self._next_commit:04d}"
+        self._commits[sha] = _CommitRecord(
+            sha=sha, message=message, files={**parent_files, **changes}, parent=parent
+        )
+        self._branches[(*_repo_key(repository), branch)] = sha
+        self._commit_keys[idempotency_key] = sha
+        return sha
+
+    def commits_of(self, repository: RepositoryRef, branch: str) -> tuple[str, ...]:
+        """Read view: the commit SHAs of ``branch``, oldest first (not port state)."""
+        sha = self._branches.get((*_repo_key(repository), branch))
+        shas: list[str] = []
+        while sha is not None and sha in self._commits:
+            shas.append(sha)
+            sha = self._commits[sha].parent
+        return tuple(reversed(shas))
+
+    def commit_files(self, sha: str) -> dict[str, bytes]:
+        """Read view: the file set a commit carries (not port state)."""
+        try:
+            return dict(self._commits[sha].files)
+        except KeyError:
+            raise KeyError(f"unknown commit {sha!r}") from None
+
+
+@dataclass
+class _CommitRecord:
+    """Provider-side state of one commit created by the fake."""
+
+    sha: str
+    message: str
+    files: dict[str, bytes]
+    parent: str | None
 
 
 @dataclass

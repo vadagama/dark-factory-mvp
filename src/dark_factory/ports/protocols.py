@@ -8,6 +8,7 @@ core never imports ``dark_factory.adapters`` (enforced by
 (FR-017, ADR-006 p.3); one run executes in exactly one provider (ADR-019 §5).
 """
 
+from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
@@ -40,7 +41,30 @@ from dark_factory.ports.reconciliation import ReconcileDesired, ReconcileObserve
 
 @runtime_checkable
 class RepositoryPort(Protocol):
-    """Branch and revision operations on a product repository."""
+    """Branch, revision and publication operations on a product repository.
+
+    ``publish_commit`` is the publication step of an agent stage: it lands the
+    changed file set of the isolated workspace on the task branch as **one**
+    external effect — commit and push together (ADR-006 p.3: a local commit
+    without a push is not an external effect, and splitting one publication
+    across two ports would break its per-effect ledger entry). The unit of
+    transfer is the file set (``path → bytes``), not a diff: a snapshot is
+    self-consistent and replays to the same tree, while a diff would need a
+    provider-side apply. The handle of the workspace the files came from is
+    deliberately *not* part of the signature — a repository adapter cannot
+    read a workspace, so the stage collects the values through
+    ``ExecutionPort.collect_changes`` and passes them by value.
+
+    * ``publish_commit`` — replay-dedup by key: the same key returns the commit
+      SHA recorded at the first call and never creates a second commit (the
+      lookup must survive a cold adapter, like ``MergeRequestPort.add_comment``
+      does). An empty ``changes`` is a ``ValueError`` — "no changes" is a stage
+      decision, not a silent empty commit. The branch must already exist
+      (``ensure_branch``); a missing one is a ``KeyError`` (404 = absent). The
+      commit lands on the branch's current head and the returned SHA is the
+      revision the change request carries as ``head_sha``. Deletions are not
+      expressible in the MVP file set: the role tools do not delete.
+    """
 
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str: ...
     async def ensure_branch(
@@ -49,6 +73,16 @@ class RepositoryPort(Protocol):
         branch: str,
         *,
         from_revision: str,
+        idempotency_key: str,
+    ) -> str: ...
+    async def publish_commit(
+        self,
+        repository: RepositoryRef,
+        branch: str,
+        changes: Mapping[str, bytes],
+        /,
+        *,
+        message: str,
         idempotency_key: str,
     ) -> str: ...
 
@@ -180,6 +214,12 @@ class ExecutionPort(Protocol):
       state and must never return a result cached under the key. An agent stage
       edits files and re-runs the check with a stable key, so a cached result
       would pin the first (failing) outcome forever.
+    * ``collect_changes`` — the read half of publication: the file set the
+      workspace currently holds, passed by value to ``RepositoryPort.publish_commit``
+      (a repository adapter cannot read a workspace, so publication carries
+      values, not handles). Like ``run_command``/``collect_evidence`` the key
+      only addresses the call in the ledger: the *current* file set is
+      returned, never a snapshot cached under the key.
 
     ``write_file`` is the write half of ``collect_evidence``: the role tools of an
     agent stage (``AgentProfile.tools``) edit the isolated workspace through it
@@ -200,6 +240,9 @@ class ExecutionPort(Protocol):
     async def collect_evidence(
         self, workspace: WorkspaceHandle, path: str, /, *, idempotency_key: str
     ) -> EvidenceFile: ...
+    async def collect_changes(
+        self, workspace: WorkspaceHandle, /, *, idempotency_key: str
+    ) -> Mapping[str, bytes]: ...
 
 
 @runtime_checkable
