@@ -325,7 +325,11 @@ describe("CiStagesPage", () => {
 
     deferred.resolve();
     expect(await screen.findByText(/Включены все этапы \(1\)/)).toBeInTheDocument();
-    expect(screen.getByTestId("ci-stage-state-lint")).toHaveTextContent("включён");
+    // The success toast renders before the post-mutation refetch lands; wait
+    // for the refreshed stage state instead of asserting synchronously.
+    await waitFor(() =>
+      expect(screen.getByTestId("ci-stage-state-lint")).toHaveTextContent("включён"),
+    );
   });
 
   it("shows an error state with a retry button when the list fails", async () => {

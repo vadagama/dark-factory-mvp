@@ -42,7 +42,20 @@ REPOSITORY: Final[RepositoryRef] = RepositoryRef(provider=Provider.GITHUB, slug=
 def _git(cwd: Path, *argv: str) -> str:
     """Run one git command in ``cwd`` and return its stdout (local repository, no network)."""
     process = subprocess.run(
-        ("git", "-C", str(cwd), "-c", "commit.gpgsign=false", *argv),
+        (
+            "git",
+            "-C",
+            str(cwd),
+            "-c",
+            "commit.gpgsign=false",
+            # Hermetic identity: CI runners have no git user configured, so a
+            # plain ``git commit`` in the seeded repo fails with exit 128.
+            "-c",
+            "user.email=factory@example.com",
+            "-c",
+            "user.name=Dark Factory",
+            *argv,
+        ),
         check=True,
         capture_output=True,
         text=True,
