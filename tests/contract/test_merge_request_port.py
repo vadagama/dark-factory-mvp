@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import pytest
 
@@ -16,6 +17,7 @@ from dark_factory.ports import (
 )
 
 HEAD = "abc1234"
+SUBMITTED_AT = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
 
 
 def _open_request(repository: RepositoryRef, change_id: str = "chg-001") -> OpenChangeRequest:
@@ -94,3 +96,67 @@ def test_merge_replay_is_a_no_op(
     asyncio.run(merge_request_port.merge(ref, expected_sha=HEAD, idempotency_key="m1"))
     merged = asyncio.run(merge_request_port.find_existing(repository, "chg-001"))
     assert merged is not None and merged.status is ChangeRequestStatus.MERGED
+
+
+def test_observe_reports_the_live_head_and_state(
+    merge_request_port: MergeRequestPort, repository: RepositoryRef
+) -> None:
+    ref = asyncio.run(merge_request_port.open(_open_request(repository), idempotency_key="k1"))
+
+    observed = asyncio.run(merge_request_port.observe(ref))
+
+    assert observed.status is ChangeRequestStatus.OPEN
+    assert observed.head_sha == HEAD
+    assert observed.merged_sha is None
+    assert observed.reviews == ()
+
+
+def test_observe_reflects_the_merge(
+    merge_request_port: MergeRequestPort, repository: RepositoryRef
+) -> None:
+    ref = asyncio.run(merge_request_port.open(_open_request(repository), idempotency_key="k1"))
+    asyncio.run(merge_request_port.merge(ref, expected_sha=HEAD, idempotency_key="m1"))
+
+    observed = asyncio.run(merge_request_port.observe(ref))
+
+    assert observed.status is ChangeRequestStatus.MERGED
+    # The head stays the SHA the gates and approvals bind to (FR-009);
+    # the merge commit is reported separately.
+    assert observed.head_sha == HEAD
+    assert observed.merged_sha is not None
+
+
+def test_observe_lists_submitted_reviews(
+    merge_request_port: MergeRequestPort,
+    review_seeder: Callable[..., object],
+    repository: RepositoryRef,
+) -> None:
+    ref = asyncio.run(merge_request_port.open(_open_request(repository), idempotency_key="k1"))
+    review_seeder(
+        ref, author="octocat", state="approved", commit_sha=HEAD, submitted_at=SUBMITTED_AT
+    )
+    review_seeder(
+        ref, author="hubot", state="changes_requested", commit_sha=HEAD, submitted_at=SUBMITTED_AT
+    )
+    review_seeder(
+        ref, author="ghost", state="commented", commit_sha=HEAD, submitted_at=SUBMITTED_AT
+    )
+
+    observed = asyncio.run(merge_request_port.observe(ref))
+
+    assert [(review.author, review.state, review.commit_sha) for review in observed.reviews] == [
+        ("octocat", "approved", HEAD),
+        ("hubot", "changes_requested", HEAD),
+        ("ghost", "commented", HEAD),
+    ]
+    assert all(review.review_id for review in observed.reviews)
+    assert all(review.submitted_at == SUBMITTED_AT for review in observed.reviews)
+
+
+def test_observe_of_an_unknown_change_request_is_a_key_error(
+    merge_request_port: MergeRequestPort, repository: RepositoryRef
+) -> None:
+    stale = ChangeRequestRef(repository=repository, number=999, status=ChangeRequestStatus.OPEN)
+
+    with pytest.raises(KeyError):
+        asyncio.run(merge_request_port.observe(stale))

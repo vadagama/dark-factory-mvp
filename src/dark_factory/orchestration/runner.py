@@ -61,7 +61,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from dark_factory.changes.enums import RunStatus, Stage
+from dark_factory.changes.enums import RunStatus, Stage, StageStatus
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
     RETRYABLE_STAGE_STATUSES,
@@ -77,6 +77,11 @@ from dark_factory.orchestration.flow import FlowDecision, apply_result
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 from dark_factory.orchestration.stages.context import StageContext
+from dark_factory.orchestration.stages.gates import (
+    GateObservation,
+    build_gate_resolution,
+    gate_resolved,
+)
 from dark_factory.orchestration.state.run_store import (
     DEFAULT_LEASE_TTL,
     OpenStage,
@@ -130,6 +135,21 @@ class RevisionResolver(Protocol):
     """
 
     def __call__(self, change: Change, stage: Stage) -> str: ...
+
+
+class FactsProvider(Protocol):
+    """Observes the provider facts one waiting stage attempt waits for (T-092 S3).
+
+    The seam keeps the driver port-free (ADR-024 p.5): the composition root
+    injects a provider over ``CIPort``/``MergeRequestPort`` in slice S3 and the
+    driver consumes only the value-level
+    :class:`~dark_factory.orchestration.stages.gates.GateObservation`. The
+    call must be read-only: it is taken twice per resumed advance — once to
+    decide whether the lease is worth taking, once re-derived under it. A
+    ``None`` return means nothing was observed and the wait stays parked.
+    """
+
+    def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> GateObservation | None: ...
 
 
 def deterministic_stage_executor(context: StageContext) -> StageResult:
@@ -263,6 +283,7 @@ def advance_run(
     revision_of: RevisionResolver | None = None,
     merge_context: MergeRequestContext | None = None,
     human_decisions: Sequence[Decision] = (),
+    gate_facts: FactsProvider | None = None,
     lease_ttl: timedelta = DEFAULT_LEASE_TTL,
     now: datetime | None = None,
 ) -> RunAdvance:
@@ -297,6 +318,17 @@ def advance_run(
     and the write; the attempt row the store inserts is the durable guard that
     no second writer executes the same attempt.
 
+    A stage parked on an external wait — a committed ``waiting`` result (ADR-006
+    p.8) — is resumed through ``gate_facts`` (T-092 S3): when the observed
+    facts resolve the wait (``stages.gates.gate_resolved``), everything is
+    re-derived under the lease and the *same* attempt is re-opened — the
+    resolution supersedes the waiting checkpoint in the result store, with its
+    own deterministic event id. An unresolved observation, a ``None`` one or an
+    absent ``gate_facts`` replay the checkpoint exactly as before: without
+    ``gate_facts`` the behaviour is unchanged for every input. The observed
+    approvals are folded into ``human_decisions`` for the flow's control-point
+    checks (T-080) and the merge authorization (ADR-011 p.2).
+
     Raises :class:`RunNotFoundError` for an unknown run and
     :class:`RunNotAdvanceableError` for a terminal one; a flow violation
     (``InvalidFlowTransition``, ``FlowStateError``, ``InvalidStatusTransition``)
@@ -309,10 +341,17 @@ def advance_run(
     attempt_number = _attempt_number(run, stage)
     input_revision = _pinned_revision(store, run, stage, change, revision_of)
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
-    if committed is not None:
+    if committed is not None and not (
         # Fast replay (ADR-024 p.3): a committed result of the operation is
         # authoritative and a repeat is inert — no lease row, no attempt, no
-        # mutation of any kind.
+        # mutation of any kind. The one exception is a ``waiting`` checkpoint
+        # whose external wait the observed facts resolve (T-092 S3): the
+        # observation is read-only, so it is taken before the lease to avoid
+        # leasing a run whose wait is still parked.
+        gate_facts is not None
+        and committed.status is StageStatus.WAITING
+        and gate_resolved(gate_facts(run, stage, change), stage=stage)
+    ):
         return _replay(committed, stage=stage)
 
     # From here the advance writes. Take the lease first and re-derive the whole
@@ -326,6 +365,32 @@ def advance_run(
     input_revision = _pinned_revision(store, run, stage, change, revision_of)
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
     if committed is not None:
+        # Re-observed under the lease: the run may have changed and the facts
+        # with it. A waiting result is not final, so another writer cannot have
+        # superseded it with a final outcome — a committed non-waiting result
+        # below is a concurrent *completion* and is replayed, as before.
+        observation = (
+            gate_facts(run, stage, change)
+            if gate_facts is not None and committed.status is StageStatus.WAITING
+            else None
+        )
+        if observation is not None and gate_resolved(observation, stage=stage):
+            return _resume_waiting(
+                store=store,
+                run=run,
+                change=change,
+                stage=stage,
+                checkpoint=committed,
+                observation=observation,
+                attempt_number=attempt_number,
+                input_revision=input_revision,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+                merge_context=merge_context,
+                human_decisions=human_decisions,
+                revision_of=revision_of,
+                now=reference_now,
+            )
         # A concurrent advance committed the very attempt in the window above:
         # the committed result is authoritative, nothing of this advance is
         # written, and the lease is released instead of left behind.
@@ -360,6 +425,128 @@ def advance_run(
         merge_context=merge_context,
         human_decisions=human_decisions,
     )
+    return _persist_and_report(
+        store=store,
+        run=run,
+        change=change,
+        stage=stage,
+        result=result,
+        decision=decision,
+        open_stage=open_stage,
+        known_stage_runs=known_stage_runs,
+        expected_revision=expected_revision,
+        fencing_token=fencing_token,
+        owner_id=owner_id,
+        revision_of=revision_of,
+        now=reference_now,
+    )
+
+
+def _resume_waiting(
+    *,
+    store: RunStorePort,
+    run: ChangeRun,
+    change: Change,
+    stage: Stage,
+    checkpoint: StageResult,
+    observation: GateObservation,
+    attempt_number: int,
+    input_revision: str,
+    owner_id: str,
+    fencing_token: int,
+    merge_context: MergeRequestContext | None,
+    human_decisions: Sequence[Decision],
+    revision_of: RevisionResolver | None,
+    now: datetime,
+) -> RunAdvance:
+    """Resolve a waiting attempt's external wait and persist the whole decision.
+
+    The resolution belongs to the waiting attempt (T-092 S3, ADR-006 p.8): the
+    same attempt number and the same pinned input revision re-open the physical
+    attempt the checkpoint parked (``RunStore.open_attempt``), the pure builder
+    (``stages.gates``) turns the observation into the final result of that
+    attempt, and ``apply_result`` decides the transition with the observed
+    approvals folded into ``human_decisions`` (T-080, ADR-011 p.2). A merge
+    context observed with the resolution replaces the caller's: the merge facts
+    of this attempt are the ones just observed. Persist, lease release and the
+    lost-race fallback are the normal path's (ADR-006 p.8).
+    """
+    expected_revision = run.state_revision
+    if run.status is not RunStatus.RUNNING:
+        run.apply_status(RunStatus.RUNNING)
+    open_stage = store.open_attempt(
+        run=run,
+        stage=stage,
+        input_revision=input_revision,
+        attempt_number=attempt_number,
+    )
+    known_stage_runs = tuple(run.stages)
+    history = store.load_history(run.id)
+    resolution = build_gate_resolution(
+        run=run,
+        stage=stage,
+        change=change,
+        checkpoint=checkpoint,
+        observation=observation,
+        input_revision=input_revision,
+        attempt_number=attempt_number,
+        history=history,
+        now=now,
+    )
+    result = resolution.result
+    decision = apply_result(
+        run,
+        result,
+        history=history,
+        now=now,
+        merge_context=(
+            resolution.merge_context if resolution.merge_context is not None else merge_context
+        ),
+        human_decisions=(*human_decisions, *observation.approvals),
+    )
+    return _persist_and_report(
+        store=store,
+        run=run,
+        change=change,
+        stage=stage,
+        result=result,
+        decision=decision,
+        open_stage=open_stage,
+        known_stage_runs=known_stage_runs,
+        expected_revision=expected_revision,
+        fencing_token=fencing_token,
+        owner_id=owner_id,
+        revision_of=revision_of,
+        now=now,
+    )
+
+
+def _persist_and_report(
+    *,
+    store: RunStorePort,
+    run: ChangeRun,
+    change: Change,
+    stage: Stage,
+    result: StageResult,
+    decision: FlowDecision,
+    open_stage: OpenStage,
+    known_stage_runs: tuple[StageRun, ...],
+    expected_revision: int,
+    fencing_token: int,
+    owner_id: str,
+    revision_of: RevisionResolver | None,
+    now: datetime,
+) -> RunAdvance:
+    """Persist the whole decision, release the lease and report the advance.
+
+    The shared tail of the normal and the resume path: the successor stages the
+    decision created are declared, the decision is persisted atomically
+    (ADR-006 p.8) and the lease is released on every path. A concurrent writer
+    that committed the attempt between the last replay check and the write
+    makes ``persist_decision`` write nothing; the committed result is then
+    authoritative and the advance reports it instead of an advance (ADR-024
+    p.3).
+    """
     created_stages = _created_stages(
         store, run, known=known_stage_runs, executed=stage, change=change, revision_of=revision_of
     )
@@ -371,14 +558,13 @@ def advance_run(
         created_stages=created_stages,
         expected_revision=expected_revision,
         fencing_token=fencing_token,
-        now=reference_now,
+        now=now,
     )
     store.release_lease(run_id=run.id, owner_id=owner_id, fencing_token=fencing_token)
     if not persisted:
-        # A concurrent writer committed this attempt between the last replay check
-        # and the write: nothing of this advance was written, so the committed
-        # result is authoritative and the advance reports it instead of an advance.
-        committed = _committed_result(store, run, stage, attempt_number, input_revision)
+        committed = _committed_result(
+            store, run, stage, result.attempt_number, result.input_revision or ""
+        )
         if committed is None:  # pragma: no cover - the conflict is a committed row
             raise RunnerError(
                 f"stage {stage.value} of run {run.id!r} was not persisted and has no "

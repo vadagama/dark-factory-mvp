@@ -81,6 +81,7 @@ class MergeRequestPort(Protocol):
     async def find_existing(self, repository: RepositoryRef, change_id: str, /) -> ChangeRequestRef | None: ...
     async def add_comment(self, cr: ChangeRequestRef, body: str, *, idempotency_key: str) -> None: ...
     async def merge(self, cr: ChangeRequestRef, *, expected_sha: str, idempotency_key: str) -> None: ...
+    async def observe(self, cr: ChangeRequestRef, /) -> ChangeRequestObservation: ...
 
 @runtime_checkable
 class PipelinePort(Protocol):
@@ -88,6 +89,8 @@ class PipelinePort(Protocol):
 ```
 
 `find_existing` и `expected_sha` перед merge — реализация FR-011/FR-017. Поля `status` CR берутся из единого `ChangeRequestStatus`.
+
+`observe` (T-092 S3, аддитивное расширение контракта по образцу `publish_commit`/`collect_changes`, без ADR) — read-модель разрешения внешнего wait: одним значением `ChangeRequestObservation` возвращает живые `status` (единый `ChangeRequestStatus`), `head_sha` и `merged_sha` change request и его human-ревью (`ReviewObservation`: провайдерский id, автор, состояние `approved | changes_requested | commented | dismissed | pending`, `commit_sha` — version-bound approval (ADR-009 §7), `submitted_at`). Только чтение: без `idempotency_key` — наблюдение не минтует внешнего эффекта (FR-017); неизвестный CR — `KeyError` (конвенция «404 = отсутствует»); провайдер, не отдающий голову, возвращает `head_sha = None`, и наблюдение честно деградирует — ни вердикта пайплайна, ни version-bound approval без SHA не существует (FR-009). Потребитель — SCM-backed `FactsProvider` в composition root (`runtime/facts.py`, ADR-024 §5): CR-факты + `PipelinePort.status` на head SHA + version-bound approvals → `GateObservation` драйвера (T-092 S3).
 
 `publish_commit` — публикация правок агентной стадии (TD-024): коммит **и** push — один внешний эффект с одним `effect_key` (ADR-006 §3: локальный коммит без push — не внешний эффект, а разрыв одной публикации на два порта ломает per-effect ledger). Единица переноса — **файловое множество** (`path → bytes`, текущее содержимое файлов workspace), а не дифф: снапшот самосогласован и при replay сходится к тому же дереву, дифф же требует серверного apply. `WorkspaceHandle` сознательно не входит в сигнатуру: SCM-адаптер не читает workspace — стадия собирает значения через `ExecutionPort.collect_changes` и передаёт их по значению. Идемпотентность по ключу — replay-dedup: повтор возвращает SHA коммита первого вызова и не создаёт второй коммит; lookup обязан переживать холодный адаптер (невидимый маркер `<!-- dark-factory:idempotency:<key> -->` в теле commit message — тот же приём, что у `add_comment`). Пустой `changes` — `ValueError`: «нет изменений» — решение стадии, а не молчаливый пустой коммит. Ветка обязана существовать (`ensure_branch`) — иначе `KeyError` (конвенция «404 = отсутствует»); коммит встаёт на текущую голову ветки, возвращённый SHA — ревизия коммита, которую стадия несёт как `head_sha` change request и `revision` артефакта. Удаления файлов в MVP не представимы (инструменты ролей не удаляют) — задокументированное ограничение единицы переноса.
 

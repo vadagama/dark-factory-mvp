@@ -94,6 +94,7 @@ from dark_factory.cli.main import (
     RunStatusArgs,
 )
 from dark_factory.orchestration.runner import (
+    FactsProvider,
     RevisionResolver,
     RunAdvance,
     RunAdvanceOutcome,
@@ -182,16 +183,18 @@ def run_advance_command(
     now: datetime | None = None,
     executor: StageExecutor | None = None,
     revision_of: RevisionResolver | None = None,
+    gate_facts: FactsProvider | None = None,
 ) -> int:
     """Handle ``factory run advance``; return the process exit code (contract cli.md).
 
-    ``session_factory``, ``owner_id``, ``now``, ``executor`` and ``revision_of``
-    are injection seams. The first three are for tests; ``executor`` and
-    ``revision_of`` are how the composition root (``dark_factory.runtime``)
-    plugs the harness-backed executor and the SCM-derived revision into the
-    working path: this module is core and may not import ``runtime`` (ADR-024
-    p.5), so the binding arrives as an argument. Without them the deterministic
-    stage path runs, exactly as before.
+    ``session_factory``, ``owner_id`` and ``now`` are injection seams for tests;
+    ``executor``, ``revision_of`` and ``gate_facts`` are how the composition
+    root (``dark_factory.runtime``) plugs the harness-backed executor, the
+    SCM-derived revision resolver and the provider-facts observer of the wait
+    resolution (T-092 S3) into the working path: this module is core and may
+    not import ``runtime`` (ADR-024 p.5), so the bindings arrive as arguments.
+    Without them the deterministic stage path runs and a waiting stage is
+    never resolved by observed facts — exactly as before.
     """
     resolved_owner = owner_id if owner_id is not None else _default_owner_id()
     if session_factory is not None:
@@ -202,6 +205,7 @@ def run_advance_command(
             now=now,
             executor=executor,
             revision_of=revision_of,
+            gate_facts=gate_facts,
         )
     try:
         engine = create_state_engine(_database_url())
@@ -218,6 +222,7 @@ def run_advance_command(
             now=now,
             executor=executor,
             revision_of=revision_of,
+            gate_facts=gate_facts,
         )
     finally:
         engine.dispose()
@@ -328,6 +333,7 @@ def _advance(
     now: datetime | None,
     executor: StageExecutor | None,
     revision_of: RevisionResolver | None,
+    gate_facts: FactsProvider | None,
 ) -> int:
     """Advance one stage in one transaction and emit the outcome (contract cli.md)."""
     try:
@@ -339,6 +345,7 @@ def _advance(
                 now=now,
                 executor=executor,
                 revision_of=revision_of,
+                gate_facts=gate_facts,
             )
     except InvalidRunnerInput as exc:
         return _report(
@@ -376,6 +383,7 @@ def _advance_in_session(
     now: datetime | None,
     executor: StageExecutor | None,
     revision_of: RevisionResolver | None,
+    gate_facts: FactsProvider | None,
 ) -> RunAdvance:
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
@@ -387,6 +395,7 @@ def _advance_in_session(
         owner_id=owner_id,
         executor=executor,
         revision_of=revision_of,
+        gate_facts=gate_facts,
         now=now,
     )
 

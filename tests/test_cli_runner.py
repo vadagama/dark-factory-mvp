@@ -31,6 +31,7 @@ from dark_factory.cli.main import (
 )
 from dark_factory.orchestration.flow import FlowDecision
 from dark_factory.orchestration.runner import RunAdvance, RunAdvanceOutcome
+from dark_factory.orchestration.stages.gates import GateObservation
 from dark_factory.orchestration.state.repositories import LeaseLostError
 from tests.changes_factories import make_change, make_run
 
@@ -153,6 +154,40 @@ def _last_store() -> StubStore:
     store = StubStore.last
     assert store is not None
     return store
+
+
+# --- seams -----------------------------------------------------------------
+
+
+class _FactsSentinel:
+    """Identity sentinel of a facts provider (the CLI must never call it)."""
+
+    def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> GateObservation | None:
+        raise AssertionError("the CLI must not consult the facts provider itself")
+
+
+def test_run_advance_hands_the_gate_facts_to_the_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The gate-facts seam of ``run advance`` is a value passed through to the
+    # driver (T-092 S3); the CLI itself never consults it.
+    facts = _FactsSentinel()
+    seen: dict[str, Any] = {}
+
+    def _recording_advance(**kwargs: Any) -> RunAdvance:
+        seen.update(kwargs)
+        return _advance_for(RunAdvanceOutcome.WAITING)
+
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    monkeypatch.setattr(runner_module, "advance_run", _recording_advance)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+        gate_facts=facts,
+    )
+
+    assert code == EXIT_WAITING
+    assert seen["gate_facts"] is facts
 
 
 # --- exit codes -----------------------------------------------------------

@@ -309,10 +309,13 @@ def test_open_attempt_refuses_to_reopen_a_committed_attempt(
     _seed_change(session_factory, change)
     revision = RunStore.stage_input_revision(change)
     run_id = _create_run(session_factory, change)
-    _advance(session_factory, change, run_id)
+    _advance(session_factory, change, run_id, executor=_blocking_executor)
 
     # The structural guarantee behind "a replay never clears finished_at": an
-    # attempt whose result is committed is refused instead of reopened.
+    # attempt whose result is committed is refused instead of reopened. The
+    # fixture ends the attempt ``blocked`` — a final, committed outcome; a
+    # ``waiting`` checkpoint, by contrast, is the resumable external-wait state
+    # of ADR-006 p.8 and re-opens through the resume path (T-092 S3).
     with pytest.raises(StateError), session_scope(session_factory) as session:
         store = RunStore(session)
         run = store.load(run_id)
@@ -329,7 +332,7 @@ def test_open_attempt_refuses_to_reopen_a_committed_attempt(
             Attempt, f"{operation_key(run_id, Stage.SPECIFICATION, revision)}:1"
         )
         assert attempt_row is not None
-        assert attempt_row.status == StageStatus.WAITING.value
+        assert attempt_row.status == StageStatus.BLOCKED.value
         assert attempt_row.finished_at is not None
 
 

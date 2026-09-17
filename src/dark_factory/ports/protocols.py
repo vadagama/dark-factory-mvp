@@ -22,6 +22,7 @@ from dark_factory.context.sdd.normalized import ChangeSet, RequirementsSnapshot
 from dark_factory.ports.agents import AgentResult, TaskEnvelope
 from dark_factory.ports.common import (
     ArtifactSpec,
+    ChangeRequestObservation,
     HealthStatus,
     OpenChangeRequest,
     PipelineStatus,
@@ -89,7 +90,17 @@ class RepositoryPort(Protocol):
 
 @runtime_checkable
 class MergeRequestPort(Protocol):
-    """Change request lifecycle; GitHub PR and GitLab MR in one domain type (ADR-019 p.2)."""
+    """Change request lifecycle; GitHub PR and GitLab MR in one domain type (ADR-019 p.2).
+
+    ``observe`` is the read model of wait resolution (T-092 S3): the live head
+    SHA, the merge state and the human reviews of one change request in a
+    single provider-neutral value. Read-only — no idempotency key, because an
+    observation mints no external effect (FR-017). An unknown change request
+    is a ``KeyError`` (404 = absent, the shared convention); a provider that
+    does not report a head returns ``head_sha = None`` and the observation
+    degrades honestly — no pipeline verdict and no version-bound approval can
+    be derived without a SHA (FR-009).
+    """
 
     async def open(
         self, request: OpenChangeRequest, *, idempotency_key: str
@@ -103,6 +114,7 @@ class MergeRequestPort(Protocol):
     async def merge(
         self, cr: ChangeRequestRef, *, expected_sha: str, idempotency_key: str
     ) -> None: ...
+    async def observe(self, cr: ChangeRequestRef, /) -> ChangeRequestObservation: ...
 
 
 @runtime_checkable

@@ -82,7 +82,10 @@ from dark_factory.orchestration.state.repositories import (
     OutboxRepository,
     StateError,
 )
-from dark_factory.orchestration.state.stage_results import StageResultRepository
+from dark_factory.orchestration.state.stage_results import (
+    RecordOutcome,
+    StageResultRepository,
+)
 from dark_factory.ports.events import EventType
 
 LEASE_RESOURCE_TYPE: Final[str] = "execution"
@@ -134,15 +137,23 @@ def _status_path(current: StageStatus, target: StageStatus) -> tuple[StageStatus
     )
 
 
-def _stage_completed_event_id(attempt_id: str) -> str:
+def _stage_completed_event_id(attempt_id: str, *, supersede_status: str | None = None) -> str:
     """Deterministic id of a stage-attempt completion event (ADR-016 p.3).
 
     A digest, not the attempt id itself: an operation key carrying a full
     SHA-256 input revision is already ~120 characters and ``outbox.event_id``
     is bound to ``String(128)``. Determinism is what consumers deduplicate on
     (``event_id``), and the attempt id is the identity of one decision.
+
+    A resolution of a ``waiting`` checkpoint (T-092 S3, ADR-006 p.8) completes
+    the same attempt the checkpoint's event already named, so it extends the
+    payload with the resolved status: a distinct, still deterministic id — the
+    same resolution replays to the same id and deduplicates, and it never
+    collides with the checkpoint's own event.
     """
     payload = f"{attempt_id}:{EventType.RUN_STAGE_COMPLETED.value}"
+    if supersede_status is not None:
+        payload = f"{payload}:{supersede_status}"
     return f"evt_{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
 
 
@@ -422,14 +433,30 @@ class RunStore:
         committed result of this attempt, or — after a ``failed``/``blocked``
         attempt — asks for the *next* attempt number, which ``append_attempt``
         inserts as a fresh attempt of the same operation (ADR-006 p.7).
-        Reaching a non-``in_progress`` attempt here is a programming error and
-        raises.
+
+        The one exception is a ``waiting`` attempt (T-092 S3): it is the
+        external-wait checkpoint of ADR-006 p.8 — the attempt is not finished,
+        it is parked on facts the provider has not produced yet. Resolving the
+        wait re-opens the *same* physical attempt (``waiting -> in_progress``,
+        a legal edge of the T-003 table, ``finished_at`` cleared) — never a new
+        attempt number, so the resolution result recomposes the checkpoint's
+        attempt id and supersedes it in the result store. A waiting attempt has
+        no row of its own to bump a revision on; the domain and stage-row
+        revisions move with the resolution's applied status, as on every path.
+
+        Reaching any other non-``in_progress`` attempt here is a programming
+        error and raises.
         """
         row = self._executions.get_or_create_stage(
             execution_id=run.id, stage=stage, input_revision=input_revision
         )
         attempt = self._executions.append_attempt(row, attempt_number=attempt_number)
-        if StageStatus(attempt.status) is not StageStatus.IN_PROGRESS:
+        status = StageStatus(attempt.status)
+        if status is StageStatus.WAITING:
+            for step in _status_path(status, StageStatus.IN_PROGRESS):
+                attempt.status = step.value
+            attempt.finished_at = None
+        elif status is not StageStatus.IN_PROGRESS:
             raise StateError(
                 f"attempt {attempt.id!r} is already finalized ({attempt.status}); "
                 "a committed result must be replayed or a new attempt opened "
@@ -471,8 +498,15 @@ class RunStore:
         result (:func:`~dark_factory.orchestration.runner.advance_run` checks it
         even earlier, before any mutation). Call this *before* any external wait:
         the result must be durable before the job ends (ADR-006 p.8).
+
+        A resolution of a ``waiting`` checkpoint is not a replay (T-092 S3):
+        the result store supersedes the checkpoint in place (same row, same
+        attempt) and the event carries a distinct, deterministic id derived
+        from the resolved status, so it never collides with the checkpoint's
+        own ``run.stage_completed`` event.
         """
-        if not self._results.record(result):
+        outcome = self._results.record_outcome(result)
+        if outcome is RecordOutcome.REPLAYED:
             return False
         for placement in created_stages:
             self._executions.get_or_create_stage(
@@ -492,7 +526,12 @@ class RunStore:
         # reports the revision the domain reached, never a lower one.
         execution.state_revision = max(execution.state_revision, run.state_revision)
         self._outbox.publish(
-            event_id=_stage_completed_event_id(open_stage.attempt_id),
+            event_id=_stage_completed_event_id(
+                open_stage.attempt_id,
+                supersede_status=(
+                    result.status.value if outcome is RecordOutcome.SUPERSEDED else None
+                ),
+            ),
             event_type=EventType.RUN_STAGE_COMPLETED.value,
             change_id=run.change_id,
             run_id=run.id,
