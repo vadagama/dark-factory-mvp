@@ -22,7 +22,7 @@ from dark_factory.changes.next_action import (
     WaitForCIAction,
     WaitForInputAction,
 )
-from dark_factory.changes.refs import RepositoryRef
+from dark_factory.changes.refs import ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.changes.run_records import ReleaseEvidence, SmokeProbeEvidence
 from dark_factory.changes.usage import BudgetSnapshot
@@ -30,6 +30,7 @@ from dark_factory.orchestration.flow import expected_result_status
 from dark_factory.orchestration.stages.context import StageContext, build_context
 from dark_factory.orchestration.stages.release import (
     RELEASE_BRANCH_PREFIX,
+    InnerStageExecutor,
     ReleaseObservation,
     ReleaseStageExecutor,
     build_release_resolution,
@@ -267,7 +268,9 @@ def test_observed_verified_at_overrides_the_resolver_clock() -> None:
 # --- GitOps promotion executor (T-092 S4, ADR-024 §7 S4) ---------------------
 
 
-def _find_change_request(merge_requests: FakeMergeRequests, run_id: str = "run-001"):
+def _find_change_request(
+    merge_requests: FakeMergeRequests, run_id: str = "run-001"
+) -> ChangeRequestRef | None:
     """Sync read view over the async ``find_existing`` (tests are synchronous)."""
     return asyncio.run(merge_requests.find_existing(GITOPS_REPOSITORY, run_id))
 
@@ -284,11 +287,11 @@ def _release_context(*, change: Change | None = None, run_id: str = "run-001") -
     )
 
 
-def _inner_recording(results: list[StageResult]):
+def _inner_recording(contexts: list[StageContext]) -> InnerStageExecutor:
     """An inner executor that records its context and returns one canned result."""
 
     def execute(context: StageContext) -> StageResult:
-        results.append(context)
+        contexts.append(context)
         return _canned_inner_result(context)
 
     return execute
@@ -312,7 +315,7 @@ def _executor(
     expected_digest: str | None = EXPECTED_DIGEST,
     repository: FakeRepository | None = None,
     merge_requests: FakeMergeRequests | None = None,
-    inner=None,
+    inner: InnerStageExecutor | None = None,
 ) -> ReleaseStageExecutor:
     return ReleaseStageExecutor(
         inner if inner is not None else _inner_recording([]),
@@ -338,7 +341,7 @@ def _seed_gitops_main(repository: FakeRepository) -> None:
 
 def test_a_non_release_stage_delegates_to_inner_without_any_promotion() -> None:
     """The executor owns only the release stage; construction work is inner's business."""
-    inner_results: list[StageResult] = []
+    inner_contexts: list[StageContext] = []
     repository = FakeRepository()
     merge_requests = FakeMergeRequests()
     context = build_context(
@@ -353,11 +356,11 @@ def test_a_non_release_stage_delegates_to_inner_without_any_promotion() -> None:
     result = _executor(
         repository=repository,
         merge_requests=merge_requests,
-        inner=_inner_recording(inner_results),
+        inner=_inner_recording(inner_contexts),
     )(context)
 
     assert result.status is StageStatus.WAITING
-    assert inner_results == [context]
+    assert inner_contexts == [context]
     assert repository.commits_of(GITOPS_REPOSITORY, _promotion_branch()) == ()
     assert _find_change_request(merge_requests) is None
 

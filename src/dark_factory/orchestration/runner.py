@@ -82,6 +82,11 @@ from dark_factory.orchestration.stages.gates import (
     build_gate_resolution,
     gate_resolved,
 )
+from dark_factory.orchestration.stages.release import (
+    ReleaseObservation,
+    build_release_resolution,
+    release_resolved,
+)
 from dark_factory.orchestration.state.run_store import (
     DEFAULT_LEASE_TTL,
     OpenStage,
@@ -150,6 +155,25 @@ class FactsProvider(Protocol):
     """
 
     def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> GateObservation | None: ...
+
+
+class ReleaseFactsProvider(Protocol):
+    """Observes the release facts one waiting release attempt waits for (T-092 S4).
+
+    The release counterpart of :class:`FactsProvider` (ADR-024 §7 S4): the
+    composition root or the CLI injects a provider over the release seams —
+    the deployed digest, the Argo Application statuses, the smoke probes — and
+    the driver consumes only the value-level
+    :class:`~dark_factory.orchestration.stages.release.ReleaseObservation`.
+    The same read-only discipline applies: taken twice per resumed advance,
+    and a ``None`` or non-resolving observation parks the wait. Pipeline
+    observations never resolve a release wait (:func:`gate_resolved` refuses
+    them for the release stage) — only release facts do.
+    """
+
+    def __call__(
+        self, run: ChangeRun, stage: Stage, change: Change
+    ) -> ReleaseObservation | None: ...
 
 
 def deterministic_stage_executor(context: StageContext) -> StageResult:
@@ -284,6 +308,7 @@ def advance_run(
     merge_context: MergeRequestContext | None = None,
     human_decisions: Sequence[Decision] = (),
     gate_facts: FactsProvider | None = None,
+    release_facts: ReleaseFactsProvider | None = None,
     lease_ttl: timedelta = DEFAULT_LEASE_TTL,
     now: datetime | None = None,
 ) -> RunAdvance:
@@ -319,13 +344,15 @@ def advance_run(
     no second writer executes the same attempt.
 
     A stage parked on an external wait — a committed ``waiting`` result (ADR-006
-    p.8) — is resumed through ``gate_facts`` (T-092 S3): when the observed
-    facts resolve the wait (``stages.gates.gate_resolved``), everything is
+    p.8) — is resumed through the observed facts (T-092 S3/S4): the machine
+    gates through ``gate_facts`` (``stages.gates.gate_resolved``) and the
+    release stage through ``release_facts`` (``stages.release.release_resolved``,
+    ADR-024 §7 S4). When the observed facts resolve the wait, everything is
     re-derived under the lease and the *same* attempt is re-opened — the
     resolution supersedes the waiting checkpoint in the result store, with its
     own deterministic event id. An unresolved observation, a ``None`` one or an
-    absent ``gate_facts`` replay the checkpoint exactly as before: without
-    ``gate_facts`` the behaviour is unchanged for every input. The observed
+    absent provider replay the checkpoint exactly as before: without the
+    providers the behaviour is unchanged for every input. The observed gate
     approvals are folded into ``human_decisions`` for the flow's control-point
     checks (T-080) and the merge authorization (ADR-011 p.2).
 
@@ -345,12 +372,17 @@ def advance_run(
         # Fast replay (ADR-024 p.3): a committed result of the operation is
         # authoritative and a repeat is inert — no lease row, no attempt, no
         # mutation of any kind. The one exception is a ``waiting`` checkpoint
-        # whose external wait the observed facts resolve (T-092 S3): the
+        # whose external wait the observed facts resolve (T-092 S3/S4): the
         # observation is read-only, so it is taken before the lease to avoid
         # leasing a run whose wait is still parked.
-        gate_facts is not None
-        and committed.status is StageStatus.WAITING
-        and gate_resolved(gate_facts(run, stage, change), stage=stage)
+        _external_wait_resolved(
+            committed,
+            stage=stage,
+            run=run,
+            change=change,
+            gate_facts=gate_facts,
+            release_facts=release_facts,
+        )
     ):
         return _replay(committed, stage=stage)
 
@@ -371,7 +403,9 @@ def advance_run(
         # below is a concurrent *completion* and is replayed, as before.
         observation = (
             gate_facts(run, stage, change)
-            if gate_facts is not None and committed.status is StageStatus.WAITING
+            if gate_facts is not None
+            and committed.status is StageStatus.WAITING
+            and stage is not Stage.RELEASE
             else None
         )
         if observation is not None and gate_resolved(observation, stage=stage):
@@ -391,6 +425,29 @@ def advance_run(
                 revision_of=revision_of,
                 now=reference_now,
             )
+        if (
+            committed.status is StageStatus.WAITING
+            and stage is Stage.RELEASE
+            and release_facts is not None
+        ):
+            release_observation = release_facts(run, stage, change)
+            if release_observation is not None and release_resolved(release_observation):
+                return _resume_release_waiting(
+                    store=store,
+                    run=run,
+                    change=change,
+                    stage=stage,
+                    checkpoint=committed,
+                    observation=release_observation,
+                    attempt_number=attempt_number,
+                    input_revision=input_revision,
+                    owner_id=owner_id,
+                    fencing_token=fencing_token,
+                    merge_context=merge_context,
+                    human_decisions=human_decisions,
+                    revision_of=revision_of,
+                    now=reference_now,
+                )
         # A concurrent advance committed the very attempt in the window above:
         # the committed result is authoritative, nothing of this advance is
         # written, and the lease is released instead of left behind.
@@ -503,6 +560,105 @@ def _resume_waiting(
             resolution.merge_context if resolution.merge_context is not None else merge_context
         ),
         human_decisions=(*human_decisions, *observation.approvals),
+    )
+    return _persist_and_report(
+        store=store,
+        run=run,
+        change=change,
+        stage=stage,
+        result=result,
+        decision=decision,
+        open_stage=open_stage,
+        known_stage_runs=known_stage_runs,
+        expected_revision=expected_revision,
+        fencing_token=fencing_token,
+        owner_id=owner_id,
+        revision_of=revision_of,
+        now=now,
+    )
+
+
+def _external_wait_resolved(
+    checkpoint: StageResult,
+    *,
+    stage: Stage,
+    run: ChangeRun,
+    change: Change,
+    gate_facts: FactsProvider | None,
+    release_facts: ReleaseFactsProvider | None,
+) -> bool:
+    """Whether the observed facts resolve the checkpoint's external wait (read-only).
+
+    Only a ``waiting`` checkpoint can resolve, and the facts are per stage
+    kind (T-092 S3/S4): the release stage resolves only through release facts
+    (the driver never leases a run whose release wait is parked on pipeline
+    observations — ``gate_resolved`` refuses them for the release stage),
+    every other stage resolves through the gate facts. ``None`` observations
+    and absent providers resolve nothing.
+    """
+    if checkpoint.status is not StageStatus.WAITING:
+        return False
+    if stage is Stage.RELEASE:
+        return release_facts is not None and release_resolved(release_facts(run, stage, change))
+    return gate_facts is not None and gate_resolved(gate_facts(run, stage, change), stage=stage)
+
+
+def _resume_release_waiting(
+    *,
+    store: RunStorePort,
+    run: ChangeRun,
+    change: Change,
+    stage: Stage,
+    checkpoint: StageResult,
+    observation: ReleaseObservation,
+    attempt_number: int,
+    input_revision: str,
+    owner_id: str,
+    fencing_token: int,
+    merge_context: MergeRequestContext | None,
+    human_decisions: Sequence[Decision],
+    revision_of: RevisionResolver | None,
+    now: datetime,
+) -> RunAdvance:
+    """Resolve a waiting release attempt's external wait and persist the decision (S4).
+
+    The release counterpart of :func:`_resume_waiting` (T-092 S4, ADR-024
+    §7 S4): the same attempt number and the same pinned input revision re-open
+    the physical attempt the checkpoint parked, and the pure builder
+    (``stages.release``) turns the observation into the final result of that
+    attempt — ``released`` succeeds the stage (the flow then completes the run
+    through the release action) and a failed verification blocks it with the
+    rollback signal. There are no merge facts and no observed approvals on
+    this path: the caller's merge context and human decisions pass through
+    unchanged. Persist, lease release and the lost-race fallback are the
+    normal path's (ADR-006 p.8).
+    """
+    expected_revision = run.state_revision
+    if run.status is not RunStatus.RUNNING:
+        run.apply_status(RunStatus.RUNNING)
+    open_stage = store.open_attempt(
+        run=run,
+        stage=stage,
+        input_revision=input_revision,
+        attempt_number=attempt_number,
+    )
+    known_stage_runs = tuple(run.stages)
+    result = build_release_resolution(
+        run=run,
+        change=change,
+        checkpoint=checkpoint,
+        observation=observation,
+        input_revision=input_revision,
+        attempt_number=attempt_number,
+        now=now,
+    )
+    decision = apply_result(
+        run,
+        result,
+        history=store.load_history(run.id),
+        now=now,
+        merge_context=merge_context,
+        human_decisions=human_decisions,
     )
     return _persist_and_report(
         store=store,

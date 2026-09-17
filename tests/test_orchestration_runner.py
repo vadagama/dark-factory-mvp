@@ -36,10 +36,12 @@ from dark_factory.changes.next_action import (
     WaitForInputAction,
 )
 from dark_factory.changes.run import Change, ChangeRun, StageResult, StageRun
+from dark_factory.changes.run_records import SmokeProbeEvidence
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.flow import FlowDecision, FlowStateError, InvalidFlowTransition
 from dark_factory.orchestration.runner import (
     FactsProvider,
+    ReleaseFactsProvider,
     RevisionResolver,
     RunAdvance,
     RunAdvanceOutcome,
@@ -52,6 +54,7 @@ from dark_factory.orchestration.runner import (
 )
 from dark_factory.orchestration.stages.context import StageContext
 from dark_factory.orchestration.stages.gates import GateObservation
+from dark_factory.orchestration.stages.release import ReleaseObservation
 from dark_factory.orchestration.state.run_store import OpenStage, StagePlacement
 from tests.changes_factories import (
     make_change,
@@ -266,6 +269,7 @@ def _advance(
     executor: StageExecutor,
     change: Change | None = None,
     gate_facts: FactsProvider | None = None,
+    release_facts: ReleaseFactsProvider | None = None,
     revision_of: RevisionResolver | None = None,
 ) -> RunAdvance:
     return advance_run(
@@ -276,6 +280,7 @@ def _advance(
         executor=executor,
         revision_of=revision_of,
         gate_facts=gate_facts,
+        release_facts=release_facts,
         lease_ttl=TTL,
         now=NOW,
     )
@@ -1209,3 +1214,180 @@ def test_advance_run_does_not_observe_facts_without_a_waiting_checkpoint() -> No
     fresh = _advance(fresh_store, executor=_waiting(), change=change, gate_facts=RefusingFacts())
     assert fresh.outcome is RunAdvanceOutcome.WAITING
     assert len(fresh_store.attempts) == 1
+
+
+# --- release wait resolution (T-092 S4, ADR-024 §7 S4) -----------------------
+
+
+def _run_at_release_waiting() -> ChangeRun:
+    """A run whose four work stages succeeded and whose release stage waits for the rollout."""
+    run = make_run()
+    for stage in (
+        Stage.SPECIFICATION,
+        Stage.PLANNING,
+        Stage.CONSTRUCTION,
+        Stage.REVIEW_VERIFICATION,
+    ):
+        run.stages.append(_stage_run(run, stage, StageStatus.SUCCEEDED))
+    run.stages.append(_stage_run(run, Stage.RELEASE, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    return run
+
+
+def _release_checkpoint(run: ChangeRun, change: Change) -> StageResult:
+    """The committed ``waiting`` checkpoint of a release stage parked on the rollout."""
+    return StageResult(
+        stage=Stage.RELEASE,
+        run_id=run.id,
+        change_id=change.id,
+        attempt_number=1,
+        input_revision=REVISION,
+        status=StageStatus.WAITING,
+        next_action=WaitForCIAction(reason="waiting for the rollout"),
+        produced_at=NOW,
+    )
+
+
+@dataclass
+class FakeReleaseFacts:
+    """Canned ``ReleaseFactsProvider``: one observation for every call it takes."""
+
+    observation: ReleaseObservation | None
+    calls: list[Stage] = field(default_factory=list)
+
+    def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> ReleaseObservation | None:
+        self.calls.append(stage)
+        return self.observation
+
+
+def _released_observation() -> ReleaseObservation:
+    """A full observation the release decision releases (digest, Argo, smoke)."""
+    return ReleaseObservation(
+        expected_digest="sha256:3f7a1c9d",
+        observed_digest="sha256:3f7a1c9d",
+        argo_sync_raw="Synced",
+        argo_health_raw="Healthy",
+        smoke=(SmokeProbeEvidence(name="http-health", passed=True, detail="HTTP 200"),),
+    )
+
+
+def test_advance_run_replays_a_waiting_release_stage_without_release_facts() -> None:
+    """Without ``release_facts`` the release checkpoint is replayed — byte-identical to S3."""
+    run = _run_at_release_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    checkpoint = _release_checkpoint(run, change)
+    store.history.append(checkpoint)
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=FakeFacts(None))
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is checkpoint
+    assert advance.decision is None
+    assert store.lease_ttls == []
+    assert store.attempts == []
+    assert store.released == []
+    assert run.status is RunStatus.WAITING
+
+
+def test_advance_run_never_resolves_a_release_wait_from_gate_facts() -> None:
+    """Pipeline observations never wake a release wait (the S4 guard, fail-closed)."""
+    run = _run_at_release_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_release_checkpoint(run, change))
+    # Even a green pipeline at a merged head resolves nothing for the release stage.
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=True, pipeline_status="success"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result.status is StageStatus.WAITING
+    assert store.released == []
+
+
+def test_advance_run_replays_a_release_wait_on_an_unresolved_observation() -> None:
+    """Partial release facts resolve nothing: replay before any lease is taken."""
+    run = _run_at_release_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    checkpoint = _release_checkpoint(run, change)
+    store.history.append(checkpoint)
+    facts = FakeReleaseFacts(
+        ReleaseObservation(
+            expected_digest="sha256:3f7a1c9d",
+            observed_digest="sha256:3f7a1c9d",
+            argo_sync_raw="Synced",
+            argo_health_raw=None,  # health not observed yet: partial, fail-closed
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, release_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is checkpoint
+    assert facts.calls == [Stage.RELEASE]
+    assert store.lease_ttls == []
+    assert store.attempts == []
+    assert store.decisions == []
+    assert store.history == [checkpoint]
+
+
+def test_advance_run_resolves_a_released_stage_into_a_completed_run() -> None:
+    """Released release facts complete the run, superseding the checkpoint."""
+    run = _run_at_release_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_release_checkpoint(run, change))
+    facts = FakeReleaseFacts(_released_observation())
+
+    advance = _advance(store, executor=_waiting(), change=change, release_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.COMPLETED
+    assert advance.decision is not None
+    assert isinstance(advance.result.next_action, ReleaseAction)
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert advance.result.attempt_number == 1
+    assert advance.result.input_revision == REVISION
+    assert [(item.gate, item.status) for item in advance.result.gate_results] == [
+        (Gate.RELEASE, GateStatus.PASSED)
+    ]
+    # The facts are read twice per resumed advance: before the lease and under it.
+    assert facts.calls == [Stage.RELEASE, Stage.RELEASE]
+    # The release stage is the last of the route: no successor stage is created.
+    assert store.created_stages == []
+    # The checkpoint was superseded in place by the succeeded outcome of the same attempt.
+    assert store.history == [advance.result]
+    assert store.released == [1]
+    assert run.status is RunStatus.SUCCEEDED
+    assert run.stages[4].status is StageStatus.SUCCEEDED
+
+
+def test_advance_run_resolves_a_failed_verification_into_a_blocked_run() -> None:
+    """A failed verification blocks the run with the rollback signal (ADR-011 p.6)."""
+    run = _run_at_release_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_release_checkpoint(run, change))
+    facts = FakeReleaseFacts(
+        ReleaseObservation(
+            expected_digest="sha256:3f7a1c9d",
+            observed_digest="sha256:deadbeef",  # the deployment is not the promoted one
+            argo_sync_raw="Synced",
+            argo_health_raw="Healthy",
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, release_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.BLOCKED
+    assert advance.decision is not None
+    assert isinstance(advance.decision.action, StopAction)
+    assert "does not match the observed digest" in advance.decision.action.reason
+    assert advance.result.status is StageStatus.BLOCKED
+    assert advance.result.release is not None
+    assert advance.result.release.rollback_signal is not None
+    assert store.history == [advance.result]
+    assert store.released == [1]
+    assert run.status is RunStatus.BLOCKED
+    assert run.stages[4].status is StageStatus.BLOCKED
