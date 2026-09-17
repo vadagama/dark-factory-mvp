@@ -17,7 +17,7 @@
 | Чтение конфигураций адаптеров (`HarnessConfig`, `GitHubConfig`, `TelemetryConfig`, `WorktreeExecutionConfig`) | Решения о переходах, статусах, гейтах, риске |
 | Сборка адаптеров (`PydanticAIHarness`, `GitHubAdapter`, `OtlpTelemetryAdapter`, `WorktreeExecution`) | Драйвер запуска (`orchestration/runner`) — он зависит только от портов |
 | Привязка инструментов роли к harness (`Runtime.harness_of`) | Реализации инструментов (`orchestration/stages/tools`) — это ядро |
-| Выдача швов рабочего пути: `agent_stage_executor()`, `revision_of()` | Персистентность, идемпотентность, транзакции — это `orchestration/state` |
+| Выдача швов рабочего пути: `agent_stage_executor()`, `revision_of()`, `facts_provider()` | Персистентность, идемпотентность, транзакции — это `orchestration/state` |
 | Точка входа процесса `factory` (`runtime.entrypoint:main`, ADR-025): ленивая сборка под команду и передача швов в CLI | Логика команд, разбор аргументов, коды выхода — это `cli/` |
 
 Если `runtime` начнёт принимать решения о том, *что делать*, а не о том, *чем это делать*, — слой вышел за границу.
@@ -29,7 +29,7 @@
 | Пропущено | Следствие |
 |---|---|
 | `DARK_FACTORY_LLM_*` | `harness_config` пуст; `harness_of` бросает `RuntimeNotConfiguredError` с подсказкой |
-| `DARK_FACTORY_GITHUB_*` | Нет `GitHubAdapter` → `repository`/`merge_requests`/`revision_of()` — `None` |
+| `DARK_FACTORY_GITHUB_*` | Нет `GitHubAdapter` → `repository`/`merge_requests`/`revision_of()`/`facts_provider()` — `None` |
 | `DARK_FACTORY_WORKSPACE_ROOT` / `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` | Нет `WorktreeExecution` (TD-022) → `agent_stage_executor()` — `None` |
 
 Исключение — telemetry: её конфигурация **fail-closed** (`TelemetryConfig.from_env` бросает `ValueError` на неизвестный exporter или `file` без пути), потому что тихая подмена скрыла бы опечатку; адаптер присутствует всегда (в MVP — console). `WorktreeExecutionConfig` fail-closed в той же степени, в какой это возможно: незаданные переменные — отсутствующий адаптер, а заданные криво (относительный путь, нечисловой таймаут) — `ValueError`, не тихое игнорирование.
@@ -39,6 +39,7 @@
 - `harness_of(profile, tools)` — строит harness стадии с инструментами роли. Именно здесь встречаются декларативные имена из `AgentProfile.tools` (разрешённые в callables над workspace) и адаптер, который их исполняет: `HarnessPort.run_stage` принимает конверт, а PydanticAI-адаптер берёт набор инструментов при конструировании (`role_tools`), поэтому harness собирается на стадию.
 - `agent_stage_executor()` — агентный `StageExecutor` или `None`, если не хватает harness, провайдера или execution-порта.
 - `revision_of()` — SCM-derived резолвер ревизии (`ScmRevision`, ADR-006 p.4).
+- `facts_provider()` — `ScmFactsProvider` (`runtime/facts.py`, срез S3) или `None` без `merge_requests`: синхронный `FactsProvider` для драйвера, наблюдающий гейт-факты через `MergeRequestPort.observe` (статус CR, head/merged SHA) и `PipelinePort.status` на head SHA; ревью с привязкой к head конвертируются в version-bound `Decision`, непривязанные отбрасываются (ничего не авторизуют). CR берётся из снапшота запуска с fallback на cold lookup по FR-011; неизвестный CR — `None` (легитимный случай), а прочие ошибки провайдера не маскируются — advance честно падает, ничего не записав, по дисциплине `ScmRevision`.
 - `aclose()` — освобождение ресурсов (HTTP-пул GitHub-адаптера, tracer provider).
 
 ## 4. Как собранное связывание попадает в рабочий путь
@@ -48,19 +49,19 @@
 ```text
 dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
         │  build_runtime()                             │
-        │  executor, revision_of                        │
+        │  executor, revision_of, gate_facts               │
         └─────► cli.main.main(argv, …) ──► run_advance_command ──► advance_run ──► StageExecutor
 ```
 
-Точка входа процесса — `dark_factory.runtime.entrypoint:main` (console-script `factory` в `pyproject [project.scripts]`, ADR-025). Модуль — **связывание, а не логика** (ADR-024 п.5): он разбирает команду через `cli.main.parse_command` и только для `run advance` собирает runtime из окружения процесса (`build_runtime()`), после чего вызывает `cli.main.main(argv, executor=…, revision_of=…)`. Швы протащены значениями: `cli.main.main` → `dispatch` → `_advance_run` → `cli.runner.run_advance_command`. Типы `StageExecutor`/`RevisionResolver` живут в `orchestration.runner` и подключены в CLI под `TYPE_CHECKING`: модуль остаётся core и не тянет драйвер в свой импорт.
+Точка входа процесса — `dark_factory.runtime.entrypoint:main` (console-script `factory` в `pyproject [project.scripts]`, ADR-025). Модуль — **связывание, а не логика** (ADR-024 п.5): он разбирает команду через `cli.main.parse_command` и только для `run advance` собирает runtime из окружения процесса (`build_runtime()`), после чего вызывает `cli.main.main(argv, executor=…, revision_of=…, gate_facts=…)`. Швы протащены значениями: `cli.main.main` → `dispatch` → `_advance_run` → `cli.runner.run_advance_command`. Типы `StageExecutor`/`RevisionResolver` живут в `orchestration.runner` и подключены в CLI под `TYPE_CHECKING`: модуль остаётся core и не тянет драйвер в свой импорт.
 
 Композиция **ленивая по команде**:
 
 - `run advance` — единственная команда, чей рабочий путь потребляет швы. Runtime собирается, швы передаются, а собранные адаптеры освобождаются в `finally` (`asyncio.run(runtime.aclose())`) — в том числе когда команда завершилась ошибкой;
 - `doctor`, `stage run`, `run status`, `reconcile`, outbox-команды, `api serve`, `release verify` — зависят только от core: runtime не собирается, окружение сверх нужного самой команде не читается, поведение — ровно как у CLI;
-- `python -m dark_factory.cli` — **явный core-путь**: та же команда без сборки процесса (`executor`/`revision_of` = `None`, детерминированный исполнитель).
+- `python -m dark_factory.cli` — **явный core-путь**: та же команда без сборки процесса (`executor`/`revision_of`/`gate_facts` = `None`, детерминированный исполнитель).
 
-`advance_run` и `cli.runner.run_advance_command` имеют необязательные швы `executor` и `revision_of`; без них работает детерминированный путь (`waiting`/`blocked`) и digest снапшота как ревизия — поведение среза S1 не меняется, и `run_advance_command` остаётся вызываемым напрямую.
+`advance_run` и `cli.runner.run_advance_command` имеют необязательные швы `executor`, `revision_of` и `gate_facts`; без них работает детерминированный путь (`waiting`/`blocked`), digest снапшота как ревизия, а внешние ожидания не разрешаются — поведение среза S1 не меняется, и `run_advance_command` остаётся вызываемым напрямую.
 
 ## 5. Граничные случаи
 
@@ -71,12 +72,13 @@ dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
 - Команда, которой связывание не нужно (`doctor`, `stage run`, `run status`, …), — runtime не собирается, `build_runtime` не вызывается.
 - Ошибка разбора команды (`factory bogus`, недопустимое значение, `--help`) — argparse выходит с кодом 2/0 **до** решения о сборке: runtime не собирается.
 - Сбой внутри `run advance` (исключение из CLI) — runtime всё равно закрыт (`finally`), ресурсы адаптеров не утекают.
-- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of` = `None`, и команда идёт детерминированным путём. Агентный путь активируется, когда полный набор (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*`, `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT`) задан; работа в worktree идёт от локального зеркала, подготовленного оператором (TD-022), живой прогон на пилотном репозитории — T-072.
+- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of`/`gate_facts` = `None`, и команда идёт детерминированным путём. Агентный путь активируется, когда полный набор (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*`, `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT`) задан; работа в worktree идёт от локального зеркала, подготовленного оператором (TD-022), живой прогон на пилотном репозитории — T-072. Разрешение внешних ожиданий (гейты/merge, S3) активируется вместе с `DARK_FACTORY_GITHUB_*`: без facts-провайдера waiting-стадия остаётся в ожидании.
 
 ## 6. Где искать проверки
 
 - [`test_runtime_entrypoint.py`](../../tests/test_runtime_entrypoint.py) — точка входа процесса: `run advance` собирает runtime и передаёт швы в CLI, runtime закрывается (в том числе при ошибке команды), команда без швов runtime не собирает и швов не передаёт, ошибка разбора не собирает runtime, `cli.main` доносит швы до `runner.run_advance_command`, а без швов ведёт себя как раньше;
-- [`test_runtime_composition.py`](../../tests/test_runtime_composition.py) — пустая и полная конфигурация, сборка исполнителя и её отсутствие без `ExecutionPort`, привязка инструментов роли к harness, громкий отказ `harness_of`, fail-closed telemetry, `aclose`;
+- [`test_runtime_composition.py`](../../tests/test_runtime_composition.py) — пустая и полная конфигурация, сборка исполнителя и её отсутствие без `ExecutionPort`, привязка инструментов роли к harness, громкий отказ `harness_of`, fail-closed telemetry, отсутствие `facts_provider()` без GitHub-конфига, `aclose`;
+- [`test_runtime_facts.py`](../../tests/test_runtime_facts.py) — `ScmFactsProvider`: факты и вердикты на head SHA, merged, ревью → version-bound `Decision` (непривязанные отброшены), headless CR без pipeline-факта (FR-009), cold lookup и неизвестный CR → `None`;
 - [`test_import_boundaries.py`](../../tests/test_import_boundaries.py) — allowlist `runtime` в правиле A, запрет обратного ребра (правило D: ядро вне `runtime` — `dark_factory.cli`, `dark_factory.orchestration` и т.п. — не импортирует `runtime` и его подпакеты; `adapters → runtime` — правило B) и запрет соседям (`dark_factory.cli` и т.п.) импортировать адаптеры;
 - [`test_orchestration_agent_stage.py`](../../tests/test_orchestration_agent_stage.py) — агентный исполнитель и инструменты, которые `runtime` связывает.
 

@@ -61,7 +61,7 @@ flowchart TD
     DOC --> ENV["переменные окружения\nофлайн, без БД"]
 ```
 
-Ни один файл `cli/` не импортирует `ports/` или `adapters/`: CLI — core и не называет ни порты, ни адаптеры (правила A/B теста границ). Связывание приходит **значением**: для `run advance` композицию собирает `runtime.entrypoint:main` и передаёт швы `executor`/`revision_of` в `cli.main.main` (ADR-025); без сборки (в том числе `python -m dark_factory.cli`) оба шва — `None` и работает детерминированный путь. Детерминированный `stage run` harness/LLM не вызывает (ADR-003), а машинное исполнение гейтов живёт в CI (FR-009).
+Ни один файл `cli/` не импортирует `ports/` или `adapters/`: CLI — core и не называет ни порты, ни адаптеры (правила A/B теста границ). Связывание приходит **значением**: для `run advance` композицию собирает `runtime.entrypoint:main` и передаёт швы `executor`/`revision_of`/`gate_facts` в `cli.main.main` (ADR-025); без сборки (в том числе `python -m dark_factory.cli`) все швы — `None` и работает детерминированный путь. Детерминированный `stage run` harness/LLM не вызывает (ADR-003), а машинное исполнение гейтов живёт в CI (FR-009).
 
 | Команда | Доступ к данным |
 |---|---|
@@ -76,7 +76,7 @@ flowchart TD
 Что пока **не подключено** к production-обвязке (явные заглушки и упрощения):
 
 - `stage resume` — парсится, но всегда возвращает exit 2; его будущий читатель `load_run_record` уже есть;
-- `run advance` исполняет ровно одну стадию; исполнитель инжектируется. `runtime.entrypoint` передаёт собранный агентный `StageExecutor` только когда окружение полное (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*` и workspace-переменные `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` для реального адаптера `WorktreeExecution`, TD-022): без полного набора `agent_stage_executor()` = `None` и работает детерминированный исполнитель (`orchestration/stages/`) — честный исход `waiting`/`blocked`; `succeeded` без гейтов по product SHA не достигается (FR-009). Живой прогон агентной стадии — T-072;
+- `run advance` исполняет ровно одну стадию; исполнитель и facts-провайдер инжектируются. `runtime.entrypoint` передаёт собранный агентный `StageExecutor` только когда окружение полное (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*` и workspace-переменные `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` для реального адаптера `WorktreeExecution`, TD-022): без полного набора `agent_stage_executor()` = `None` и работает детерминированный исполнитель (`orchestration/stages/`) — честный исход `waiting`/`blocked`; `succeeded` без гейтов по product SHA не достигается (FR-009). Срез S3 (T-092): вместе с `DARK_FACTORY_GITHUB_*` передаётся и `gate_facts` (`ScmFactsProvider`) — `run advance` разрешает внешние ожидания: waiting-чекпоинт вытесняется финалом той же операции, гейты оцениваются по наблюдаемому итоговому SHA, merge manual mode ждёт человеческого решения, bounded rework ограничен лимитами (ADR-024 §7); без провайдера waiting остаётся в ожидании. Живой прогон агентной стадии — T-072;
 - `stage run` не пишет в PostgreSQL state store — персистентность только через `--evidence-dir`; run-стейт подключится вместе с durable state-store wiring;
 - бюджет стадии — дефолтный `BudgetSnapshot` без накопленного usage, `attempt_number` всегда 1, `usage = None` в StageResult;
 - `pack_name`/`pack_version`/`blueprint_version`/`gitops_commit`/`okf_revision` в манифесте остаются незаполненными;
