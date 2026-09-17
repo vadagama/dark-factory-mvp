@@ -1,23 +1,37 @@
-"""Pure release resolver of the wait-resolution protocol (T-092 S4, ADR-024 §7 S4)."""
+"""Pure release resolver and the GitOps promotion executor of the release stage (T-092 S4)."""
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
 
+from dark_factory.adapters.fakes.scm import FakeMergeRequests, FakeRepository
 from dark_factory.changes.enums import (
     Gate,
     GateStatus,
+    Provider,
     ReleaseStatus,
+    Route,
     Stage,
     StageStatus,
     StopOutcome,
 )
-from dark_factory.changes.next_action import ReleaseAction, StopAction, WaitForCIAction
+from dark_factory.changes.next_action import (
+    ReleaseAction,
+    StopAction,
+    WaitForCIAction,
+    WaitForInputAction,
+)
+from dark_factory.changes.refs import RepositoryRef
 from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.changes.run_records import ReleaseEvidence, SmokeProbeEvidence
+from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.flow import expected_result_status
+from dark_factory.orchestration.stages.context import StageContext, build_context
 from dark_factory.orchestration.stages.release import (
+    RELEASE_BRANCH_PREFIX,
     ReleaseObservation,
+    ReleaseStageExecutor,
     build_release_resolution,
     release_resolved,
 )
@@ -27,6 +41,7 @@ REVISION = "a1b2c3d"
 EXPECTED_DIGEST = "sha256:3f7a1c9d"
 OBSERVED_DIGEST = "sha256:3f7a1c9d"
 MISMATCHED_DIGEST = "sha256:deadbeef"
+GITOPS_REPOSITORY = RepositoryRef(provider=Provider.GITHUB, slug="small/gitops")
 
 
 def _checkpoint(run: ChangeRun, change: Change) -> StageResult:
@@ -247,3 +262,224 @@ def test_observed_verified_at_overrides_the_resolver_clock() -> None:
     assert result.release is not None
     assert result.release.verified_at == verified_at
     assert result.produced_at == NOW
+
+
+# --- GitOps promotion executor (T-092 S4, ADR-024 §7 S4) ---------------------
+
+
+def _find_change_request(merge_requests: FakeMergeRequests, run_id: str = "run-001"):
+    """Sync read view over the async ``find_existing`` (tests are synchronous)."""
+    return asyncio.run(merge_requests.find_existing(GITOPS_REPOSITORY, run_id))
+
+
+def _release_context(*, change: Change | None = None, run_id: str = "run-001") -> StageContext:
+    """The fixed context of one release attempt on the standard route (FR-001)."""
+    return build_context(
+        change=change if change is not None else make_change(),
+        stage=Stage.RELEASE,
+        route=Route.STANDARD,
+        run_id=run_id,
+        input_revision=REVISION,
+        budget=BudgetSnapshot(),
+    )
+
+
+def _inner_recording(results: list[StageResult]):
+    """An inner executor that records its context and returns one canned result."""
+
+    def execute(context: StageContext) -> StageResult:
+        results.append(context)
+        return _canned_inner_result(context)
+
+    return execute
+
+
+def _canned_inner_result(context: StageContext) -> StageResult:
+    return StageResult(
+        stage=context.stage,
+        run_id=context.run_id,
+        change_id=context.change.id,
+        attempt_number=context.attempt_number,
+        input_revision=context.input_revision,
+        status=StageStatus.WAITING,
+        next_action=WaitForInputAction(reason="inner deterministic path"),
+        produced_at=NOW,
+    )
+
+
+def _executor(
+    *,
+    expected_digest: str | None = EXPECTED_DIGEST,
+    repository: FakeRepository | None = None,
+    merge_requests: FakeMergeRequests | None = None,
+    inner=None,
+) -> ReleaseStageExecutor:
+    return ReleaseStageExecutor(
+        inner if inner is not None else _inner_recording([]),
+        repository=repository if repository is not None else FakeRepository(),
+        merge_requests=merge_requests if merge_requests is not None else FakeMergeRequests(),
+        gitops_repository=GITOPS_REPOSITORY,
+        expected_digest=expected_digest,
+    )
+
+
+def _promotion_branch() -> str:
+    return f"{RELEASE_BRANCH_PREFIX}/run-001"
+
+
+def _seed_gitops_main(repository: FakeRepository) -> None:
+    """Seed the GitOps repository's default branch (the base the promotion forks from)."""
+    asyncio.run(
+        repository.ensure_branch(
+            GITOPS_REPOSITORY, "main", from_revision="base", idempotency_key="seed-main"
+        )
+    )
+
+
+def test_a_non_release_stage_delegates_to_inner_without_any_promotion() -> None:
+    """The executor owns only the release stage; construction work is inner's business."""
+    inner_results: list[StageResult] = []
+    repository = FakeRepository()
+    merge_requests = FakeMergeRequests()
+    context = build_context(
+        change=make_change(),
+        stage=Stage.CONSTRUCTION,
+        route=Route.STANDARD,
+        run_id="run-001",
+        input_revision=REVISION,
+        budget=BudgetSnapshot(),
+    )
+
+    result = _executor(
+        repository=repository,
+        merge_requests=merge_requests,
+        inner=_inner_recording(inner_results),
+    )(context)
+
+    assert result.status is StageStatus.WAITING
+    assert inner_results == [context]
+    assert repository.commits_of(GITOPS_REPOSITORY, _promotion_branch()) == ()
+    assert _find_change_request(merge_requests) is None
+
+
+def test_release_without_an_expected_digest_blocks_before_any_effect() -> None:
+    """Promoting "something" would be an invented release: honest blocked, no effects."""
+    repository = FakeRepository()
+    merge_requests = FakeMergeRequests()
+    context = _release_context()
+
+    for expected_digest in (None, "", "   "):
+        result = _executor(
+            expected_digest=expected_digest,
+            repository=repository,
+            merge_requests=merge_requests,
+        )(context)
+
+        assert result.status is StageStatus.BLOCKED
+        assert result.status is expected_result_status(result.next_action)
+        stop = result.next_action
+        assert isinstance(stop, StopAction)
+        assert "expected digest" in stop.reason
+        assert all(item.status is GateStatus.PENDING for item in result.gate_results)
+
+    assert repository.commits_of(GITOPS_REPOSITORY, _promotion_branch()) == ()
+    assert _find_change_request(merge_requests) is None
+
+
+def test_release_promotes_the_digest_and_parks_waiting() -> None:
+    """One commit pins the digest, the promotion MR is opened, the stage waits."""
+    repository = FakeRepository()
+    _seed_gitops_main(repository)
+    merge_requests = FakeMergeRequests()
+    context = _release_context()
+
+    result = _executor(repository=repository, merge_requests=merge_requests)(context)
+
+    branch = _promotion_branch()
+    commits = repository.commits_of(GITOPS_REPOSITORY, branch)
+    assert len(commits) == 1
+    files = repository.commit_files(commits[0])
+    assert files == {"releases/run-001/digest": f"{EXPECTED_DIGEST}\n".encode()}
+    change_request = _find_change_request(merge_requests)
+    assert change_request is not None
+    assert change_request.number == 1
+    assert result.status is StageStatus.WAITING
+    assert result.status is expected_result_status(result.next_action)
+    action = result.next_action
+    assert isinstance(action, WaitForCIAction)
+    assert action.change_request == change_request
+    assert EXPECTED_DIGEST in action.reason
+    assert all(item.status is GateStatus.PENDING for item in result.gate_results)
+    assert [(item.artifact_type, item.revision, item.producer) for item in result.artifacts] == [
+        ("change_request", commits[0], "ci_cd")
+    ]
+    assert (result.run_id, result.change_id, result.attempt_number, result.input_revision) == (
+        context.run_id,
+        context.change.id,
+        context.attempt_number,
+        context.input_revision,
+    )
+
+
+def test_release_promotion_replays_into_the_same_effects() -> None:
+    """A retry of the same operation re-plays one commit and one MR (FR-017)."""
+    repository = FakeRepository()
+    _seed_gitops_main(repository)
+    merge_requests = FakeMergeRequests()
+    context = _release_context()
+    execute = _executor(repository=repository, merge_requests=merge_requests)
+
+    first = execute(context)
+    second = execute(context)
+
+    assert len(repository.commits_of(GITOPS_REPOSITORY, _promotion_branch())) == 1
+    first_action = first.next_action
+    second_action = second.next_action
+    assert isinstance(first_action, WaitForCIAction)
+    assert isinstance(second_action, WaitForCIAction)
+    assert first_action.change_request is not None
+    assert second_action.change_request == first_action.change_request
+    assert _find_change_request(merge_requests) is not None
+
+
+def test_a_new_digest_lands_a_new_commit_on_the_same_branch() -> None:
+    """The digest is part of the commit key: a re-promotion pins the new digest."""
+    repository = FakeRepository()
+    _seed_gitops_main(repository)
+    merge_requests = FakeMergeRequests()
+    context = _release_context()
+
+    _executor(repository=repository, merge_requests=merge_requests)(context)
+    repromoted = _executor(
+        expected_digest="sha256:promoted-2",
+        repository=repository,
+        merge_requests=merge_requests,
+    )(context)
+
+    commits = repository.commits_of(GITOPS_REPOSITORY, _promotion_branch())
+    assert len(commits) == 2
+    assert repository.commit_files(commits[1]) == {
+        "releases/run-001/digest": b"sha256:promoted-2\n"
+    }
+    action = repromoted.next_action
+    assert isinstance(action, WaitForCIAction)
+    # The promotion MR already exists: it is found, never opened twice (FR-011).
+    assert action.change_request is not None
+    assert action.change_request.number == 1
+
+
+def test_a_failing_gitops_provider_blocks_without_provider_text() -> None:
+    """Provider errors become retryable blocked attempts with the type name only (ADR-009)."""
+
+    class ExplodingRepository(FakeRepository):
+        async def get_revision(self, repository, ref, /):
+            raise RuntimeError("http://secret-scm.example/token")
+
+    result = _executor(repository=ExplodingRepository())(_release_context())
+
+    assert result.status is StageStatus.BLOCKED
+    stop = result.next_action
+    assert isinstance(stop, StopAction)
+    assert "RuntimeError" in stop.reason
+    assert "secret-scm" not in stop.reason
+    assert all(item.status is GateStatus.PENDING for item in result.gate_results)

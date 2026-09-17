@@ -29,21 +29,32 @@ same attempt (ADR-006 p.8). What the *flow* then decides with the result is
 its business, as in ``gates``.
 """
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 
+from dark_factory.agents.artifacts import ArtifactKind
 from dark_factory.changes.enums import (
     Gate,
     GateStatus,
     ReleaseStatus,
+    Role,
+    Stage,
     StageStatus,
     StopOutcome,
 )
 from dark_factory.changes.findings import GateResult
-from dark_factory.changes.next_action import ReleaseAction, StopAction
+from dark_factory.changes.keys import effect_key, operation_key
+from dark_factory.changes.next_action import ReleaseAction, StopAction, WaitForCIAction
+from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.release_records import SmokeProbeEvidence
 from dark_factory.changes.run import Change, ChangeRun, StageResult
+from dark_factory.orchestration.stages.agent import DEFAULT_TARGET_BRANCH, branch_name
+from dark_factory.orchestration.stages.checks import pending_gate_results
+from dark_factory.orchestration.stages.context import StageContext
+from dark_factory.ports import MergeRequestPort, OpenChangeRequest, RepositoryPort
 from dark_factory.quality.release.decision import (
     ReleaseObservation as DecisionObservation,
 )
@@ -204,3 +215,209 @@ def build_release_resolution(
         release=release,
         produced_at=now,
     )
+
+
+_EFFECT_GITOPS_BRANCH: Final[str] = "gitops_branch"
+_EFFECT_GITOPS_COMMIT: Final[str] = "gitops_commit"
+_EFFECT_GITOPS_CHANGE_REQUEST: Final[str] = "gitops_change_request"
+"""Effect types of the GitOps promotion, namespaced apart from the product
+repository's effects (``stages.agent``) so one operation can never collide its
+promotion with a publication (FR-017, ADR-006 p.3)."""
+
+RELEASE_BRANCH_PREFIX: Final[str] = "factory-release"
+"""Prefix of the promotion branch the executor ensures in the GitOps repository."""
+
+DIGEST_FILE_TEMPLATE: Final[str] = "releases/{run_id}/digest"
+"""Path of the promoted file: one digest pin per run (ADR-010, ADR-024 §7 S4).
+
+Run ids are path-safe by construction (``generated_run_id`` mints
+``run_<hex>``), so the template needs no slug of its own."""
+
+type InnerStageExecutor = Callable[[StageContext], StageResult]
+"""The executor the release executor delegates every non-release stage to."""
+
+
+class ReleaseStageExecutor:
+    """``StageExecutor`` that promotes the expected digest and parks the stage (T-092 S4).
+
+    The release stage is not agent work (ADR-024 §7 S4): one attempt promotes
+    the expected immutable digest into the **GitOps repository** — the durable
+    promotion of ADR-010 — and parks the stage in ``waiting`` until the rollout
+    resolves (Argo sync/health, smoke, digest immutability). The promotion runs
+    through the same ports an agent stage publishes with (ADR-015 p.3), under
+    deterministic effect keys, so a retry of the operation re-plays into the
+    same branch, the same commit and the same change request instead of minting
+    a second promotion (FR-017, ADR-006 p.3).
+
+    What one release attempt does, in order:
+
+    1. refuse honestly when no expected digest is configured — promoting
+       "something" would be an invented release (fail-closed, ADR-011 p.6);
+       this stops *before any external effect*;
+    2. resolve the GitOps repository's target-branch head, ensure the promotion
+       branch there and publish **one** commit that pins the digest file
+       (``releases/<run_id>/digest``); the commit carries the invisible
+       idempotency marker the ``RepositoryPort`` adapter embeds, so the dedup
+       survives a cold adapter (FR-017);
+    3. find the run's promotion change request or open it with the commit as
+       its head — the MR is the human-reviewable promotion record (ADR-010);
+    4. report ``waiting`` with the change request named: the rollout (Argo
+       sync/health) and the smoke probes are observed later, through the
+       driver's release facts — never by this executor.
+
+    Every stage other than :attr:`Stage.RELEASE` delegates to ``inner`` (the
+    composition root passes the harness-backed executor, or the deterministic
+    path): this class owns only the release promotion.
+
+    Error policy: an unreachable SCM or change-request provider never escapes
+    into the flow — it becomes a ``blocked`` attempt with the exception *type*
+    only, because provider exception texts can embed URLs or credentials
+    (ADR-009). The async ports are driven from the synchronous ``StageExecutor``
+    seam through a private event loop (``asyncio.run``), like the harness-backed
+    executor; calling this from within a running loop is a programming error and
+    fails loudly.
+    """
+
+    def __init__(
+        self,
+        inner: InnerStageExecutor,
+        *,
+        repository: RepositoryPort,
+        merge_requests: MergeRequestPort,
+        gitops_repository: RepositoryRef,
+        expected_digest: str | None = None,
+        target_branch: str = DEFAULT_TARGET_BRANCH,
+    ) -> None:
+        self._inner = inner
+        self._repository = repository
+        self._merge_requests = merge_requests
+        self._gitops_repository = gitops_repository
+        self._expected_digest = expected_digest
+        self._target_branch = target_branch
+
+    def __call__(self, context: StageContext) -> StageResult:
+        """Synchronous ``StageExecutor`` seam: delegate or promote (blocking)."""
+        if context.stage is not Stage.RELEASE:
+            return self._inner(context)
+        return asyncio.run(self._promote(context))
+
+    async def _promote(self, context: StageContext) -> StageResult:
+        """Pin the digest in the GitOps repository and park the stage for the rollout.
+
+        Every effect is keyed deterministically (FR-017): the digest is part of
+        the commit key, so a re-promotion of a *different* digest lands a new
+        commit on the same branch while a retry of the same promotion replays
+        into the recorded commit and change request (ADR-006 p.3).
+        """
+        digest = normalize_digest(self._expected_digest)
+        if digest is None:
+            return self._blocked(
+                context,
+                "stage release: no expected digest is configured — pass --expected-digest"
+                " or --digest-json; promoting without one would be an invented release",
+            )
+        identity = operation_key(context.run_id, context.stage, context.input_revision or "")
+        branch = branch_name(context.run_id, prefix=RELEASE_BRANCH_PREFIX)
+        try:
+            base = await self._repository.get_revision(self._gitops_repository, self._target_branch)
+            await self._repository.ensure_branch(
+                self._gitops_repository,
+                branch,
+                from_revision=base,
+                idempotency_key=effect_key(identity, _EFFECT_GITOPS_BRANCH, branch),
+            )
+            commit_sha = await self._repository.publish_commit(
+                self._gitops_repository,
+                branch,
+                {DIGEST_FILE_TEMPLATE.format(run_id=context.run_id): f"{digest}\n".encode()},
+                message=f"factory release {context.run_id}: pin digest {digest}",
+                idempotency_key=effect_key(identity, _EFFECT_GITOPS_COMMIT, f"{branch}:{digest}"),
+            )
+            change_request = await self._merge_requests.find_existing(
+                self._gitops_repository, context.run_id
+            )
+            if change_request is None:
+                change_request = await self._merge_requests.open(
+                    OpenChangeRequest(
+                        repository=self._gitops_repository,
+                        change_id=context.run_id,
+                        source_branch=branch,
+                        target_branch=self._target_branch,
+                        title=f"factory release {context.run_id}",
+                        description=(
+                            f"Pins the immutable image digest {digest} of run {context.run_id}"
+                            f" (change {context.change.id}) for rollout (ADR-010)."
+                        ),
+                        head_sha=commit_sha,
+                    ),
+                    idempotency_key=effect_key(identity, _EFFECT_GITOPS_CHANGE_REQUEST, branch),
+                )
+        except Exception as exc:
+            return self._blocked(
+                context,
+                f"stage {context.stage.value}: release promotion failed at the boundary"
+                f" ({type(exc).__name__})",
+            )
+        return self._waiting(
+            context,
+            branch=branch,
+            digest=digest,
+            commit_sha=commit_sha,
+            change_request=change_request,
+        )
+
+    def _waiting(
+        self,
+        context: StageContext,
+        *,
+        branch: str,
+        digest: str,
+        commit_sha: str,
+        change_request: ChangeRequestRef,
+    ) -> StageResult:
+        """The digest is pinned; the stage waits for the rollout to resolve (ADR-006 p.8).
+
+        No gate is evaluated here: the release gate is decided later, from the
+        observed release facts (the rollout's Argo statuses, the smoke probes,
+        FR-011/FR-013), so the required gates are reported ``pending`` exactly
+        as the other executors report them.
+        """
+        return StageResult(
+            stage=context.stage,
+            run_id=context.run_id,
+            change_id=context.change.id,
+            attempt_number=context.attempt_number,
+            input_revision=context.input_revision,
+            status=StageStatus.WAITING,
+            next_action=WaitForCIAction(
+                reason=(
+                    f"stage {context.stage.value} pinned {digest} in"
+                    f" {self._gitops_repository.slug}#{change_request.number} ({branch})"
+                    " at the promotion commit; waiting for the Argo sync and the smoke probes"
+                ),
+                change_request=change_request,
+            ),
+            artifacts=[
+                ArtifactRef(
+                    artifact_type=ArtifactKind.CHANGE_REQUEST.value,
+                    uri=change_request.url
+                    or f"{self._gitops_repository.slug}#{change_request.number}",
+                    revision=commit_sha,
+                    producer=Role.CI_CD.value,
+                )
+            ],
+            gate_results=pending_gate_results(context.required_gates),
+        )
+
+    def _blocked(self, context: StageContext, reason: str) -> StageResult:
+        """The attempt stopped before it could promote (retryable, ADR-018 p.5)."""
+        return StageResult(
+            stage=context.stage,
+            run_id=context.run_id,
+            change_id=context.change.id,
+            attempt_number=context.attempt_number,
+            input_revision=context.input_revision,
+            status=StageStatus.BLOCKED,
+            next_action=StopAction(outcome=StopOutcome.BLOCKED, reason=reason),
+            gate_results=pending_gate_results(context.required_gates),
+        )
