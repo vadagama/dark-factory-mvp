@@ -14,6 +14,12 @@
 
 Проверка (шаг 3) выполняется до MR и повторяется в CI на самом MR (`.github/workflows/ci.yml`). Реализация не начинается до создания ветки (шаг 1) и не считается завершённой до открытия MR (шаг 4).
 
+## Параметризация этапов CI
+
+Этапы `.github/workflows/ci.yml` можно временно выключать на время разработки переменными репозитория `CI_SKIP_<JOB>` ([ADR-026](adr/ADR-026-parameterizable-ci-stages.md)): тяжёлые этапы (сборки образов, Storybook, визуальная регрессия, e2e) не гоняются на каждом MR, пока идёт итерация. По умолчанию выключенных этапов нет — этап выполняется, пока его переменная не равна ровно `true` (fail-safe: опечатка не может убрать гейт).
+
+Переключатели — только для разработки: перед MR, который идёт в merge, полный набор проверок возвращается (merge — по зелёным гейтам, ADR-011). Пошагово и с описанием каждого этапа — [docs/instructions/manage-ci-stages.md](instructions/manage-ci-stages.md).
+
 ## Именование веток
 
 `<type>/t-<NNN>-<slug>`, где `<NNN>` — номер задачи из `specs/001-dark-factory-mvp/tasks.md`, `<slug>` — краткий английский идентификатор:
@@ -64,6 +70,8 @@ gh pr create --base main --title "<type>: <описание> (T-<NNN>)" --body "
 ## Ссылки
 
 - `AGENTS.md` — правила агентов, конвейер, DoD.
+- [ADR-026](adr/ADR-026-parameterizable-ci-stages.md) — параметризуемые этапы CI (переключатели `CI_SKIP_*`).
+- [docs/instructions/manage-ci-stages.md](instructions/manage-ci-stages.md) — как включить и выключить этап CI и что делает каждый этап.
 - `docs/adr/ADR-011-risk-based-merge-release-policy.md` — merge/release policy: merge — человек, deploy в dev — автоматически.
 - `docs/adr/ADR-019-multi-provider-sc-ci-github-first.md` — провайдеры SC/CI, `ChangeRequestRef`, GitHub первым.
 - `.agents/skills/dark-factory/SKILL.md` — оркестратор: маршрут ролей и git-цикл задачи.

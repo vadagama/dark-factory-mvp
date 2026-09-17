@@ -1,5 +1,19 @@
 name: CI
 
+# CI stages are parameterizable (ADR-026): every job below is a *stage* and can
+# be switched off during development with a repository variable named after the
+# job id —
+#
+#   gh variable set CI_SKIP_UIKIT_STORYBOOK --body true   # skip this stage
+#   gh variable delete CI_SKIP_UIKIT_STORYBOOK            # run it again
+#
+# Contract: a stage runs unless its CI_SKIP_<JOB> variable is exactly `true`
+# (lower case). An unset variable, a typo or any other value keeps the gate
+# enabled — no gate can be dropped by accident. Toggles are a development
+# convenience only: the full set is restored before merge (ADR-011), and the
+# trusted image jobs never run past a failed or cancelled gate.
+# Stage-by-stage guide: docs/instructions/manage-ci-stages.md.
+
 on:
   push:
     branches: [main]
@@ -16,6 +30,7 @@ jobs:
   # re-run on the same commit the agents finished on (FR-009, SC-004).
   lint:
     name: Ruff lint + format
+    if: vars.CI_SKIP_LINT != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -40,6 +55,7 @@ jobs:
 
   typecheck:
     name: Mypy typecheck
+    if: vars.CI_SKIP_TYPECHECK != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -60,6 +76,7 @@ jobs:
 
   test:
     name: Pytest
+    if: vars.CI_SKIP_TEST != 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -97,6 +114,7 @@ jobs:
 
   build:
     name: Build distribution
+    if: vars.CI_SKIP_BUILD != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -114,6 +132,7 @@ jobs:
 
   security:
     name: Dependency audit
+    if: vars.CI_SKIP_SECURITY != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -135,6 +154,7 @@ jobs:
 
   factory-us1-parity:
     name: US1 walking skeleton (doctor + stage run)
+    if: vars.CI_SKIP_FACTORY_US1_PARITY != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -204,6 +224,7 @@ jobs:
   # the smoke change, so the factory CI contract stays green by construction.
   factory-stage-smoke:
     name: Factory stage template (construction on chg_smoke)
+    if: vars.CI_SKIP_FACTORY_STAGE_SMOKE != 'true'
     uses: ./.github/workflows/factory-stage.yml
     with:
       change: ./fixtures/chg_smoke.yaml
@@ -220,6 +241,14 @@ jobs:
   # incident that kept every ci.yml run from starting.
   factory-image:
     name: Factory OCI image (trusted build)
+    # Toggle (ADR-026) plus the tolerant dependency guard: a gate switched off
+    # on purpose (CI_SKIP_* = true) must not skip the image build, while a
+    # failed or cancelled gate still must.
+    if: >-
+      vars.CI_SKIP_FACTORY_IMAGE != 'true'
+      && !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
     needs: [lint, typecheck, test, build, security, factory-us1-parity, factory-stage-smoke]
     permissions:
       contents: read
@@ -233,6 +262,7 @@ jobs:
   # gates above. Checkouts are pinned to the final SHA of the change.
   console-lint:
     name: Console ESLint
+    if: vars.CI_SKIP_CONSOLE_LINT != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -258,6 +288,7 @@ jobs:
 
   console-typecheck:
     name: Console tsc --noEmit
+    if: vars.CI_SKIP_CONSOLE_TYPECHECK != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -283,6 +314,7 @@ jobs:
 
   console-test:
     name: Console vitest
+    if: vars.CI_SKIP_CONSOLE_TEST != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -308,6 +340,7 @@ jobs:
 
   console-build:
     name: Console build (vite)
+    if: vars.CI_SKIP_CONSOLE_BUILD != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -333,6 +366,7 @@ jobs:
 
   console-e2e:
     name: Console Playwright smoke
+    if: vars.CI_SKIP_CONSOLE_E2E != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -375,6 +409,7 @@ jobs:
   # needs chains.
   uikit-lint:
     name: UIKit ESLint + stylelint
+    if: vars.CI_SKIP_UIKIT_LINT != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -400,6 +435,7 @@ jobs:
 
   uikit-typecheck:
     name: UIKit tsc --noEmit
+    if: vars.CI_SKIP_UIKIT_TYPECHECK != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -425,6 +461,7 @@ jobs:
 
   uikit-test:
     name: UIKit vitest (components + axe + tokens)
+    if: vars.CI_SKIP_UIKIT_TEST != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -450,6 +487,7 @@ jobs:
 
   uikit-gates:
     name: UIKit gate self-test
+    if: vars.CI_SKIP_UIKIT_GATES != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -477,6 +515,7 @@ jobs:
   # build in CI as an artifact of the factory pipeline.
   uikit-storybook:
     name: UIKit Storybook build
+    if: vars.CI_SKIP_UIKIT_STORYBOOK != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -507,6 +546,7 @@ jobs:
   # first runs after the kit is introduced.
   uikit-visual:
     name: UIKit visual regression (pinned browser)
+    if: vars.CI_SKIP_UIKIT_VISUAL != 'true'
     runs-on: ubuntu-latest
     # Digest = mcr.microsoft.com/playwright:v1.63.0-noble (tag equals the
     # @playwright/test version in package-lock.json), resolved by the
@@ -545,6 +585,12 @@ jobs:
   # `packages: write`, so the calling job must grant it.
   console-image:
     name: Console OCI image (trusted build)
+    # Same toggle and tolerant dependency guard as factory-image above (ADR-026).
+    if: >-
+      vars.CI_SKIP_CONSOLE_IMAGE != 'true'
+      && !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
     needs: [lint, typecheck, test, build, security, factory-us1-parity, factory-stage-smoke, console-lint, console-typecheck, console-test, console-build, console-e2e]
     permissions:
       contents: read

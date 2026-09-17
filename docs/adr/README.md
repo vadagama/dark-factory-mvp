@@ -55,3 +55,4 @@
 | [ADR-023](ADR-023-risk-classes-and-control-points.md) | Risk classes R0–R4 and control points | принято |
 | [ADR-024](ADR-024-durable-run-driver-and-composition-root.md) | Durable run driver and the composition root | принято с условиями |
 | [ADR-025](ADR-025-process-entry-point-and-lazy-composition.md) | Process entry point and lazy composition | принято |
+| [ADR-026](ADR-026-parameterizable-ci-stages.md) | Параметризуемые этапы CI: выключатели `CI_SKIP_<JOB>` через repository variables, opt-out и fail-safe | принято |
