@@ -30,6 +30,7 @@
 |---|---|
 | `DARK_FACTORY_LLM_*` | `harness_config` пуст; `harness_of` бросает `RuntimeNotConfiguredError` с подсказкой |
 | `DARK_FACTORY_GITHUB_*` | Нет `GitHubAdapter` → `repository`/`merge_requests`/`revision_of()`/`facts_provider()` — `None` |
+| `DARK_FACTORY_GITOPS_*` | Нет GitOps-адаптера → `release_stage_executor()` — `None` (release-стадия остаётся с inner-исполнителем) |
 | `DARK_FACTORY_WORKSPACE_ROOT` / `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` | Нет `WorktreeExecution` (TD-022) → `agent_stage_executor()` — `None` |
 
 Исключение — telemetry: её конфигурация **fail-closed** (`TelemetryConfig.from_env` бросает `ValueError` на неизвестный exporter или `file` без пути), потому что тихая подмена скрыла бы опечатку; адаптер присутствует всегда (в MVP — console). `WorktreeExecutionConfig` fail-closed в той же степени, в какой это возможно: незаданные переменные — отсутствующий адаптер, а заданные криво (относительный путь, нечисловой таймаут) — `ValueError`, не тихое игнорирование.
@@ -40,6 +41,7 @@
 - `agent_stage_executor()` — агентный `StageExecutor` или `None`, если не хватает harness, провайдера или execution-порта.
 - `revision_of()` — SCM-derived резолвер ревизии (`ScmRevision`, ADR-006 p.4).
 - `facts_provider()` — `ScmFactsProvider` (`runtime/facts.py`, срез S3) или `None` без `merge_requests`: синхронный `FactsProvider` для драйвера, наблюдающий гейт-факты через `MergeRequestPort.observe` (статус CR, head/merged SHA) и `PipelinePort.status` на head SHA; ревью с привязкой к head конвертируются в version-bound `Decision`, непривязанные отбрасываются (ничего не авторизуют). CR берётся из снапшота запуска с fallback на cold lookup по FR-011; неизвестный CR — `None` (легитимный случай), а прочие ошибки провайдера не маскируются — advance честно падает, ничего не записав, по дисциплине `ScmRevision`.
+- `release_stage_executor(expected_digest=…, inner=…)` — GitOps-промоушен release-стадии (срез S4, T-092) или `None` без блока `DARK_FACTORY_GITOPS_*`: оборачивает inner-исполнитель в `ReleaseStageExecutor` с портами **второго, независимого** `GitHubAdapter`, собранного из блока GitOps (all-or-nothing: задание любой переменной `DARK_FACTORY_GITOPS_*` требует все обязательные, частичный блок — fail-closed `ValueError`). Без digest (`--expected-digest`/`--digest-json` не заданы) свежая release-попытка честно `blocked` до внешних эффектов.
 - `aclose()` — освобождение ресурсов (HTTP-пул GitHub-адаптера, tracer provider).
 
 ## 4. Как собранное связывание попадает в рабочий путь
@@ -57,7 +59,7 @@ dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
 
 Композиция **ленивая по команде**:
 
-- `run advance` — рабочий путь потребляет швы `executor`/`revision_of`/`gate_facts`. Runtime собирается, швы передаются, а собранные адаптеры освобождаются в `finally` (`asyncio.run(runtime.aclose())`) — в том числе когда команда завершилась ошибкой;
+- `run advance` — рабочий путь потребляет швы `executor`/`revision_of`/`gate_facts` (+ release-исполнитель, S4). Runtime собирается, швы передаются, а собранные адаптеры освобождаются в `finally` (`asyncio.run(runtime.aclose())`) — в том числе когда команда завершилась ошибкой;
 - `api serve` — собирает runtime ради переключателей этапов CI (T059, ADR-027): биндинги `ci_toggles`/`ci_repository` передаются в CLI аргументом (значения, не импорты), runtime освобождается в `finally`; без `DARK_FACTORY_GITHUB_*` и `DARK_FACTORY_GITHUB_REPOSITORY_SLUG` адаптер не строится, и `/ci/*` честно отвечают «не сконфигурировано»;
 - `doctor`, `stage run`, `run status`, `reconcile`, outbox-команды, `release verify` — зависят только от core: runtime не собирается, окружение сверх нужного самой команде не читается, поведение — ровно как у CLI;
 - `python -m dark_factory.cli` — **явный core-путь**: та же команда без сборки процесса (`executor`/`revision_of`/`gate_facts` = `None`, детерминированный исполнитель).
@@ -73,7 +75,7 @@ dark_factory.runtime.entrypoint:main          dark_factory.cli / orchestration
 - Команда, которой связывание не нужно (`doctor`, `stage run`, `run status`, …), — runtime не собирается, `build_runtime` не вызывается.
 - Ошибка разбора команды (`factory bogus`, недопустимое значение, `--help`) — argparse выходит с кодом 2/0 **до** решения о сборке: runtime не собирается.
 - Сбой внутри `run advance` (исключение из CLI) — runtime всё равно закрыт (`finally`), ресурсы адаптеров не утекают.
-- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of`/`gate_facts` = `None`, и команда идёт детерминированным путём. Агентный путь активируется, когда полный набор (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*`, `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT`) задан; работа в worktree идёт от локального зеркала, подготовленного оператором (TD-022), живой прогон на пилотном репозитории — T-072. Разрешение внешних ожиданий (гейты/merge, S3) активируется вместе с `DARK_FACTORY_GITHUB_*`: без facts-провайдера waiting-стадия остаётся в ожидании.
+- `run advance` без сконфигурированного окружения — runtime собирается, но честно отдаёт `executor`/`revision_of`/`gate_facts` = `None`, и команда идёт детерминированным путём. Агентный путь активируется, когда полный набор (`DARK_FACTORY_LLM_*`, `DARK_FACTORY_GITHUB_*`, `DARK_FACTORY_WORKSPACE_ROOT` + `DARK_FACTORY_WORKSPACE_MIRROR_ROOT`) задан; работа в worktree идёт от локального зеркала, подготовленного оператором (TD-022), живой прогон на пилотном репозитории — T-072. Разрешение внешних ожиданий (гейты/merge, S3) активируется вместе с `DARK_FACTORY_GITHUB_*`: без facts-провайдера waiting-стадия остаётся в ожидании. Промоушен релиза (S4) активируется блоком `DARK_FACTORY_GITOPS_*` (+ digest из флагов запуска): GitOps-репозиторий получает отдельный коммит-пин и MR промоушена, ожидание развёртывания разрешается release-фактами из флагов; публикация run-записи после терминального advance — при заданном `DARK_FACTORY_RUNS_ROOT`.
 
 ## 6. Где искать проверки
 
