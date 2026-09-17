@@ -19,3 +19,6 @@ class ArtifactKind(StrEnum):
     REVIEW_REPORT = "review_report"
     ACCEPTANCE_VERDICT = "acceptance_verdict"
     CONTEXT = "context"
+    UX_SPEC = "ux_spec"
+    ARCHITECTURE_REVIEW = "architecture_review"
+    ADR_PROPOSAL = "adr_proposal"

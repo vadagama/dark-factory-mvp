@@ -1,7 +1,8 @@
-"""Registry of the first-slice skill manifests (T-011).
+"""Registry of the built-in skill manifests (T-011, T-046).
 
-Eight skills bound to the core roles: product drives intake through the
-change request, develop implements and reworks, quality reviews and verifies.
+Twelve skills: product drives intake through the change request, design
+turns the specification into UX artifacts, architect assesses impact and
+drafts ADRs, develop implements and reworks, quality reviews and verifies.
 Binding checks (a skill belongs to its role, a profile references only its
 own skills) live in the contract builder and the tests, not here — the
 registries stay decoupled from each other.
@@ -87,6 +88,97 @@ _SKILLS: Final[Mapping[str, SkillManifest]] = {
         stop_conditions=(
             "The work cannot be sliced into tasks with clear boundaries.",
             "The change extends beyond the agreed scope and needs a new approval.",
+        ),
+    ),
+    "ux-flow": SkillManifest(
+        id="ux-flow",
+        version="1.0.0",
+        role=Role.DESIGN,
+        purpose=(
+            "Turn specification requirements into user flows, a screen inventory"
+            " and screen states mapped onto the UI kit."
+        ),
+        inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.UX_SPEC,),
+        instruction=(
+            "You design the UX. Derive the user flows from the specification,"
+            " list every screen with its purpose and map each screen onto the"
+            " existing UI kit components. For every screen define the loading,"
+            " empty and error states; do not invent components the kit does not"
+            " have."
+        ),
+        stop_conditions=(
+            "A flow requires a UI-kit pattern that does not exist in the kit.",
+            "The specification leaves the screen behaviour undecidable and"
+            " clarification is unavailable.",
+        ),
+    ),
+    "accessibility-review": SkillManifest(
+        id="accessibility-review",
+        version="1.0.0",
+        role=Role.DESIGN,
+        purpose=(
+            "Review the UX specification against WCAG 2.2 AA and the UI kit's"
+            " accessibility patterns, recording per-screen accessibility"
+            " requirements."
+        ),
+        inputs=(ArtifactKind.UX_SPEC, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.UX_SPEC,),
+        instruction=(
+            "You review accessibility. Check every screen of the UX specification"
+            " against WCAG 2.2 AA and the accessibility patterns of the UI kit,"
+            " and record concrete per-screen requirements (contrast, focus order,"
+            " keyboard access, labels). A screen without recorded requirements is"
+            " a finding, not a pass."
+        ),
+        stop_conditions=(
+            "The UX specification has no screen inventory to review.",
+            "An accessibility requirement conflicts with an accepted UI-kit or"
+            " architecture decision - escalate.",
+        ),
+    ),
+    "impact-analysis": SkillManifest(
+        id="impact-analysis",
+        version="1.0.0",
+        role=Role.ARCHITECT,
+        purpose=(
+            "Assess the change's impact on architecture boundaries, public"
+            " contracts, the data model and NFRs, and produce a verdict on"
+            " feasible routes."
+        ),
+        inputs=(ArtifactKind.REQUIREMENTS, ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.ARCHITECTURE_REVIEW,),
+        instruction=(
+            "You assess the architectural impact. Trace the change against the"
+            " architecture boundaries, public contracts, data model and NFRs of"
+            " the current codebase and accepted ADRs, and state for every route"
+            " whether it is feasible and what it costs. Every conclusion must"
+            " reference the code or ADR it rests on."
+        ),
+        stop_conditions=(
+            "The impact cannot be assessed from the provided context.",
+            "The change conflicts with an accepted ADR - escalate.",
+        ),
+    ),
+    "adr-proposal": SkillManifest(
+        id="adr-proposal",
+        version="1.0.0",
+        role=Role.ARCHITECT,
+        purpose=(
+            "Draft an ADR for a significant pending decision using the repository"
+            " ADR template, with options considered and consequences."
+        ),
+        inputs=(ArtifactKind.ARCHITECTURE_REVIEW, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.ADR_PROPOSAL,),
+        instruction=(
+            "You draft an ADR. Follow the repository ADR template: context,"
+            " decision, alternatives with trade-offs and consequences. Ground"
+            " the proposal in the impact analysis; the draft is a proposal for"
+            " human review, not an accepted decision."
+        ),
+        stop_conditions=(
+            "The pending decision belongs to a human (product priority, budget, risk acceptance).",
+            "The impact analysis does not support any option strongly enough to draft one.",
         ),
     ),
     "implementation": SkillManifest(

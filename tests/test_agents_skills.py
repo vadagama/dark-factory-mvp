@@ -1,4 +1,4 @@
-"""Unit tests of the skill manifests and registry (T-011)."""
+"""Unit tests of the skill manifests and registry (T-011, T-046)."""
 
 import re
 
@@ -11,6 +11,10 @@ SKILL_IDS = (
     "intake",
     "requirements-refinement",
     "spec-authoring",
+    "ux-flow",
+    "accessibility-review",
+    "impact-analysis",
+    "adr-proposal",
     "implementation",
     "implementation-rework",
     "code-review",
@@ -21,7 +25,7 @@ SKILL_IDS = (
 KEBAB_CASE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 
-def test_all_first_slice_skills_are_registered_and_unique() -> None:
+def test_all_registered_skills_are_registered_and_unique() -> None:
     manifests = [get_skill(skill_id) for skill_id in SKILL_IDS]
     assert len(manifests) == len(SKILL_IDS)
     assert {manifest.id for manifest in manifests} == set(SKILL_IDS)

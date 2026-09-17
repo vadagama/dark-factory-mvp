@@ -27,6 +27,72 @@
   "profiles": [
     {
       "constraints": [
+        "Make significant technical decisions only through an ADR, using the repository ADR template.",
+        "Never change the stack, dependencies or repository structure outside an ADR.",
+        "Ground every conclusion in the current codebase and accepted ADRs, not assumptions."
+      ],
+      "description": "Assesses the change's impact on architecture boundaries, contracts, the data model and NFRs, and drafts an ADR when a significant decision is required.",
+      "inputs": [
+        "requirements",
+        "spec",
+        "context"
+      ],
+      "name": "Architect",
+      "outputs": [
+        "architecture_review",
+        "adr_proposal"
+      ],
+      "role": "architect",
+      "schema_version": 1,
+      "skills": [
+        "impact-analysis",
+        "adr-proposal"
+      ],
+      "stop_conditions": [
+        "A decision belongs to a human (product priority, budget, risk acceptance) - stop and ask.",
+        "The change conflicts with an accepted ADR - escalate.",
+        "The impact cannot be assessed from the provided context - request it."
+      ],
+      "tools": [
+        "read_file",
+        "search_repo"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
+        "Design at the UX level; never modify code, infrastructure or pipeline configuration directly.",
+        "Map screens onto the existing UI kit patterns instead of inventing new components.",
+        "Every screen carries its states (loading/empty/error) and accessibility requirements."
+      ],
+      "description": "Turns approved requirements into user flows, a screen inventory with loading/empty/error states, UI-kit component mapping and accessibility requirements (WCAG 2.2 AA).",
+      "inputs": [
+        "spec",
+        "context"
+      ],
+      "name": "Design",
+      "outputs": [
+        "ux_spec"
+      ],
+      "role": "design",
+      "schema_version": 1,
+      "skills": [
+        "ux-flow",
+        "accessibility-review"
+      ],
+      "stop_conditions": [
+        "A requirement contradicts the accepted UI or architecture decisions (e.g. ADR-014) - escalate.",
+        "A UX question stays unanswered after clarification - stop and ask.",
+        "The flow needs a UI-kit pattern that does not exist - escalate to the kit backlog."
+      ],
+      "tools": [
+        "read_file",
+        "search_repo"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
         "Implement only the approved specification; expand scope only through a new task.",
         "Follow the existing patterns, structure and dependencies of the repository.",
         "Run the repository checks (lint, typecheck, tests) and report only verified results."

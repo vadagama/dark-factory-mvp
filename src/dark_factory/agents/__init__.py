@@ -5,8 +5,9 @@ tool allowlist, constraints and stop-conditions; a skill is one unit of work
 bound to a role. The execution contract is
 ``AgentProfile -> TaskEnvelope -> AgentResult`` (``dark_factory.agents.contract``).
 
-Core MVP ships profiles for product, develop and quality only (ADR-007 p.4);
-the other six roles get profiles in T-046/T-047.
+The registry ships five profiles: product, design, architect, develop and
+quality (ADR-007 p.4); infrastructure, security, ci_cd and operation get
+profiles in T-047 (T-082).
 """
 
 from dark_factory.agents.artifacts import ArtifactKind
