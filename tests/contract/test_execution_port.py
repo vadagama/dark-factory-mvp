@@ -5,50 +5,66 @@ from hashlib import sha256
 
 import pytest
 
-from dark_factory.adapters.fakes import FakeExecution
-from dark_factory.ports import (
-    ExecutionPort,
-    ExecutionResult,
-    Provider,
-    RepositoryRef,
-    WorkspaceHandle,
-    WorkspaceRequest,
-)
-
-PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
+from dark_factory.ports import ExecutionPort, ExecutionResult, WorkspaceHandle
+from tests.contract.conftest import _ExecutionBinding
 
 
-def _request() -> WorkspaceRequest:
-    return WorkspaceRequest(repository=PRODUCT, revision="abc123", change_id="chg-001")
+def _unknown_workspace(binding: _ExecutionBinding) -> WorkspaceHandle:
+    """A handle no binding ever minted."""
+    return WorkspaceHandle(
+        workspace_id="ws-9999",
+        repository=binding.make_request().repository,
+        revision=binding.revision,
+    )
 
 
-def test_adapter_satisfies_protocol(execution_port: ExecutionPort) -> None:
-    assert isinstance(execution_port, ExecutionPort)
+def test_adapter_satisfies_protocol(execution_binding: _ExecutionBinding) -> None:
+    assert isinstance(execution_binding.port, ExecutionPort)
 
 
-def test_prepare_workspace_returns_pinned_handle(execution_port: ExecutionPort) -> None:
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+def test_prepare_workspace_returns_pinned_handle(execution_binding: _ExecutionBinding) -> None:
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
     assert isinstance(handle, WorkspaceHandle)
     assert handle.workspace_id != ""
-    assert handle.repository == PRODUCT
-    assert handle.revision == "abc123"
+    assert handle.repository == execution_binding.make_request().repository
+    assert handle.revision == execution_binding.revision
 
 
 def test_prepare_workspace_replays_same_key_to_same_handle(
-    execution_port: ExecutionPort,
+    execution_binding: _ExecutionBinding,
 ) -> None:
-    first = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
-    second = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    first = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
+    second = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
     assert second == first
 
 
-def test_run_command_is_deterministic(execution_port: ExecutionPort) -> None:
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+def test_run_command_is_deterministic(execution_binding: _ExecutionBinding) -> None:
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
     first = asyncio.run(
-        execution_port.run_command(handle, ("pytest", "-q"), idempotency_key="cmd-1")
+        execution_binding.port.run_command(
+            handle, execution_binding.ok_command, idempotency_key="cmd-1"
+        )
     )
     second = asyncio.run(
-        execution_port.run_command(handle, ("pytest", "-q"), idempotency_key="cmd-2")
+        execution_binding.port.run_command(
+            handle, execution_binding.ok_command, idempotency_key="cmd-2"
+        )
     )
     assert second == first  # the result depends on argv only, not on the key
     assert isinstance(first, ExecutionResult)
@@ -57,10 +73,16 @@ def test_run_command_is_deterministic(execution_port: ExecutionPort) -> None:
     assert first.stdout != ""
 
 
-def test_run_command_failure_branch(failing_execution: ExecutionPort) -> None:
-    handle = asyncio.run(failing_execution.prepare_workspace(_request(), idempotency_key="ws-1"))
+def test_run_command_failure_branch(execution_binding: _ExecutionBinding) -> None:
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
     result = asyncio.run(
-        failing_execution.run_command(handle, ("pytest", "tests/"), idempotency_key="cmd-1")
+        execution_binding.port.run_command(
+            handle, execution_binding.fail_command, idempotency_key="cmd-1"
+        )
     )
     assert result.ok is False
     assert result.exit_code != 0
@@ -68,32 +90,40 @@ def test_run_command_failure_branch(failing_execution: ExecutionPort) -> None:
 
 
 def test_run_command_same_key_reflects_current_state(
-    execution: FakeExecution, execution_port: ExecutionPort
+    execution_binding: _ExecutionBinding,
 ) -> None:
     # The key addresses the call in the effect ledger; it is NOT a result cache.
     # An agent edits a file and re-runs the check under the same key, so a port
     # that replayed the result stored under the key would pin the first
-    # (failing) outcome forever. The fake keeps no key ledger by construction.
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
+    # (failing) outcome forever.
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
     first = asyncio.run(
-        execution_port.run_command(handle, ("pytest", "-q"), idempotency_key="cmd-1")
+        execution_binding.port.run_command(
+            handle, execution_binding.state_command, idempotency_key="cmd-1"
+        )
     )
     assert first.ok is True
 
-    execution.seed_failure(("pytest", "-q"), exit_code=1)  # the workspace state changed
+    execution_binding.make_state_fail(handle)  # the workspace state changed
 
     second = asyncio.run(
-        execution_port.run_command(handle, ("pytest", "-q"), idempotency_key="cmd-1")
+        execution_binding.port.run_command(
+            handle, execution_binding.state_command, idempotency_key="cmd-1"
+        )
     )
     assert second.ok is False
     assert second.exit_code == 1
 
 
 def test_collect_evidence_returns_hashed_content(
-    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+    execution_binding: _ExecutionBinding, evidence_workspace: WorkspaceHandle
 ) -> None:
     evidence = asyncio.run(
-        execution_port.collect_evidence(
+        execution_binding.port.collect_evidence(
             evidence_workspace, "reports/pytest-report.xml", idempotency_key="ev-1"
         )
     )
@@ -103,119 +133,157 @@ def test_collect_evidence_returns_hashed_content(
 
 
 def test_write_file_is_readable_as_evidence(
-    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+    execution_binding: _ExecutionBinding, evidence_workspace: WorkspaceHandle
 ) -> None:
     asyncio.run(
-        execution_port.write_file(
+        execution_binding.port.write_file(
             evidence_workspace, "src/app.py", b"print('hi')\n", idempotency_key="wf-1"
         )
     )
     evidence = asyncio.run(
-        execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-2")
+        execution_binding.port.collect_evidence(
+            evidence_workspace, "src/app.py", idempotency_key="ev-2"
+        )
     )
     assert evidence.content == b"print('hi')\n"
     assert evidence.content_hash == sha256(evidence.content).hexdigest()
 
 
 def test_write_file_is_idempotent_by_state(
-    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+    execution_binding: _ExecutionBinding, evidence_workspace: WorkspaceHandle
 ) -> None:
     asyncio.run(
-        execution_port.write_file(evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-1")
+        execution_binding.port.write_file(
+            evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-1"
+        )
     )
     asyncio.run(
-        execution_port.write_file(evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-2")
+        execution_binding.port.write_file(
+            evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-2"
+        )
     )
     evidence = asyncio.run(
-        execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-1")
+        execution_binding.port.collect_evidence(
+            evidence_workspace, "src/app.py", idempotency_key="ev-1"
+        )
     )
     assert evidence.content == b"v1"
 
 
 def test_write_file_overwrite_of_equal_length_is_visible(
-    execution_port: ExecutionPort, evidence_workspace: WorkspaceHandle
+    execution_binding: _ExecutionBinding, evidence_workspace: WorkspaceHandle
 ) -> None:
     # Same path, equal-length payloads and the same key: ``write_file`` is
     # idempotent by state (last write wins), so the second write must land. A
     # port that deduplicated by key — the reading this contract rules out — would
     # silently keep the first payload.
     asyncio.run(
-        execution_port.write_file(evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-1")
+        execution_binding.port.write_file(
+            evidence_workspace, "src/app.py", b"v1", idempotency_key="wf-1"
+        )
     )
     asyncio.run(
-        execution_port.write_file(evidence_workspace, "src/app.py", b"v2", idempotency_key="wf-1")
+        execution_binding.port.write_file(
+            evidence_workspace, "src/app.py", b"v2", idempotency_key="wf-1"
+        )
     )
     evidence = asyncio.run(
-        execution_port.collect_evidence(evidence_workspace, "src/app.py", idempotency_key="ev-1")
+        execution_binding.port.collect_evidence(
+            evidence_workspace, "src/app.py", idempotency_key="ev-1"
+        )
     )
     assert evidence.content == b"v2"
     assert evidence.content_hash == sha256(b"v2").hexdigest()
 
 
-def test_write_file_rejects_unknown_workspace(execution_port: ExecutionPort) -> None:
-    unknown = WorkspaceHandle(
-        workspace_id="ws-9999",
-        repository=PRODUCT,
-        revision="abc123",
-    )
+def test_write_file_rejects_unknown_workspace(execution_binding: _ExecutionBinding) -> None:
+    unknown = _unknown_workspace(execution_binding)
     with pytest.raises(KeyError):
-        asyncio.run(execution_port.write_file(unknown, "src/app.py", b"v1", idempotency_key="wf-1"))
+        asyncio.run(
+            execution_binding.port.write_file(unknown, "src/app.py", b"v1", idempotency_key="wf-1")
+        )
 
 
 def test_collect_changes_of_a_fresh_workspace_is_empty(
-    execution_port: ExecutionPort,
+    execution_binding: _ExecutionBinding,
 ) -> None:
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
-    changes = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
+    changes = asyncio.run(execution_binding.port.collect_changes(handle, idempotency_key="cc-1"))
     assert changes == {}
 
 
 def test_collect_changes_returns_the_current_file_set(
-    execution_port: ExecutionPort,
+    execution_binding: _ExecutionBinding,
 ) -> None:
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
-    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1"))
-    asyncio.run(execution_port.write_file(handle, "docs/note.md", b"note", idempotency_key="wf-2"))
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
+    asyncio.run(
+        execution_binding.port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1")
+    )
+    asyncio.run(
+        execution_binding.port.write_file(handle, "docs/note.md", b"note", idempotency_key="wf-2")
+    )
 
-    changes = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    changes = asyncio.run(execution_binding.port.collect_changes(handle, idempotency_key="cc-1"))
 
     assert changes == {"src/app.py": b"v1", "docs/note.md": b"note"}
 
 
 def test_collect_changes_reflects_current_state_not_the_first_call(
-    execution_port: ExecutionPort,
+    execution_binding: _ExecutionBinding,
 ) -> None:
     # Like run_command/collect_evidence, the key is a ledger address, not a
     # result cache: the publication must carry what the workspace holds now.
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
-    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1"))
-    first = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
+    asyncio.run(
+        execution_binding.port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1")
+    )
+    first = asyncio.run(execution_binding.port.collect_changes(handle, idempotency_key="cc-1"))
     assert first == {"src/app.py": b"v1"}
 
-    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v2", idempotency_key="wf-2"))
+    asyncio.run(
+        execution_binding.port.write_file(handle, "src/app.py", b"v2", idempotency_key="wf-2")
+    )
 
-    second = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+    second = asyncio.run(execution_binding.port.collect_changes(handle, idempotency_key="cc-1"))
     assert second == {"src/app.py": b"v2"}
 
 
-def test_collect_changes_returns_a_copy(execution_port: ExecutionPort) -> None:
-    handle = asyncio.run(execution_port.prepare_workspace(_request(), idempotency_key="ws-1"))
-    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1"))
-    first = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-1"))
+def test_collect_changes_returns_a_copy(execution_binding: _ExecutionBinding) -> None:
+    handle = asyncio.run(
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-1"
+        )
+    )
+    asyncio.run(
+        execution_binding.port.write_file(handle, "src/app.py", b"v1", idempotency_key="wf-1")
+    )
+    first = asyncio.run(execution_binding.port.collect_changes(handle, idempotency_key="cc-1"))
 
-    asyncio.run(execution_port.write_file(handle, "src/app.py", b"v2", idempotency_key="wf-2"))
+    asyncio.run(
+        execution_binding.port.write_file(handle, "src/app.py", b"v2", idempotency_key="wf-2")
+    )
 
     # The earlier mapping is a snapshot: a later write never mutates it.
     assert first == {"src/app.py": b"v1"}
-    again = asyncio.run(execution_port.collect_changes(handle, idempotency_key="cc-3"))
+    again = asyncio.run(execution_binding.port.collect_changes(handle, idempotency_key="cc-3"))
     assert again == {"src/app.py": b"v2"}
 
 
-def test_collect_changes_rejects_unknown_workspace(execution_port: ExecutionPort) -> None:
-    unknown = WorkspaceHandle(
-        workspace_id="ws-9999",
-        repository=PRODUCT,
-        revision="abc123",
-    )
+def test_collect_changes_rejects_unknown_workspace(
+    execution_binding: _ExecutionBinding,
+) -> None:
+    unknown = _unknown_workspace(execution_binding)
     with pytest.raises(KeyError):
-        asyncio.run(execution_port.collect_changes(unknown, idempotency_key="cc-1"))
+        asyncio.run(execution_binding.port.collect_changes(unknown, idempotency_key="cc-1"))

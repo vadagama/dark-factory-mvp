@@ -5,9 +5,11 @@ modules never import ``dark_factory.adapters`` and the same suite runs against
 fake → GitHub → GitLab. The source-control ports are parametrized over the
 in-memory fakes and the real GitHub adapter (T-024) driven by the in-memory
 GitHub API emulator (``github_api.py``) — no network, no real credentials; the
-tracker port is parametrized the same way over the fake and the Plane adapter
+the tracker port is parametrized the same way over the fake and the Plane adapter
 (T-033) driven by ``plane_api.py``; the telemetry port is parametrized over the
-fake and the OTel adapter (T-060) driven by the SDK's in-memory exporter.
+fake and the OTel adapter (T-060) driven by the SDK's in-memory exporter; the
+execution port is parametrized over the fake and the real worktree adapter
+(T-092) driven by an operator-prepared local git mirror seeded per test.
 The ``*_journal`` fixtures expose recorded side effects that the ports
 themselves do not surface (comments, dispatches, published statuses, spans,
 events); fake bindings read their own state, the GitHub binding reads the
@@ -16,6 +18,7 @@ markers), and the OTel binding decodes the exporter it was built with.
 """
 
 import asyncio
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -54,6 +57,7 @@ from dark_factory.context.sdd.baseline import current_revision
 from dark_factory.context.sdd.native import NativeChangeSetAdapter
 from dark_factory.context.sdd.openspec import OpenSpecAdapter
 from dark_factory.context.sdd.speckit import SpecKitAdapter
+from dark_factory.execution import WorktreeExecution, WorktreeExecutionConfig
 from dark_factory.ports import (
     ArtifactRef,
     ArtifactStorePort,
@@ -151,6 +155,26 @@ class _TelemetryBinding(NamedTuple):
     port: TelemetryPort
     spans: Callable[[], tuple[Span, ...]]
     usage: Callable[[], tuple[tuple[Usage, dict[str, str]], ...]]
+
+
+class _ExecutionBinding(NamedTuple):
+    """ExecutionPort plus the pinned revision, driving commands and seed hooks of one binding.
+
+    ``prepare_workspace`` mints from the binding's own repository and revision
+    (``make_request``); ``ok_command``/``fail_command``/``state_command`` are
+    argv pairs the port must run inside the workspace, and the seed hooks create
+    the state each binding needs: a registered evidence file, a failing command
+    (fake) or a dirty tracked file (worktree adapter) behind ``make_state_fail``.
+    """
+
+    port: ExecutionPort
+    revision: str
+    ok_command: tuple[str, ...]
+    fail_command: tuple[str, ...]
+    state_command: tuple[str, ...]
+    make_state_fail: Callable[[WorkspaceHandle], None]
+    seed_file: Callable[[WorkspaceHandle, str, bytes], None]
+    make_request: Callable[[], WorkspaceRequest]
 
 
 def _tracked_change() -> Change:
@@ -452,34 +476,104 @@ def seeded_knowledge_port(knowledge: FakeKnowledge) -> KnowledgePort:
     return knowledge
 
 
-@pytest.fixture
-def execution() -> FakeExecution:
-    return FakeExecution()
+@pytest.fixture(params=["fake", "worktree"])
+def execution_binding(request: pytest.FixtureRequest, tmp_path: Path) -> _ExecutionBinding:
+    """ExecutionPort bound to the fake and the real worktree adapter (T-092, TD-022)."""
+    if request.param == "worktree":
+        revision = _seeded_mirror(tmp_path)
+        port = WorktreeExecution(
+            WorktreeExecutionConfig(
+                root=tmp_path / "workspaces-root", mirror_root=tmp_path / "mirror"
+            )
+        )
+        return _ExecutionBinding(
+            port=port,
+            revision=revision,
+            ok_command=("git", "rev-parse", "HEAD"),
+            fail_command=("sh", "-c", "echo worktree-command-failed >&2; exit 3"),
+            state_command=("git", "diff", "--quiet"),  # 0 on a clean tree, 1 on a dirty one
+            make_state_fail=_worktree_state_fail(port),
+            seed_file=_worktree_seed_file(port),
+            make_request=lambda: WorkspaceRequest(
+                repository=PRODUCT, revision=revision, change_id="chg-001"
+            ),
+        )
+    fake = FakeExecution()
+    fake.seed_failure(("pytest", "tests/"))  # the deterministic fail_command of the fake
+    return _ExecutionBinding(
+        port=fake,
+        revision="abc123",
+        ok_command=("pytest", "-q"),
+        fail_command=("pytest", "tests/"),
+        state_command=("pytest", "-q"),
+        make_state_fail=lambda _handle: fake.seed_failure(("pytest", "-q"), exit_code=1),
+        seed_file=fake.seed_file,
+        make_request=lambda: WorkspaceRequest(
+            repository=PRODUCT, revision="abc123", change_id="chg-001"
+        ),
+    )
 
 
 @pytest.fixture
-def execution_port(execution: FakeExecution) -> ExecutionPort:
-    return execution
-
-
-@pytest.fixture
-def failing_execution(execution: FakeExecution) -> ExecutionPort:
-    """Execution port whose ``pytest`` command fails deterministically."""
-    execution.seed_failure(("pytest", "tests/"))
-    return execution
-
-
-@pytest.fixture
-def evidence_workspace(execution: FakeExecution) -> WorkspaceHandle:
-    """A prepared workspace with one seeded evidence file."""
+def evidence_workspace(execution_binding: _ExecutionBinding) -> WorkspaceHandle:
+    """A prepared workspace of the bound port with one seeded evidence file."""
     handle = asyncio.run(
-        execution.prepare_workspace(
-            WorkspaceRequest(repository=PRODUCT, revision="abc123", change_id="chg-001"),
-            idempotency_key="ws-evidence",
+        execution_binding.port.prepare_workspace(
+            execution_binding.make_request(), idempotency_key="ws-evidence"
         )
     )
-    execution.seed_file(handle, "reports/pytest-report.xml", b"<testsuite tests='3'/>")
+    execution_binding.seed_file(handle, "reports/pytest-report.xml", b"<testsuite tests='3'/>")
     return handle
+
+
+def _seeded_mirror(tmp_path: Path) -> str:
+    """An operator-prepared local mirror of ``PRODUCT``; returns its HEAD sha."""
+    source = tmp_path / "mirror" / "github" / "small" / "pilot"
+    source.mkdir(parents=True)
+    _git(source, "init", "-b", "main")
+    (source / "docs").mkdir()
+    (source / "docs" / "note.md").write_bytes(b"note\n")
+    _git(source, "add", ".")
+    _git(
+        source,
+        "-c",
+        "user.email=factory@example.com",
+        "-c",
+        "user.name=Dark Factory",
+        "commit",
+        "-m",
+        "seed",
+    )
+    return _git(source, "rev-parse", "HEAD").strip()
+
+
+def _git(cwd: Path, *argv: str) -> str:
+    """Run one git command in ``cwd`` and return its stdout (local repository, no network)."""
+    process = subprocess.run(
+        ("git", "-C", str(cwd), "-c", "commit.gpgsign=false", *argv),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return process.stdout
+
+
+def _worktree_seed_file(port: WorktreeExecution) -> Callable[[WorkspaceHandle, str, bytes], None]:
+    """``write_file`` through the port: the adapter applies its own path safety."""
+
+    def seed(handle: WorkspaceHandle, path: str, content: bytes) -> None:
+        asyncio.run(port.write_file(handle, path, content, idempotency_key=f"seed:{path}"))
+
+    return seed
+
+
+def _worktree_state_fail(port: WorktreeExecution) -> Callable[[WorkspaceHandle], None]:
+    """Dirty the tracked file, so the binding's ``git diff --quiet`` fails next."""
+
+    def fail(handle: WorkspaceHandle) -> None:
+        asyncio.run(port.write_file(handle, "docs/note.md", b"changed\n", idempotency_key="dirty"))
+
+    return fail
 
 
 @pytest.fixture

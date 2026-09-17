@@ -1,9 +1,10 @@
 """Execution layer of the factory core (HLD §7).
 
-Today the layer holds the run-record index of T-061: publishing the compact
-immutable evidence index of a run into the ``dark-factory-runs`` repository
-(ADR-015 p.4). Isolated workspaces, command execution and evidence collection
-(``ExecutionPort``, T-012) arrive as providers next to it.
+The layer holds two adapters: the run-record index of T-061 — publishing the
+compact immutable evidence index of a run into the ``dark-factory-runs``
+repository (ADR-015 p.4) — and the real ``ExecutionPort`` adapter of T-092
+(TD-022): isolated git worktrees per agent stage, file writes, command
+execution and evidence collection over an operator-prepared local mirror.
 """
 
 from dark_factory.execution.runs.errors import (
@@ -48,6 +49,15 @@ from dark_factory.execution.runs.store import (
     read_local_evidence,
     render_decisions,
 )
+from dark_factory.execution.workspace import (
+    WORKSPACE_COMMAND_TIMEOUT_ENV_VAR,
+    WORKSPACE_MIRROR_ROOT_ENV_VAR,
+    WORKSPACE_ROOT_ENV_VAR,
+    UnsafeWorkspacePath,
+    WorkspaceError,
+    WorktreeExecution,
+    WorktreeExecutionConfig,
+)
 
 __all__ = [
     "DECISIONS_NAME",
@@ -58,6 +68,9 @@ __all__ = [
     "SNAPSHOT_NAME",
     "STAGES_DIR_NAME",
     "USAGE_NAME",
+    "WORKSPACE_COMMAND_TIMEOUT_ENV_VAR",
+    "WORKSPACE_MIRROR_ROOT_ENV_VAR",
+    "WORKSPACE_ROOT_ENV_VAR",
     "EvidenceChainError",
     "PublishOutcome",
     "PublishResult",
@@ -73,6 +86,10 @@ __all__ = [
     "RunUsageSummary",
     "UnsafeRunRecordError",
     "UnsafeValue",
+    "UnsafeWorkspacePath",
+    "WorkspaceError",
+    "WorktreeExecution",
+    "WorktreeExecutionConfig",
     "build_usage_summary",
     "check_payload_size",
     "describe_unsafe_values",
