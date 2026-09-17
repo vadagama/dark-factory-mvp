@@ -130,14 +130,18 @@ flowchart TD
 | `ARCHITECT_PROFILE` | `Architect` | `1.0.0` | requirements, spec, context | architecture_review, adr_proposal | `read_file`, `search_repo` | impact-analysis, adr-proposal |
 | `DEVELOP_PROFILE` | `Develop` | `1.0.0` | spec, review_report, context | code | `read_file`, `write_file`, `apply_patch`, `run_command` | implementation, implementation-rework |
 | `QUALITY_PROFILE` | `Quality` | `1.0.0` | spec, code, context | review_report, acceptance_verdict | `read_file`, `run_tests`, `run_command` | code-review, acceptance-verification |
+| `SECURITY_PROFILE` | `Security` | `1.0.0` | spec, code, context | security_review | `read_file`, `search_repo`, `run_command` | threat-model, security-analysis |
+| `INFRASTRUCTURE_PROFILE` | `Infrastructure` | `1.0.0` | spec, context | infrastructure_change | `read_file`, `write_file`, `apply_patch`, `run_command` | infra-design, infra-change |
+| `CI_CD_PROFILE` | `CI/CD` | `1.0.0` | code, context | pipeline_config, change_request | `read_file`, `write_file`, `apply_patch`, `run_command` | pipeline-delivery, task-git-cycle |
+| `OPERATION_PROFILE` | `Operation` | `1.0.0` | spec, code, context | ops_verdict | `read_file`, `run_command` | smoke-verification, rollback-analysis |
 
-У каждого профиля 3 ограничения (`constraints`) и по 3 stop-conditions, кроме develop — у него 4. `CORE_ROLES = (Role.PRODUCT, Role.DESIGN, Role.ARCHITECT, Role.DEVELOP, Role.QUALITY)` — роли с профилями, порядок каталога ADR-007 (ADR-007 п.4: ядро MVP product/develop/quality, design и architect подключены в T-046 к гейтам ui/planning ADR-023); остальные четыре (`infrastructure`, `security`, `ci_cd`, `operation`) — явная ошибка до T-047 (T-082; так в докстринге модуля). `get_profile(role)` при промахе бросает `ProfileNotFoundError(f"no agent profile for role {role.value!r}")` — например `'infrastructure'`.
+У каждого профиля 3 ограничения (`constraints`) и по 3 stop-conditions, кроме develop — у него 4. `CORE_ROLES = (Role.PRODUCT, Role.DESIGN, Role.ARCHITECT, Role.DEVELOP, Role.QUALITY, Role.SECURITY, Role.INFRASTRUCTURE, Role.CI_CD, Role.OPERATION)` — все девять ролей каталога ADR-007 в его порядке (ADR-007 п.4: ядро MVP product/develop/quality — T-011; design и architect — T-046, гейты ui/planning ADR-023; infrastructure, security, ci_cd, operation — T-047, исполнители R3/R4-обязательств ADR-023). Operation отвечает за вердикт гейта release, но машина вердикта — детерминированная политика релиза (T034), а определение human/операционного вердикта — отдельное решение (ADR-023). `get_profile(role)` при промахе бросает `ProfileNotFoundError(f"no agent profile for role {role.value!r}")`; профили есть у всех девяти ролей каталога, поэтому ошибка достижима только для роли, добавленной в enum без профиля — новая роль плагин, её профиль появляется вместе с ней (ADR-007 п.2).
 
 Манифесты читаются не из файлов: профили — `Final`-константы Python в `registry.py`, инфраструктуры манифест-файлов в кодовой базе нет.
 
 ## 6. Скиллы (`skills/`)
 
-`SkillManifest` — frozen, `AGENT_SKILL_SCHEMA_VERSION = 1`. `id` валидируется паттерном `^[a-z0-9]+(-[a-z0-9]+)*$` (kebab-case wire-id, его ссылают профили); `instruction` (min_length=1) — по замыслу текст, который уходит агенту как промпт, `stop_conditions` — свободный текст до T-016. Зарегистрировано 12 скиллов, все `version="1.0.0"`:
+`SkillManifest` — frozen, `AGENT_SKILL_SCHEMA_VERSION = 1`. `id` валидируется паттерном `^[a-z0-9]+(-[a-z0-9]+)*$` (kebab-case wire-id, его ссылают профили); `instruction` (min_length=1) — по замыслу текст, который уходит агенту как промпт, `stop_conditions` — свободный текст до T-016. Зарегистрировано 20 скиллов, все `version="1.0.0"`:
 
 | id | Роль | inputs | outputs |
 |---|---|---|---|
@@ -153,8 +157,16 @@ flowchart TD
 | `implementation-rework` | develop | review_report, context | code |
 | `code-review` | quality | code, context | review_report |
 | `acceptance-verification` | quality | spec, code, context | acceptance_verdict |
+| `threat-model` | security | spec, context | security_review |
+| `security-analysis` | security | code, context | security_review |
+| `infra-design` | infrastructure | spec, context | infrastructure_change |
+| `infra-change` | infrastructure | infrastructure_change, context | infrastructure_change |
+| `pipeline-delivery` | ci_cd | code, context | pipeline_config |
+| `task-git-cycle` | ci_cd | code, context | change_request |
+| `smoke-verification` | operation | spec, context | ops_verdict |
+| `rollback-analysis` | operation | code, context | ops_verdict |
 
-`get_skill(skill_id)` бросает `SkillNotFoundError(f"unknown skill id {skill_id!r}")` — опечатка в id обязана падать громко. `ArtifactKind` (`artifacts.py`, StrEnum): `task`, `requirements`, `spec`, `change_request`, `code`, `review_report`, `acceptance_verdict`, `context`, `ux_spec`, `architecture_review`, `adr_proposal` — значения сериализуются в манифестах, переименование считается breaking change (ADR-015 п.3). Ошибки определения (`errors.py`): `AgentDefinitionError(RuntimeError)` → `ProfileNotFoundError`, `SkillNotFoundError`.
+`get_skill(skill_id)` бросает `SkillNotFoundError(f"unknown skill id {skill_id!r}")` — опечатка в id обязана падать громко. `ArtifactKind` (`artifacts.py`, StrEnum): `task`, `requirements`, `spec`, `change_request`, `code`, `review_report`, `acceptance_verdict`, `context`, `ux_spec`, `architecture_review`, `adr_proposal`, `infrastructure_change`, `security_review`, `pipeline_config`, `ops_verdict` — значения сериализуются в манифестах, переименование считается breaking change (ADR-015 п.3). Ошибки определения (`errors.py`): `AgentDefinitionError(RuntimeError)` → `ProfileNotFoundError`, `SkillNotFoundError`.
 
 > `build_envelope` принимает `instruction` параметром и не извлекает промпт из `skill.instruction` — связку «скилл → промпт конверта» реализует пока только вызывающая сторона (в коде — тесты).
 
@@ -189,7 +201,7 @@ flowchart TD
 
 | Случай | Поведение |
 |---|---|
-| `get_profile` для не-core роли (4 из 9) | `ProfileNotFoundError` с именем роли |
+| `get_profile` для роли без профиля | `ProfileNotFoundError` с именем роли (сегодня недостижимо: все 9 ролей каталога имеют профили) |
 | `get_skill` с неизвестным id | `SkillNotFoundError` |
 | Скилл чужой роли в `build_envelope` | `ValueError` `belongs to role` |
 | Скилл той же роли, но не в `profile.skills` | `ValueError` `not bound` |
@@ -206,8 +218,8 @@ flowchart TD
 ## 9. Где искать проверки
 
 - [`test_agents_contract.py`](../../tests/test_agents_contract.py) — `build_envelope`: фиксация роли/скилла/контекста и четыре отказа связности; `validate_agent_result`: пустой output, `ok=False`, optional `usage`; минимальный конверт без новых полей остаётся валидным;
-- [`test_agents_profiles.py`](../../tests/test_agents_profiles.py) — `CORE_ROLES` ровно пять (каталог ADR-007); у каждой core-роли профиль, у остальных четырёх — ошибка с именем роли; полнота манифеста; каждый skill профиля существует и принадлежит роли;
-- [`test_agents_skills.py`](../../tests/test_agents_skills.py) — 12 скиллов зарегистрированы и уникальны; id в kebab-case; полнота манифестов; каждый скилл привязан к профилю своей роли; неизвестный id — ошибка;
+- [`test_agents_profiles.py`](../../tests/test_agents_profiles.py) — `CORE_ROLES` — все девять ролей каталога ADR-007 и совпадает с `Role`; у каждой роли профиль; полнота манифеста; каждый skill профиля существует и принадлежит роли;
+- [`test_agents_skills.py`](../../tests/test_agents_skills.py) — 20 скиллов зарегистрированы и уникальны; id в kebab-case; полнота манифестов; каждый скилл привязан к профилю своей роли; неизвестный id — ошибка;
 - [`test_harness_adapter.py`](../../tests/test_harness_adapter.py) — protocol-совместимость; `instruction` как system и user prompt; mapping usage/cost; structured output; инструменты по роли и изоляция ролей; политика ошибок без текстов исключений; маскирование в `health()`; `HarnessConfig.from_env`/`missing_env_vars`;
 - [`contract/test_harness_port.py`](../../tests/contract/test_harness_port.py) — контракт порта на `FakeHarness` (фикстура `harness_port` в `contract/conftest.py`): версионированный результат, детерминизм, health.
 

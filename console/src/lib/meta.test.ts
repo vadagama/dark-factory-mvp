@@ -28,10 +28,14 @@ describe("meta snapshot", () => {
     expect(meta.limits.max_rework_rounds).toBe(3);
     expect(meta.profiles.map((profile) => profile.role)).toEqual([
       "architect",
+      "ci_cd",
       "design",
       "develop",
+      "infrastructure",
+      "operation",
       "product",
       "quality",
+      "security",
     ]);
   });
 });

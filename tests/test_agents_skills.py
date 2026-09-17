@@ -1,4 +1,4 @@
-"""Unit tests of the skill manifests and registry (T-011, T-046)."""
+"""Unit tests of the skill manifests and registry (T-011, T-046, T-047)."""
 
 import re
 
@@ -20,6 +20,14 @@ SKILL_IDS = (
     "code-review",
     "acceptance-verification",
     "change-request",
+    "threat-model",
+    "security-analysis",
+    "infra-design",
+    "infra-change",
+    "pipeline-delivery",
+    "task-git-cycle",
+    "smoke-verification",
+    "rollback-analysis",
 )
 
 KEBAB_CASE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")

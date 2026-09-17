@@ -5,9 +5,10 @@ tool allowlist, constraints and stop-conditions; a skill is one unit of work
 bound to a role. The execution contract is
 ``AgentProfile -> TaskEnvelope -> AgentResult`` (``dark_factory.agents.contract``).
 
-The registry ships five profiles: product, design, architect, develop and
-quality (ADR-007 p.4); infrastructure, security, ci_cd and operation get
-profiles in T-047 (T-082).
+The registry ships profiles for all nine roles of the ADR-007 catalog:
+product, design, architect, develop and quality (ADR-007 p.4), plus
+infrastructure, security, ci_cd and operation (T-047, the R3/R4 obligations
+of ADR-023).
 """
 
 from dark_factory.agents.artifacts import ArtifactKind

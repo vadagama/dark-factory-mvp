@@ -1,10 +1,10 @@
 """Registry of the built-in agent profiles (ADR-007).
 
 Profiles are typed Python constants — the codebase has no manifest-file
-infrastructure. The registry ships five profiles (ADR-007 p.4): the core
-MVP trio product/develop/quality plus design and architect (T-046, the
-ui/planning gates of ADR-023); infrastructure, security, ci_cd and
-operation join in T-047 and are an explicit error here until then.
+infrastructure. The registry ships all nine roles of the ADR-007 catalog
+(ADR-007 p.4): the core MVP trio product/develop/quality (T-011), design
+and architect (T-046, the ui/planning gates of ADR-023), and infrastructure,
+security, ci_cd and operation (T-047, the R3/R4 obligations of ADR-023).
 """
 
 from collections.abc import Mapping
@@ -141,12 +141,139 @@ QUALITY_PROFILE: Final[AgentProfile] = AgentProfile(
     skills=("code-review", "acceptance-verification"),
 )
 
+SECURITY_PROFILE: Final[AgentProfile] = AgentProfile(
+    role=Role.SECURITY,
+    name="Security",
+    version="1.0.0",
+    description=(
+        "Threat-models the change, reviews the secure design and analyzes IAM,"
+        " secrets handling and dependencies (application security and supply"
+        " chain) as a cross-cutting review, producing security requirements and"
+        " findings."
+    ),
+    inputs=(ArtifactKind.SPEC, ArtifactKind.CODE, ArtifactKind.CONTEXT),
+    outputs=(ArtifactKind.SECURITY_REVIEW,),
+    tools=("read_file", "search_repo", "run_command"),
+    constraints=(
+        "Assess trust boundaries, data flows and access, not style; every finding"
+        " carries severity, location and a required action.",
+        "Never reproduce secrets or exploit payloads in reports, logs or code -"
+        " name the exposure, do not paste the secret.",
+        "Security review never fixes the reviewed change; remediation returns to the owning role.",
+    ),
+    stop_conditions=(
+        "A finding touches a trust boundary outside the reviewed scope - escalate.",
+        "A risk requires a product or architecture decision (risk acceptance, a"
+        " new boundary) - stop and ask.",
+        "The threat model cannot be built from the provided context - request it.",
+    ),
+    skills=("threat-model", "security-analysis"),
+)
+
+INFRASTRUCTURE_PROFILE: Final[AgentProfile] = AgentProfile(
+    role=Role.INFRASTRUCTURE,
+    name="Infrastructure",
+    version="1.0.0",
+    description=(
+        "Designs and implements infrastructure as code: environments, Helm and"
+        " Kubernetes manifests, network and IAM as reviewed repository changes,"
+        " kept vendor-neutral, idempotent and reversible."
+    ),
+    inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+    outputs=(ArtifactKind.INFRASTRUCTURE_CHANGE,),
+    tools=("read_file", "write_file", "apply_patch", "run_command"),
+    constraints=(
+        "Every environment change lands as reviewed infrastructure as code, never"
+        " as a manual console operation.",
+        "Own environments and their configuration; pipelines and release execution"
+        " belong to ci_cd.",
+        "Validate before apply (plan/diff), keep the change idempotent and"
+        " reversible, and record the evidence.",
+    ),
+    stop_conditions=(
+        "The change requires cloud credentials or a manual console action - stop;"
+        " secrets never enter the repository.",
+        "The change modifies the stack or introduces a new platform component -"
+        " escalate for an ADR.",
+        "The live environment contradicts the repository state (drift or missing"
+        " access) - stop and report instead of forcing the apply.",
+    ),
+    skills=("infra-design", "infra-change"),
+)
+
+CI_CD_PROFILE: Final[AgentProfile] = AgentProfile(
+    role=Role.CI_CD,
+    name="CI/CD",
+    version="1.0.0",
+    description=(
+        "Builds and keeps the delivery pipeline as code: build, repository checks,"
+        " release packaging and promotion; runs the git cycle of the task (branch,"
+        " conventional commits, merge request with evidence) while the merge"
+        " itself stays a human decision."
+    ),
+    inputs=(ArtifactKind.CODE, ArtifactKind.CONTEXT),
+    outputs=(ArtifactKind.PIPELINE_CONFIG, ArtifactKind.CHANGE_REQUEST),
+    tools=("read_file", "write_file", "apply_patch", "run_command"),
+    constraints=(
+        "Express pipelines and release packaging as code; a gate that cannot run"
+        " in CI needs explicit justification, never a silent skip.",
+        "Reference secrets by name from the secret store; credentials never enter"
+        " pipeline code or logs.",
+        "Prepare the merge, never perform it: merging into the target branch is a"
+        " human decision (ADR-011).",
+    ),
+    stop_conditions=(
+        "The pipeline needs an external service, environment or secret that is not"
+        " provisioned - stop and request it.",
+        "A required gate cannot run in CI without being weakened - escalate.",
+        "A merge or a production promotion is requested - stop and hand the"
+        " evidence to the human decision.",
+    ),
+    skills=("pipeline-delivery", "task-git-cycle"),
+)
+
+OPERATION_PROFILE: Final[AgentProfile] = AgentProfile(
+    role=Role.OPERATION,
+    name="Operation",
+    version="1.0.0",
+    description=(
+        "Operates the running system: observability, SLOs and error budgets,"
+        " runbooks and incident response; owns the Operation verdict of the"
+        " release gate, grounded in smoke and rollback evidence - the verdict"
+        " machine itself is the deterministic release policy, and the definition"
+        " of the human/operational verdict remains a separate decision (ADR-023)."
+    ),
+    inputs=(ArtifactKind.SPEC, ArtifactKind.CODE, ArtifactKind.CONTEXT),
+    outputs=(ArtifactKind.OPS_VERDICT,),
+    tools=("read_file", "run_command"),
+    constraints=(
+        "Judge from evidence: every verdict cites the smoke checks, the rollback"
+        " analysis and the pinned revision it rests on.",
+        "Observe and report; remediation of the system or its code returns to the owning role.",
+        "The Operation verdict of the release gate is grounded in smoke and"
+        " rollback evidence; the verdict machine stays the deterministic release"
+        " policy.",
+    ),
+    stop_conditions=(
+        "Smoke or rollback evidence for the pinned revision is missing or stale -"
+        " fail the verdict instead of assuming.",
+        "A smoke failure or an incident exceeds the runbook - escalate per the incident lifecycle.",
+        "A release decision requires the human/operational verdict whose definition"
+        " ADR-023 defers to a separate decision - stop and ask.",
+    ),
+    skills=("smoke-verification", "rollback-analysis"),
+)
+
 _PROFILES: Final[Mapping[Role, AgentProfile]] = {
     Role.PRODUCT: PRODUCT_PROFILE,
     Role.DESIGN: DESIGN_PROFILE,
     Role.ARCHITECT: ARCHITECT_PROFILE,
     Role.DEVELOP: DEVELOP_PROFILE,
     Role.QUALITY: QUALITY_PROFILE,
+    Role.SECURITY: SECURITY_PROFILE,
+    Role.INFRASTRUCTURE: INFRASTRUCTURE_PROFILE,
+    Role.CI_CD: CI_CD_PROFILE,
+    Role.OPERATION: OPERATION_PROFILE,
 }
 
 CORE_ROLES: Final[tuple[Role, ...]] = (
@@ -155,17 +282,21 @@ CORE_ROLES: Final[tuple[Role, ...]] = (
     Role.ARCHITECT,
     Role.DEVELOP,
     Role.QUALITY,
+    Role.SECURITY,
+    Role.INFRASTRUCTURE,
+    Role.CI_CD,
+    Role.OPERATION,
 )
-"""The roles that ship with profiles, in ADR-007 catalog order; the rest join in T-047 (T-082)."""
+"""The nine roles of the ADR-007 catalog, in catalog order; every one ships a profile."""
 
 
 def get_profile(role: Role) -> AgentProfile:
     """Return the built-in profile of ``role``.
 
-    Raises ``ProfileNotFoundError`` for a role without a profile: the registry
-    ships product, design, architect, develop and quality (ADR-007 p.4);
-    infrastructure, security, ci_cd and operation join in T-047 and
-    deliberately have no profiles yet.
+    Raises ``ProfileNotFoundError`` for a role without a profile. Every role
+    of the ADR-007 catalog ships one, so the error is only reachable for a
+    role added to the enum without its profile — a new role is a plugin
+    (ADR-007 p.2) and its profile lands with it.
     """
     try:
         return _PROFILES[role]

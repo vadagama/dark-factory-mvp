@@ -22,3 +22,7 @@ class ArtifactKind(StrEnum):
     UX_SPEC = "ux_spec"
     ARCHITECTURE_REVIEW = "architecture_review"
     ADR_PROPOSAL = "adr_proposal"
+    INFRASTRUCTURE_CHANGE = "infrastructure_change"
+    SECURITY_REVIEW = "security_review"
+    PIPELINE_CONFIG = "pipeline_config"
+    OPS_VERDICT = "ops_verdict"

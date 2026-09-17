@@ -61,6 +61,41 @@
     },
     {
       "constraints": [
+        "Express pipelines and release packaging as code; a gate that cannot run in CI needs explicit justification, never a silent skip.",
+        "Reference secrets by name from the secret store; credentials never enter pipeline code or logs.",
+        "Prepare the merge, never perform it: merging into the target branch is a human decision (ADR-011)."
+      ],
+      "description": "Builds and keeps the delivery pipeline as code: build, repository checks, release packaging and promotion; runs the git cycle of the task (branch, conventional commits, merge request with evidence) while the merge itself stays a human decision.",
+      "inputs": [
+        "code",
+        "context"
+      ],
+      "name": "CI/CD",
+      "outputs": [
+        "pipeline_config",
+        "change_request"
+      ],
+      "role": "ci_cd",
+      "schema_version": 1,
+      "skills": [
+        "pipeline-delivery",
+        "task-git-cycle"
+      ],
+      "stop_conditions": [
+        "The pipeline needs an external service, environment or secret that is not provisioned - stop and request it.",
+        "A required gate cannot run in CI without being weakened - escalate.",
+        "A merge or a production promotion is requested - stop and hand the evidence to the human decision."
+      ],
+      "tools": [
+        "read_file",
+        "write_file",
+        "apply_patch",
+        "run_command"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
         "Design at the UX level; never modify code, infrastructure or pipeline configuration directly.",
         "Map screens onto the existing UI kit patterns instead of inventing new components.",
         "Every screen carries its states (loading/empty/error) and accessibility requirements."
@@ -123,6 +158,73 @@
         "read_file",
         "write_file",
         "apply_patch",
+        "run_command"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
+        "Every environment change lands as reviewed infrastructure as code, never as a manual console operation.",
+        "Own environments and their configuration; pipelines and release execution belong to ci_cd.",
+        "Validate before apply (plan/diff), keep the change idempotent and reversible, and record the evidence."
+      ],
+      "description": "Designs and implements infrastructure as code: environments, Helm and Kubernetes manifests, network and IAM as reviewed repository changes, kept vendor-neutral, idempotent and reversible.",
+      "inputs": [
+        "spec",
+        "context"
+      ],
+      "name": "Infrastructure",
+      "outputs": [
+        "infrastructure_change"
+      ],
+      "role": "infrastructure",
+      "schema_version": 1,
+      "skills": [
+        "infra-design",
+        "infra-change"
+      ],
+      "stop_conditions": [
+        "The change requires cloud credentials or a manual console action - stop; secrets never enter the repository.",
+        "The change modifies the stack or introduces a new platform component - escalate for an ADR.",
+        "The live environment contradicts the repository state (drift or missing access) - stop and report instead of forcing the apply."
+      ],
+      "tools": [
+        "read_file",
+        "write_file",
+        "apply_patch",
+        "run_command"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
+        "Judge from evidence: every verdict cites the smoke checks, the rollback analysis and the pinned revision it rests on.",
+        "Observe and report; remediation of the system or its code returns to the owning role.",
+        "The Operation verdict of the release gate is grounded in smoke and rollback evidence; the verdict machine stays the deterministic release policy."
+      ],
+      "description": "Operates the running system: observability, SLOs and error budgets, runbooks and incident response; owns the Operation verdict of the release gate, grounded in smoke and rollback evidence - the verdict machine itself is the deterministic release policy, and the definition of the human/operational verdict remains a separate decision (ADR-023).",
+      "inputs": [
+        "spec",
+        "code",
+        "context"
+      ],
+      "name": "Operation",
+      "outputs": [
+        "ops_verdict"
+      ],
+      "role": "operation",
+      "schema_version": 1,
+      "skills": [
+        "smoke-verification",
+        "rollback-analysis"
+      ],
+      "stop_conditions": [
+        "Smoke or rollback evidence for the pinned revision is missing or stale - fail the verdict instead of assuming.",
+        "A smoke failure or an incident exceeds the runbook - escalate per the incident lifecycle.",
+        "A release decision requires the human/operational verdict whose definition ADR-023 defers to a separate decision - stop and ask."
+      ],
+      "tools": [
+        "read_file",
         "run_command"
       ],
       "version": "1.0.0"
@@ -194,6 +296,40 @@
       "tools": [
         "read_file",
         "run_tests",
+        "run_command"
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "constraints": [
+        "Assess trust boundaries, data flows and access, not style; every finding carries severity, location and a required action.",
+        "Never reproduce secrets or exploit payloads in reports, logs or code - name the exposure, do not paste the secret.",
+        "Security review never fixes the reviewed change; remediation returns to the owning role."
+      ],
+      "description": "Threat-models the change, reviews the secure design and analyzes IAM, secrets handling and dependencies (application security and supply chain) as a cross-cutting review, producing security requirements and findings.",
+      "inputs": [
+        "spec",
+        "code",
+        "context"
+      ],
+      "name": "Security",
+      "outputs": [
+        "security_review"
+      ],
+      "role": "security",
+      "schema_version": 1,
+      "skills": [
+        "threat-model",
+        "security-analysis"
+      ],
+      "stop_conditions": [
+        "A finding touches a trust boundary outside the reviewed scope - escalate.",
+        "A risk requires a product or architecture decision (risk acceptance, a new boundary) - stop and ask.",
+        "The threat model cannot be built from the provided context - request it."
+      ],
+      "tools": [
+        "read_file",
+        "search_repo",
         "run_command"
       ],
       "version": "1.0.0"
