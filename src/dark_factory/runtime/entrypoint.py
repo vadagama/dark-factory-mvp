@@ -7,8 +7,9 @@ adapters to the working path has to live in the composition layer itself. This
 module is the whole of that binding.
 
 Composition is *lazy per command*. Two commands need seams: ``factory run
-advance`` runs through the durable driver (harness-backed stage executor and
-SCM-derived revision resolver), and ``factory api serve`` exposes the CI stage
+advance`` runs through the durable driver (harness-backed stage executor,
+SCM-derived revision resolver and the provider-facts observer of the wait
+resolution, T-092 S3), and ``factory api serve`` exposes the CI stage
 switchboard (T059, ADR-027). For those the process assembles a
 :class:`~dark_factory.runtime.composition.Runtime` from its environment and
 passes the bindings to the CLI. Every other command — ``doctor``, ``stage run``,
@@ -45,12 +46,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     leaves with argparse's exit code 2 before anything is assembled.
 
     For ``run advance`` the runtime is assembled first and its bindings are passed
-    to the CLI: the executor drives the stage and the revision resolver keys it by
-    the product commit. For ``api serve`` the same runtime supplies the CI stage
-    switchboard (``ci_toggles``/``ci_repository``, T059) — absent credentials leave
-    it ``None`` and the API reports the toggles unconfigured. The runtime is
-    released in a ``finally``, so the adapters' resources (HTTP pool, tracer
-    provider) are freed even when the command fails.
+    to the CLI: the executor drives the stage, the revision resolver keys it by
+    the product commit and the provider-facts observer resolves a waiting
+    stage's external wait (T-092 S3). For ``api serve`` the same runtime supplies
+    the CI stage switchboard (``ci_toggles``/``ci_repository``, T059) — absent
+    credentials leave it ``None`` and the API reports the toggles unconfigured.
+    The runtime is released in a ``finally``, so the adapters' resources (HTTP
+    pool, tracer provider) are freed even when the command fails.
     """
     command = parse_command(argv)
     if isinstance(command, ApiServeArgs):
@@ -71,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             argv,
             executor=runtime.agent_stage_executor(),
             revision_of=runtime.revision_of(),
+            gate_facts=runtime.facts_provider(),
         )
     finally:
         asyncio.run(runtime.aclose())

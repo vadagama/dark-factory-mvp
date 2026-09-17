@@ -39,9 +39,11 @@ from dark_factory.ports.agents import (
 )
 from dark_factory.ports.common import (
     ArtifactSpec,
+    ChangeRequestObservation,
     HealthStatus,
     OpenChangeRequest,
     PipelineStatus,
+    ReviewObservation,
     Span,
     StageJobRequest,
     stage_gate,
@@ -86,6 +88,7 @@ __all__ = [
     "CIPort",
     "Change",
     "ChangeNotFoundError",
+    "ChangeRequestObservation",
     "ChangeRequestRef",
     "ChangeRequestStatus",
     "ChangeSet",
@@ -121,6 +124,7 @@ __all__ = [
     "RepositoryPort",
     "RepositoryRef",
     "RequirementsSnapshot",
+    "ReviewObservation",
     "RiskClass",
     "Role",
     "RunNotFoundError",

@@ -70,6 +70,17 @@ class _Pull:
 
 
 @dataclass
+class _Review:
+    """Provider-side state of one review submitted on a pull request."""
+
+    review_id: int
+    author: str
+    state: str
+    commit_sha: str | None
+    submitted_at: str | None
+
+
+@dataclass
 class _Run:
     """Provider-side state of one workflow run created by a dispatch."""
 
@@ -100,6 +111,8 @@ class GitHubApiEmulator:
         self._next_object_id = 0
         self._pulls: dict[int, _Pull] = {}
         self._next_pull_number = 1
+        self._reviews: dict[int, list[_Review]] = {}
+        self._next_review_id = 1
         self._check_runs: list[_CheckRun] = []
         self._next_check_run_id = 1
         self._runs: dict[int, _Run] = {}
@@ -166,6 +179,37 @@ class GitHubApiEmulator:
             {"id": index, "name": ref.artifact_type, "archive_download_url": ref.uri}
             for index, ref in enumerate(refs, start=1)
         ]
+
+    def seed_review(
+        self,
+        number: int,
+        /,
+        *,
+        author: str,
+        state: str,
+        commit_sha: str | None = None,
+        submitted_at: str | None = None,
+    ) -> int:
+        """Submit one review on a pull request; returns its provider review id.
+
+        ``state`` is the GitHub API vocabulary (``APPROVED``,
+        ``CHANGES_REQUESTED``, ...); the adapter maps it to the port's
+        provider-neutral lowercase value.
+        """
+        if number not in self._pulls:
+            raise KeyError(f"unknown pull request #{number}")
+        review_id = self._next_review_id
+        self._next_review_id += 1
+        self._reviews.setdefault(number, []).append(
+            _Review(
+                review_id=review_id,
+                author=author,
+                state=state,
+                commit_sha=commit_sha,
+                submitted_at=submitted_at,
+            )
+        )
+        return review_id
 
     def transport(self) -> httpx2.MockTransport:
         return httpx2.MockTransport(self._handle)
@@ -341,10 +385,18 @@ class GitHubApiEmulator:
     def _pull_route(self, request: httpx2.Request, route: str) -> httpx2.Response:
         if route.endswith("/merge"):
             return self._pull_merge(int(route.removesuffix("/merge")))
+        if route.endswith("/reviews") and request.method == "GET":
+            return self._pull_reviews(int(route.removesuffix("/reviews")))
         pull = self._pulls.get(int(route))
         if pull is None:
             return _json_response(404, {"message": "Not Found"})
         return _json_response(200, self._pull_json(pull))
+
+    def _pull_reviews(self, number: int) -> httpx2.Response:
+        if number not in self._pulls:
+            return _json_response(404, {"message": "Not Found"})
+        reviews = [self._review_json(review) for review in self._reviews.get(number, [])]
+        return _json_response(200, reviews)
 
     def _pull_merge(self, number: int) -> httpx2.Response:
         pull = self._pulls.get(number)
@@ -432,11 +484,21 @@ class GitHubApiEmulator:
             "number": pull.number,
             "state": "closed" if (pull.merged or pull.closed) else "open",
             "merged": pull.merged,
+            "merge_commit_sha": pull.head_sha if pull.merged else None,
             "title": f"Change {pull.number}",
             "head": {"ref": pull.head_branch, "sha": pull.head_sha},
             "base": {"ref": "main"},
             "html_url": f"https://github.example/{SLUG}/pull/{pull.number}",
             "body": pull.body,
+        }
+
+    def _review_json(self, review: _Review) -> dict[str, Any]:
+        return {
+            "id": review.review_id,
+            "user": {"login": review.author},
+            "state": review.state,
+            "commit_id": review.commit_sha,
+            "submitted_at": review.submitted_at,
         }
 
     def _run_json(self, run: _Run) -> dict[str, Any]:

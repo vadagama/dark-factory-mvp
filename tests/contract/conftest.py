@@ -116,10 +116,11 @@ class _RepositoryBinding(NamedTuple):
 
 
 class _MergeRequestBinding(NamedTuple):
-    """MergeRequestPort plus the comment journal of the same binding."""
+    """MergeRequestPort plus the comment journal and review seeder of the same binding."""
 
     port: MergeRequestPort
     journal: Callable[[ChangeRequestRef], tuple[str, ...]]
+    seed_review: Callable[..., object]
 
 
 class _CIBinding(NamedTuple):
@@ -268,15 +269,20 @@ def merge_requests() -> FakeMergeRequests:
 def merge_request_binding(
     request: pytest.FixtureRequest, merge_requests: FakeMergeRequests
 ) -> _MergeRequestBinding:
-    """MergeRequestPort and its comment journal, backed by the same adapter."""
+    """MergeRequestPort, its comment journal and its review seeder, same adapter."""
     if request.param == "github":
         adapter: GitHubAdapter = request.getfixturevalue("github_adapter")
         emulator: GitHubApiEmulator = request.getfixturevalue("github_emulator")
         return _MergeRequestBinding(
             port=adapter.pull_requests,
             journal=_github_comment_journal(emulator),
+            seed_review=_github_review_seeder(emulator),
         )
-    return _MergeRequestBinding(port=merge_requests, journal=merge_requests.comments_of)
+    return _MergeRequestBinding(
+        port=merge_requests,
+        journal=merge_requests.comments_of,
+        seed_review=merge_requests.record_review,
+    )
 
 
 @pytest.fixture
@@ -291,6 +297,12 @@ def comment_journal(
     return merge_request_binding.journal
 
 
+@pytest.fixture
+def review_seeder(merge_request_binding: _MergeRequestBinding) -> Callable[..., object]:
+    """Seed one human review on a change request through the binding's provider state."""
+    return merge_request_binding.seed_review
+
+
 def _github_comment_journal(
     emulator: GitHubApiEmulator,
 ) -> Callable[[ChangeRequestRef], tuple[str, ...]]:
@@ -300,6 +312,28 @@ def _github_comment_journal(
         return tuple(visible_comment(body) for body in emulator.comments_of(cr.number))
 
     return journal
+
+
+def _github_review_seeder(emulator: GitHubApiEmulator) -> Callable[..., object]:
+    """Seed one review through the provider state, in the port's neutral vocabulary."""
+
+    def seed(
+        cr: ChangeRequestRef,
+        *,
+        author: str,
+        state: str,
+        commit_sha: str | None = None,
+        submitted_at: datetime | None = None,
+    ) -> object:
+        return emulator.seed_review(
+            cr.number,
+            author=author,
+            state=state.upper(),
+            commit_sha=commit_sha,
+            submitted_at=submitted_at.isoformat() if submitted_at is not None else None,
+        )
+
+    return seed
 
 
 @pytest.fixture(params=["fake", "github"])

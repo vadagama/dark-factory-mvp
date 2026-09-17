@@ -26,6 +26,7 @@ from dark_factory.orchestration.stages.agent import AgentStageExecutor, ScmRevis
 from dark_factory.orchestration.stages.tools import WorkspaceTools
 from dark_factory.ports import WorkspaceRequest
 from dark_factory.runtime import RuntimeNotConfiguredError, build_runtime
+from dark_factory.runtime.facts import ScmFactsProvider
 from tests.changes_factories import make_change
 
 LLM_ENV = {
@@ -92,6 +93,7 @@ def test_unconfigured_runtime_is_valid_but_has_no_provider_or_harness() -> None:
     assert runtime.harness_config is None
     assert runtime.agent_stage_executor() is None
     assert runtime.revision_of() is None
+    assert runtime.facts_provider() is None
 
 
 def test_configured_runtime_assembles_the_provider_ports() -> None:
@@ -101,6 +103,7 @@ def test_configured_runtime_assembles_the_provider_ports() -> None:
     assert runtime.repository is runtime.github.repository
     assert runtime.merge_requests is runtime.github.pull_requests
     assert runtime.revision_of() is not None
+    assert isinstance(runtime.facts_provider(), ScmFactsProvider)
 
 
 def test_complete_runtime_builds_the_agent_stage_executor() -> None:

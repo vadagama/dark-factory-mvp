@@ -29,9 +29,10 @@ published into ``dark-factory-runs``, ADR-015 p.4) in
 with exit code 2 until the durable state-store wiring of the resume protocol
 (ADR-006 p.8) lands.
 
-The ``executor``/``revision_of`` seams of ``run advance`` are values, not imports:
-this module is core and may not name ``dark_factory.runtime`` (ADR-024 p.5), so the
-composition root passes the bindings in (``main``/``dispatch``/``_advance_run``).
+The ``executor``/``revision_of``/``gate_facts`` seams of ``run advance`` are
+values, not imports: this module is core and may not name ``dark_factory.runtime``
+(ADR-024 p.5), so the composition root passes the bindings in
+(``main``/``dispatch``/``_advance_run``).
 """
 
 import argparse
@@ -48,7 +49,7 @@ from dark_factory.cli import doctor
 if TYPE_CHECKING:
     # Type-only: the CLI is core and must not pull the driver (or anything it
     # imports) into the import of the command tree. The seams arrive as values.
-    from dark_factory.orchestration.runner import RevisionResolver, StageExecutor
+    from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
     from dark_factory.ports import CiStageTogglePort
 
 # Exit codes of the CLI (contract cli.md).
@@ -596,11 +597,14 @@ def _advance_run(
     *,
     executor: "StageExecutor | None" = None,
     revision_of: "RevisionResolver | None" = None,
+    gate_facts: "FactsProvider | None" = None,
 ) -> int:
     # Imported here for the same reason as ``_show_run_status``.
     from dark_factory.cli import runner
 
-    return runner.run_advance_command(args, executor=executor, revision_of=revision_of)
+    return runner.run_advance_command(
+        args, executor=executor, revision_of=revision_of, gate_facts=gate_facts
+    )
 
 
 def _publish_run(args: RunPublishArgs) -> int:
@@ -671,18 +675,19 @@ def dispatch(
     *,
     executor: "StageExecutor | None" = None,
     revision_of: "RevisionResolver | None" = None,
+    gate_facts: "FactsProvider | None" = None,
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
 ) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree).
 
-    ``executor`` and ``revision_of`` are the optional binding seams of
-    ``factory run advance`` and are consumed only by that branch;
+    ``executor``, ``revision_of`` and ``gate_facts`` are the optional binding
+    seams of ``factory run advance`` and are consumed only by that branch;
     ``ci_toggles``/``ci_repository`` are the CI stage switchboard seam of
     ``factory api serve`` (T059). They are values, not imports: this module is
     core and must not name ``dark_factory.runtime`` (ADR-024 p.5), so the
     composition root (``runtime.entrypoint``) hands the assembled bindings over
-    as arguments. Every other command ignores them, and all four default to
+    as arguments. Every other command ignores them, and all five default to
     ``None`` — the deterministic stage path and the unconfigured API, as before.
     """
     match command:
@@ -693,7 +698,9 @@ def dispatch(
         case RunStatusArgs():
             return _show_run_status(command)
         case RunAdvanceArgs():
-            return _advance_run(command, executor=executor, revision_of=revision_of)
+            return _advance_run(
+                command, executor=executor, revision_of=revision_of, gate_facts=gate_facts
+            )
         case RunPublishArgs():
             return _publish_run(command)
         case ReconcileArgs():
@@ -719,6 +726,7 @@ def main(
     *,
     executor: "StageExecutor | None" = None,
     revision_of: "RevisionResolver | None" = None,
+    gate_facts: "FactsProvider | None" = None,
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
 ) -> int:
@@ -726,20 +734,23 @@ def main(
 
     Not the console-script target any more: ``factory`` points at
     ``dark_factory.runtime.entrypoint:main``, the composition root that assembles
-    the runtime and passes ``executor``/``revision_of`` (ADR-025) and the CI
-    stage switchboard (``ci_toggles``/``ci_repository``, T059). This function
-    stays the command tree's own entry point, usable without seams — ``python -m
-    dark_factory.cli`` is the explicit core path, and both the wrapper and
-    ``__main__.py`` raise ``SystemExit`` with the returned code.
+    the runtime and passes ``executor``/``revision_of``/``gate_facts`` (ADR-025)
+    and the CI stage switchboard (``ci_toggles``/``ci_repository``, T059). This
+    function stays the command tree's own entry point, usable without seams —
+    ``python -m dark_factory.cli`` is the explicit core path, and both the
+    wrapper and ``__main__.py`` raise ``SystemExit`` with the returned code.
 
-    Without ``executor``/``revision_of`` the deterministic stage path runs, and
-    without ``ci_toggles`` ``api serve`` reports the CI toggles unconfigured: this
-    module cannot reach the composition root itself (ADR-024 p.5).
+    Without ``executor``/``revision_of`` the deterministic stage path runs,
+    without ``gate_facts`` a waiting stage is never resolved by observed facts
+    (its checkpoint is replayed), and without ``ci_toggles`` ``api serve``
+    reports the CI toggles unconfigured: this module cannot reach the
+    composition root itself (ADR-024 p.5).
     """
     return dispatch(
         parse_command(argv),
         executor=executor,
         revision_of=revision_of,
+        gate_facts=gate_facts,
         ci_toggles=ci_toggles,
         ci_repository=ci_repository,
     )

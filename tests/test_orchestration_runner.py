@@ -13,19 +13,34 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from dark_factory.changes.enums import Gate, GateStatus, RunStatus, Stage, StageStatus, StopOutcome
+from dark_factory.changes.enums import (
+    ChangeRequestStatus,
+    FindingOrigin,
+    FindingSeverity,
+    Gate,
+    GateStatus,
+    RunStatus,
+    Stage,
+    StageStatus,
+    StopOutcome,
+)
 from dark_factory.changes.findings import GateResult
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
+    MergeAction,
     NextAction,
     ReleaseAction,
+    ReworkAction,
     StopAction,
+    WaitForCIAction,
     WaitForInputAction,
 )
 from dark_factory.changes.run import Change, ChangeRun, StageResult, StageRun
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.flow import FlowDecision, FlowStateError, InvalidFlowTransition
 from dark_factory.orchestration.runner import (
+    FactsProvider,
+    RevisionResolver,
     RunAdvance,
     RunAdvanceOutcome,
     RunNotAdvanceableError,
@@ -36,8 +51,14 @@ from dark_factory.orchestration.runner import (
     outcome_for,
 )
 from dark_factory.orchestration.stages.context import StageContext
+from dark_factory.orchestration.stages.gates import GateObservation
 from dark_factory.orchestration.state.run_store import OpenStage, StagePlacement
-from tests.changes_factories import make_change, make_run
+from tests.changes_factories import (
+    make_change,
+    make_change_request,
+    make_merge_approval,
+    make_run,
+)
 
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 TTL = timedelta(minutes=5)
@@ -71,6 +92,8 @@ class FakeStore:
     lease_ttls: list[timedelta] = field(default_factory=list)
     created_stages: list[StagePlacement] = field(default_factory=list)
     conflict_result: StageResult | None = None
+    persist_conflict: bool = False
+    """A writer conflict at persist time only, invisible to the earlier reads (resume path)."""
     on_acquire_lease: Callable[[], None] | None = None
     results_reads: int = 0
     next_token: int = 1
@@ -148,13 +171,34 @@ class FakeStore:
         now: datetime,
     ) -> bool:
         self.created_stages.extend(created_stages)
-        if self.conflict_result is not None:
+        if self.conflict_result is not None or self.persist_conflict:
             # Another writer committed this attempt first: nothing is written.
             return False
+        for index, existing in enumerate(self.history):
+            if not self._same_operation(existing, result):
+                continue
+            # The store's supersede rule (T-092 S3): a waiting checkpoint is
+            # replaced in place by its own final outcome; every other repeat of
+            # a recorded result writes nothing.
+            if existing.status is StageStatus.WAITING and result.status is not StageStatus.WAITING:
+                self.history[index] = result
+                break
+            return False
+        else:
+            self.history.append(result)
         self.decisions.append(decision)
         self.expected_revisions.append(expected_revision)
-        self.history.append(result)
         return True
+
+    @staticmethod
+    def _same_operation(first: StageResult, second: StageResult) -> bool:
+        """Whether both results address the same attempt of the same operation."""
+        return (
+            first.run_id == second.run_id
+            and first.stage == second.stage
+            and first.attempt_number == second.attempt_number
+            and first.input_revision == second.input_revision
+        )
 
 
 def _stage_run(run: ChangeRun, stage: Stage, status: StageStatus) -> StageRun:
@@ -217,7 +261,12 @@ def _satisfied(gate: Gate) -> GateResult:
 
 
 def _advance(
-    store: FakeStore, *, executor: StageExecutor, change: Change | None = None
+    store: FakeStore,
+    *,
+    executor: StageExecutor,
+    change: Change | None = None,
+    gate_facts: FactsProvider | None = None,
+    revision_of: RevisionResolver | None = None,
 ) -> RunAdvance:
     return advance_run(
         store=store,
@@ -225,9 +274,71 @@ def _advance(
         run_id=store.run.id,
         owner_id="test-owner",
         executor=executor,
+        revision_of=revision_of,
+        gate_facts=gate_facts,
         lease_ttl=TTL,
         now=NOW,
     )
+
+
+HEAD = "9f2c7ab1"
+"""Head SHA the fake provider reports; the facts of a resolution are bound to it."""
+
+
+def _run_at_construction_waiting() -> ChangeRun:
+    """A run whose first two stages succeeded and whose construction stage waits for CI."""
+    run = make_run()
+    for stage in (Stage.SPECIFICATION, Stage.PLANNING):
+        run.stages.append(_stage_run(run, stage, StageStatus.SUCCEEDED))
+    run.stages.append(_stage_run(run, Stage.CONSTRUCTION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    return run
+
+
+def _run_at_review_waiting() -> ChangeRun:
+    """A run whose first three stages succeeded and whose review stage waits for CI."""
+    run = make_run()
+    for stage in (Stage.SPECIFICATION, Stage.PLANNING, Stage.CONSTRUCTION):
+        run.stages.append(_stage_run(run, stage, StageStatus.SUCCEEDED))
+    run.stages.append(_stage_run(run, Stage.REVIEW_VERIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    return run
+
+
+def _ci_checkpoint(run: ChangeRun, change: Change, stage: Stage) -> StageResult:
+    """The committed ``waiting`` checkpoint of a stage parked on CI (ADR-006 p.8)."""
+    return StageResult(
+        stage=stage,
+        run_id=run.id,
+        change_id=change.id,
+        attempt_number=1,
+        input_revision=REVISION,
+        status=StageStatus.WAITING,
+        next_action=WaitForCIAction(
+            reason="waiting for the pipeline",
+            change_request=make_change_request() if stage is Stage.REVIEW_VERIFICATION else None,
+        ),
+        produced_at=NOW,
+    )
+
+
+@dataclass
+class FakeFacts:
+    """Canned ``FactsProvider``: one observation for every stage it is asked about."""
+
+    observation: GateObservation | None
+    calls: list[Stage] = field(default_factory=list)
+
+    def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> GateObservation | None:
+        self.calls.append(stage)
+        return self.observation
+
+
+class RefusingFacts:
+    """A ``FactsProvider`` that must never be called in the scenarios under test."""
+
+    def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> GateObservation | None:
+        raise AssertionError(f"gate facts must not be observed for stage {stage.value}")
 
 
 # --- next_stage -----------------------------------------------------------
@@ -789,3 +900,312 @@ def test_advance_run_pins_the_created_successor_with_the_resolver() -> None:
     assert store.created_stages == [
         StagePlacement(stage=Stage.PLANNING, input_revision="scm-planning")
     ]
+
+
+# --- wait resolution (T-092 S3, ADR-006 p.8) --------------------------------
+
+
+def test_advance_run_replays_a_waiting_stage_without_gate_facts() -> None:
+    """Without ``gate_facts`` the checkpoint is replayed and nothing at all is written."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    checkpoint = _ci_checkpoint(run, change, Stage.CONSTRUCTION)
+    store.history.append(checkpoint)
+
+    advance = _advance(store, executor=_waiting(), change=change)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is checkpoint
+    assert advance.decision is None
+    assert store.lease_ttls == []
+    assert store.attempts == []
+    assert store.decisions == []
+    assert store.released == []
+    assert run.status is RunStatus.WAITING
+
+
+def test_advance_run_replays_a_waiting_stage_on_an_unresolved_observation() -> None:
+    """A pipeline still running resolves nothing: replay before any lease is taken."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    checkpoint = _ci_checkpoint(run, change, Stage.CONSTRUCTION)
+    store.history.append(checkpoint)
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="in_progress"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is checkpoint
+    # The observation is read-only and taken before the lease: an unresolved one
+    # parks the wait again without a lease row, an attempt or a decision.
+    assert facts.calls == [Stage.CONSTRUCTION]
+    assert store.lease_ttls == []
+    assert store.attempts == []
+    assert store.decisions == []
+    assert store.history == [checkpoint]
+    assert run.status is RunStatus.WAITING
+
+
+def test_advance_run_resolves_a_waiting_construction_stage_on_pipeline_success() -> None:
+    """A green pipeline at the head SHA resumes the same attempt into the review stage."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.CONSTRUCTION))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="success"))
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return f"scm-{stage.value}"
+
+    advance = _advance(
+        store, executor=_waiting(), change=change, gate_facts=facts, revision_of=revision_of
+    )
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.REVIEW_VERIFICATION
+    # The resolution is the final outcome of the *same* attempt: the number the
+    # checkpoint parked is kept, never incremented (ADR-006 p.8).
+    assert advance.result.attempt_number == 1
+    assert advance.result.input_revision == REVISION
+    assert [attempt.attempt_number for attempt in store.attempts] == [1]
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert isinstance(advance.result.next_action, ExecuteStageAction)
+    assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
+        (Gate.CODE, GateStatus.PASSED, HEAD),
+        (Gate.UI, GateStatus.PASSED, HEAD),
+    ]
+    # The facts are read twice per resumed advance: once before the lease, once
+    # re-derived under it (ADR-024, условие 2).
+    assert facts.calls == [Stage.CONSTRUCTION, Stage.CONSTRUCTION]
+    # The successor stage is declared with the revision the resolver pins for it.
+    assert store.created_stages == [
+        StagePlacement(stage=Stage.REVIEW_VERIFICATION, input_revision="scm-review_verification")
+    ]
+    assert run.stages[3].input_revision == "scm-review_verification"
+    # The checkpoint was superseded in place by the succeeded outcome.
+    assert store.history == [advance.result]
+    assert store.released == [1]
+    assert run.status is RunStatus.RUNNING
+    assert run.stages[2].status is StageStatus.SUCCEEDED
+    assert run.stages[3].status is StageStatus.PENDING
+
+
+def test_advance_run_resolves_a_pipeline_failure_into_a_rework_round() -> None:
+    """A red pipeline feeds the bounded rework loop: the stage fails, the run continues."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.CONSTRUCTION))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="failure"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.result.status is StageStatus.FAILED
+    rework = advance.result.next_action
+    assert isinstance(rework, ReworkAction)
+    # The round is declared against the budget the builder saw (used=0), and the
+    # flow spends it: the run's counter shows the spent round below.
+    assert rework.round == 1
+    assert rework.max_rounds == 3
+    assert "failure" in rework.reason
+    assert [item.origin for item in advance.result.findings] == [
+        FindingOrigin.CI,
+        FindingOrigin.CI,
+    ]
+    assert all(item.severity is FindingSeverity.BLOCKER for item in advance.result.findings)
+    assert [item.category for item in advance.result.findings] == ["code", "ui"]
+    # The rework handler spent the round and re-enters construction: the same
+    # stage-run occurrence ends FAILED while the run keeps running.
+    assert run.budget.used_rework_rounds == 1
+    assert run.status is RunStatus.RUNNING
+    assert run.stages[2].status is StageStatus.FAILED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.CONSTRUCTION
+    # The checkpoint was replaced by the failed outcome of the same attempt.
+    assert store.history == [advance.result]
+    assert store.history[0].attempt_number == 1
+    assert store.history[0].input_revision == REVISION
+
+
+def test_advance_run_blocks_a_resolution_whose_rework_limit_is_spent() -> None:
+    """The flow vetoes the rework the resolution declares when the limit is spent (FR-008)."""
+    run = _run_at_construction_waiting()
+    run.budget = BudgetSnapshot(max_rework_rounds=3, used_rework_rounds=3)
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.CONSTRUCTION))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="failure"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.BLOCKED
+    assert advance.decision is not None
+    assert isinstance(advance.decision.action, StopAction)
+    assert "rework limit" in advance.decision.action.reason
+    assert run.status is RunStatus.BLOCKED
+    assert run.stages[2].status is StageStatus.BLOCKED
+    # No second round was declared: the attempt is not retried and no successor
+    # stage was started.
+    assert [attempt.attempt_number for attempt in store.attempts] == [1]
+    assert store.created_stages == []
+    # The supersede itself still happened: the resolution outcome is durable.
+    assert advance.result.status is StageStatus.FAILED
+    rework = advance.result.next_action
+    assert isinstance(rework, ReworkAction)
+    assert rework.round == 4
+    assert store.history == [advance.result]
+    assert store.released == [1]
+
+
+def test_advance_run_advances_to_release_on_an_observed_merge_with_approval() -> None:
+    """A merged CR with a version-bound approval completes the review stage (ADR-011 p.2)."""
+    run = _run_at_review_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.REVIEW_VERIFICATION))
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=True,
+            pipeline_status="success",
+            approvals=(make_merge_approval(HEAD),),
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    # The advance itself proves the merge context was right: the policy authorizes
+    # a human merge only on the observed approval bound to the observed head SHA.
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.RELEASE
+    assert advance.result.status is StageStatus.SUCCEEDED
+    merge = advance.result.next_action
+    assert isinstance(merge, MergeAction)
+    assert merge.change_request.number == 12
+    # The observed merge is reflected in the ref, not the stale open status.
+    assert merge.change_request.status is ChangeRequestStatus.MERGED
+    assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
+        (Gate.REVIEW, GateStatus.PASSED, HEAD),
+        (Gate.VERIFICATION, GateStatus.PASSED, HEAD),
+    ]
+    assert run.status is RunStatus.RUNNING
+    assert run.stages[3].status is StageStatus.SUCCEEDED
+    assert run.stages[4].stage is Stage.RELEASE
+    assert store.history == [advance.result]
+    assert store.created_stages == [StagePlacement(stage=Stage.RELEASE, input_revision=REVISION)]
+    assert store.released == [1]
+
+
+def test_advance_run_parks_the_observed_merge_for_the_human() -> None:
+    """Merged but unapproved: the builder returns the merge result, the flow parks (FR-010)."""
+    run = _run_at_review_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.REVIEW_VERIFICATION))
+    facts = FakeFacts(
+        GateObservation(head_sha=HEAD, merged=True, pipeline_status="success", approvals=())
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    # The superseding result is the succeeded merge result; the decision the flow
+    # produced from it is the wait for the human merge (ADR-011 p.2, manual mode).
+    assert advance.outcome is RunAdvanceOutcome.WAITING
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert isinstance(advance.result.next_action, MergeAction)
+    assert store.history == [advance.result]
+    assert advance.decision is not None
+    assert advance.decision.action.type == "wait_for_input"
+    assert run.status is RunStatus.WAITING
+    assert run.stages[3].status is StageStatus.WAITING
+    assert store.created_stages == []
+    assert store.released == [1]
+
+
+def test_advance_run_replays_when_a_concurrent_writer_resolved_the_wait() -> None:
+    """Re-derived under the lease, a concurrently committed resolution wins (ADR-024, условие 2)."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    resolved = StageResult(
+        stage=Stage.CONSTRUCTION,
+        run_id=run.id,
+        change_id=change.id,
+        attempt_number=1,
+        input_revision=REVISION,
+        status=StageStatus.SUCCEEDED,
+        next_action=ExecuteStageAction(next_stage=Stage.REVIEW_VERIFICATION),
+        gate_results=[_satisfied(Gate.CODE), _satisfied(Gate.UI)],
+        produced_at=NOW,
+    )
+    store = FakeStore(run=run, conflict_result=resolved)
+    store.history.append(_ci_checkpoint(run, change, Stage.CONSTRUCTION))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="success"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    # The committed result is no longer waiting: the concurrent resolution is
+    # authoritative, nothing of this advance is written, and the lease is
+    # released instead of left behind.
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is resolved
+    assert advance.decision is None
+    assert store.attempts == []
+    assert store.decisions == []
+    assert store.released == [1]
+
+
+def test_advance_run_replays_a_resume_whose_persist_wrote_nothing() -> None:
+    """A writer conflict at persist time turns the whole resume into a replay (D4)."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    checkpoint = _ci_checkpoint(run, change, Stage.CONSTRUCTION)
+    store = FakeStore(run=run, persist_conflict=True)
+    store.history.append(checkpoint)
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="success"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    # The resume ran its full path but persisted nothing: the committed
+    # checkpoint — still the only row — is reported, the supersede did not
+    # happen, and the lease was released.
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is checkpoint
+    assert advance.decision is None
+    assert store.decisions == []
+    assert store.history == [checkpoint]
+    assert store.released == [1]
+
+
+def test_advance_run_does_not_observe_facts_without_a_waiting_checkpoint() -> None:
+    """Facts are observed only for a parked stage: never on a replayed or fresh one."""
+    change = make_change()
+
+    # A committed non-waiting result replays before any observation.
+    replay_run = _fresh_run()
+    replay_store = FakeStore(run=replay_run)
+    replay_store.history.append(
+        StageResult(
+            stage=Stage.SPECIFICATION,
+            run_id=replay_run.id,
+            change_id=change.id,
+            input_revision=REVISION,
+            status=StageStatus.SUCCEEDED,
+            next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
+            gate_results=[_satisfied(Gate.SPECIFICATION)],
+            produced_at=NOW,
+        )
+    )
+
+    replay = _advance(replay_store, executor=_waiting(), change=change, gate_facts=RefusingFacts())
+    assert replay.outcome is RunAdvanceOutcome.REPLAYED
+
+    # A stage without a committed result executes through the normal path.
+    fresh_store = FakeStore(run=_fresh_run())
+    fresh = _advance(fresh_store, executor=_waiting(), change=change, gate_facts=RefusingFacts())
+    assert fresh.outcome is RunAdvanceOutcome.WAITING
+    assert len(fresh_store.attempts) == 1

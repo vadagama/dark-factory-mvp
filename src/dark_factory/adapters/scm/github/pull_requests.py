@@ -19,21 +19,29 @@ Behaviors mirror the fake the contract suite runs first:
 - ``merge`` verifies the PR head against ``expected_sha`` (raising the shared
   ``HeadMismatchError`` on mismatch) before squashing; a replay of an already
   merged PR is a no-op.
+- ``observe`` is the read model of wait resolution (T-092 S3): one GET for the
+  PR (live head SHA, merge state, merge commit) and one for its reviews,
+  mapped into ``ChangeRequestObservation`` — review states in the
+  provider-neutral lowercase vocabulary, ``submitted_at`` parsed as ISO-8601.
+  An unknown PR is a ``KeyError``.
 
 Webhooks (the event-driven accelerator) and push/diff/rebase helpers are not
 part of the port contract and are deferred (task list, ADR-019 p.3).
 """
 
+from datetime import datetime
 from typing import Any, Final
 
 from dark_factory.adapters.scm.github.client import GitHubClient
 from dark_factory.ports import (
+    ChangeRequestObservation,
     ChangeRequestRef,
     ChangeRequestStatus,
     HeadMismatchError,
     MergeRequestPort,
     OpenChangeRequest,
     RepositoryRef,
+    ReviewObservation,
 )
 
 _PER_PAGE: Final[int] = 100
@@ -126,7 +134,7 @@ class GitHubPullRequests(MergeRequestPort):
     async def merge(self, cr: ChangeRequestRef, *, expected_sha: str, idempotency_key: str) -> None:
         data = await self._get_pull(cr.repository, cr.number)
         if data is None:
-            raise KeyError(f"unknown change request {cr.repository.slug!r}#{cr.number}")
+            raise KeyError(f"unknown change request {cr.repository.slug}#{cr.number}")
         head = str((data.get("head") or {}).get("sha") or "")
         if head != expected_sha:
             raise HeadMismatchError(
@@ -140,6 +148,18 @@ class GitHubPullRequests(MergeRequestPort):
             json={"merge_method": "squash"},
         )
         self._client.expect(merged, 200)
+
+    async def observe(self, cr: ChangeRequestRef, /) -> ChangeRequestObservation:
+        """Live head, merge state and reviews of one PR (T-092 S3, read-only)."""
+        data = await self._get_pull(cr.repository, cr.number)
+        if data is None:
+            raise KeyError(f"unknown change request {cr.repository.slug}#{cr.number}")
+        return ChangeRequestObservation(
+            status=_status(data),
+            head_sha=str((data.get("head") or {}).get("sha") or "") or None,
+            merged_sha=data.get("merge_commit_sha") or None,
+            reviews=tuple(_review(data) for data in await self._list_reviews(cr)),
+        )
 
     async def _ensure_head(self, repository: RepositoryRef, branch: str, head_sha: str) -> None:
         """Create the head branch at ``head_sha`` when it does not exist yet."""
@@ -182,6 +202,16 @@ class GitHubPullRequests(MergeRequestPort):
             return []
         return list(self._client.expect(response, 200).json())
 
+    async def _list_reviews(self, cr: ChangeRequestRef) -> list[dict[str, Any]]:
+        response = await self._client.request(
+            "GET",
+            f"/repos/{cr.repository.slug}/pulls/{cr.number}/reviews",
+            params={"per_page": str(_PER_PAGE)},
+        )
+        if response.status_code == 404:
+            return []
+        return list(self._client.expect(response, 200).json())
+
     def _record(
         self,
         repository: RepositoryRef,
@@ -210,3 +240,15 @@ def _status(data: dict[str, Any]) -> ChangeRequestStatus:
     if data.get("state") == "closed":
         return ChangeRequestStatus.CLOSED
     return ChangeRequestStatus.OPEN
+
+
+def _review(data: dict[str, Any]) -> ReviewObservation:
+    """One API review as a provider-neutral value (states lowercased)."""
+    submitted = data.get("submitted_at")
+    return ReviewObservation(
+        review_id=str(data.get("id") or ""),
+        author=str(((data.get("user") or {}).get("login")) or ""),
+        state=str(data.get("state") or "").lower(),
+        commit_sha=data.get("commit_id") or None,
+        submitted_at=datetime.fromisoformat(submitted) if submitted else None,
+    )

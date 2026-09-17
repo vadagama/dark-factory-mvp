@@ -2,8 +2,10 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from dark_factory.ports import (
+    ChangeRequestObservation,
     ChangeRequestRef,
     ChangeRequestStatus,
     HeadMismatchError,
@@ -13,6 +15,7 @@ from dark_factory.ports import (
     PipelineStatus,
     RepositoryPort,
     RepositoryRef,
+    ReviewObservation,
 )
 
 
@@ -134,6 +137,7 @@ class _ChangeRequestRecord:
     status: ChangeRequestStatus = ChangeRequestStatus.OPEN
     comments: list[str] = field(default_factory=list)
     comment_keys: set[str] = field(default_factory=set)
+    reviews: list[ReviewObservation] = field(default_factory=list)
 
 
 class FakeMergeRequests(MergeRequestPort):
@@ -147,6 +151,10 @@ class FakeMergeRequests(MergeRequestPort):
       replay is a no-op: the change request is already merged.
     - ``add_comment`` is idempotent by ``idempotency_key``: a replay appends
       nothing.
+    - ``observe`` reports the live record as a ``ChangeRequestObservation``:
+      head, status, merge SHA and the human reviews seeded through
+      ``record_review`` (a test-side helper, not port state — reviews are
+      made by humans on the provider, and the port has no write for them).
     """
 
     def __init__(self) -> None:
@@ -197,6 +205,45 @@ class FakeMergeRequests(MergeRequestPort):
         if record.status is ChangeRequestStatus.MERGED:
             return
         record.status = ChangeRequestStatus.MERGED
+
+    async def observe(self, cr: ChangeRequestRef, /) -> ChangeRequestObservation:
+        record = self._record(cr)
+        merged = record.status is ChangeRequestStatus.MERGED
+        return ChangeRequestObservation(
+            status=record.status,
+            head_sha=record.head_sha,
+            # The fake has no separate merge object: a squash merge makes the
+            # merged head the merge commit.
+            merged_sha=record.head_sha if merged else None,
+            reviews=tuple(record.reviews),
+        )
+
+    def record_review(
+        self,
+        cr: ChangeRequestRef,
+        *,
+        author: str,
+        state: str,
+        commit_sha: str | None = None,
+        submitted_at: datetime | None = None,
+    ) -> str:
+        """Seed one human review on the record (test-side, not port state).
+
+        ``state`` is the provider-neutral value ``observe`` returns; the id is
+        minted deterministically from the record's review count. Returns it.
+        """
+        record = self._record(cr)
+        review_id = f"review-{len(record.reviews) + 1}"
+        record.reviews.append(
+            ReviewObservation(
+                review_id=review_id,
+                author=author,
+                state=state,
+                commit_sha=commit_sha,
+                submitted_at=submitted_at,
+            )
+        )
+        return review_id
 
     def comments_of(self, cr: ChangeRequestRef) -> tuple[str, ...]:
         """Read view of recorded comments (not part of the port)."""

@@ -14,10 +14,12 @@ import pytest
 
 import dark_factory.cli.runner as runner_module
 import dark_factory.runtime.entrypoint as entrypoint_module
-from dark_factory.changes.run import StageResult
+from dark_factory.changes.enums import Stage
+from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, RunAdvanceArgs
 from dark_factory.cli.main import main as cli_main
-from dark_factory.orchestration.runner import RevisionResolver, StageExecutor
+from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
+from dark_factory.orchestration.stages.gates import GateObservation
 
 
 class ExecutorSentinel:
@@ -34,14 +36,23 @@ class ResolverSentinel:
         raise AssertionError("the sentinel resolver must not be called by the entry point")
 
 
+class FactsSentinel:
+    """Identity sentinel of the assembled gate-facts provider."""
+
+    def __call__(self, run: ChangeRun, stage: Stage, change: Change) -> GateObservation | None:
+        raise AssertionError("the sentinel provider must not be called by the entry point")
+
+
 class FakeRuntime:
     """Stand-in runtime: records how the entry point binds and releases it."""
 
     def __init__(self) -> None:
         self.executor = ExecutorSentinel()
         self.resolver = ResolverSentinel()
+        self.facts = FactsSentinel()
         self.executor_calls = 0
         self.revision_calls = 0
+        self.facts_calls = 0
         self.close_calls = 0
 
     def agent_stage_executor(self) -> StageExecutor:
@@ -51,6 +62,10 @@ class FakeRuntime:
     def revision_of(self) -> RevisionResolver:
         self.revision_calls += 1
         return self.resolver
+
+    def facts_provider(self) -> FactsProvider:
+        self.facts_calls += 1
+        return self.facts
 
     async def aclose(self) -> None:
         self.close_calls += 1
@@ -113,11 +128,16 @@ def test_run_advance_assembles_the_runtime_and_passes_the_bindings(
     assert built == [1]
     assert runtime.executor_calls == 1
     assert runtime.revision_calls == 1
+    assert runtime.facts_calls == 1
     assert len(calls) == 1
     # The same argv is handed to the CLI (it parses it again as the authority on
     # the command tree), and the seams are the assembled bindings themselves.
     assert calls[0].argv == ["run", "advance", "--change-id", "chg-001"]
-    assert calls[0].kwargs == {"executor": runtime.executor, "revision_of": runtime.resolver}
+    assert calls[0].kwargs == {
+        "executor": runtime.executor,
+        "revision_of": runtime.resolver,
+        "gate_facts": runtime.facts,
+    }
 
 
 def test_run_advance_releases_the_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,15 +234,20 @@ def test_cli_main_forwards_the_seams_to_the_runner(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(runner_module, "run_advance_command", _fake_command)
     executor = ExecutorSentinel()
     revision_of = ResolverSentinel()
+    gate_facts = FactsSentinel()
 
     code = cli_main(
-        ["run", "advance", "--change-id", "chg-001"], executor=executor, revision_of=revision_of
+        ["run", "advance", "--change-id", "chg-001"],
+        executor=executor,
+        revision_of=revision_of,
+        gate_facts=gate_facts,
     )
 
     assert code == EXIT_OK
     assert seen["args"] == RunAdvanceArgs(change_id="chg-001", run_id=None, json_output=False)
     assert seen["executor"] is executor
     assert seen["revision_of"] is revision_of
+    assert seen["gate_facts"] is gate_facts
 
 
 def test_cli_main_without_seams_keeps_the_deterministic_path(
@@ -239,4 +264,4 @@ def test_cli_main_without_seams_keeps_the_deterministic_path(
     monkeypatch.setattr(runner_module, "run_advance_command", _fake_command)
 
     assert cli_main(["run", "advance", "--change-id", "chg-001"]) == EXIT_OK
-    assert seen == {"executor": None, "revision_of": None}
+    assert seen == {"executor": None, "revision_of": None, "gate_facts": None}

@@ -3,12 +3,14 @@
 One function, one dataclass, no decisions: read the adapter configs from the
 environment, build the adapters whose configuration is complete, and expose the
 few bindings the working path needs — the harness of an agent stage, the SCM
-ports, the SCM-derived revision resolver.
+ports, the SCM-derived revision resolver, the provider-facts observer of the
+wait resolution (T-092 S3).
 
 Optional pieces stay absent rather than degrading silently:
 
 - no ``DARK_FACTORY_LLM_*`` → no harness (``harness_of`` raises when asked);
-- no ``DARK_FACTORY_GITHUB_*`` → no repository/change-request ports;
+- no ``DARK_FACTORY_GITHUB_*`` → no repository/change-request ports and no
+  gate-facts observer (``facts_provider`` is ``None``);
 - no ``DARK_FACTORY_GITHUB_REPOSITORY_SLUG`` → no CI stage toggle port
   (``ci_stage_toggles`` is ``None``; T059/ADR-027);
 - no workspace configuration (``DARK_FACTORY_WORKSPACE_ROOT`` /
@@ -49,6 +51,7 @@ from dark_factory.ports import (
     RepositoryPort,
     TelemetryPort,
 )
+from dark_factory.runtime.facts import ScmFactsProvider
 
 DEFAULT_BASE_REF: Final[str] = DEFAULT_TARGET_BRANCH
 """Base ref a change starts from when the product repository does not say otherwise."""
@@ -146,6 +149,20 @@ class Runtime:
         return ScmRevision(
             self.github.repository, base_ref=self.base_ref, branch_prefix=self.branch_prefix
         )
+
+    def facts_provider(self) -> ScmFactsProvider | None:
+        """The provider-facts observer of the wait resolution (T-092 S3), or ``None``.
+
+        The driver consumes this to resume a stage parked in ``waiting`` (the
+        durable external-wait checkpoint, ADR-006 p.8) once the observed
+        provider facts resolve its wait. ``None`` while no provider is
+        configured: without the request and pipeline ports a wait cannot be
+        observed, and replaying the checkpoint is the honest answer (the
+        scheduled reconciler pass is the other resolver).
+        """
+        if self.github is None:
+            return None
+        return ScmFactsProvider(self.github.pull_requests, self.github.pipelines)
 
     async def aclose(self) -> None:
         """Release the resources of the assembled adapters (HTTP pool, tracer provider)."""

@@ -2,12 +2,13 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import TracebackType
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from dark_factory.changes.enums import Gate, Stage
+from dark_factory.changes.enums import ChangeRequestStatus, Gate, Stage
 from dark_factory.changes.refs import RepositoryRef
 
 
@@ -30,6 +31,50 @@ class PipelineStatus:
     """One of: queued | in_progress | success | failure | canceled."""
 
     url: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewObservation:
+    """One human review recorded on a change request, provider-neutral (ADR-019 p.2)."""
+
+    review_id: str
+    """Provider id of the review; unique per change request."""
+
+    author: str
+    """Login of the reviewer."""
+
+    state: str
+    """One of: approved | changes_requested | commented | dismissed | pending."""
+
+    commit_sha: str | None = None
+    """The SHA the review was submitted for (version-bound approval, ADR-009 p.7)."""
+
+    submitted_at: datetime | None = None
+    """Aware instant the review was submitted, when the provider reports one."""
+
+
+@dataclass(frozen=True)
+class ChangeRequestObservation:
+    """Live provider facts of one change request, read-only (T-092 S3, ADR-019 p.2).
+
+    The read model of ``MergeRequestPort.observe``: the state a waiting stage
+    waits on, in one value. ``head_sha`` is the current head of the request —
+    the SHA the pipeline verdict and the version-bound approvals bind to;
+    a provider that does not report a head returns ``None`` and the observer
+    degrades honestly (FR-009: no fact is fabricated).
+    """
+
+    status: ChangeRequestStatus
+    """Live status of the request in the provider's own terms."""
+
+    head_sha: str | None = None
+    """Current head commit of the request, when the provider reports one."""
+
+    merged_sha: str | None = None
+    """The merge commit, once the request is merged."""
+
+    reviews: tuple[ReviewObservation, ...] = ()
+    """Human reviews on the request, in submission order."""
 
 
 class OpenChangeRequest(BaseModel):
