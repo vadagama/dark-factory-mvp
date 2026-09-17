@@ -97,6 +97,6 @@ helm upgrade --install dark-factory charts/dark-factory -n factory \
 
 - **Образ-плейсхолдер до T033** (`tag: bootstrap`): `helm upgrade --install` завершится, но поды будут в `ImagePullBackOff`, пока образа нет в registry.
 - **Hook-Job миграций требует образа с alembic и каталогом `migrations/`** — требование зафиксировано для сборки образа в T033.
-- **Ingress без контроллера инертен**: bootstrap контроллер не ставит; штатный локальный доступ — `kubectl -n factory port-forward svc/dark-factory 8000:8000`, затем `http://127.0.0.1:8000/docs`.
+- **Ingress без контроллера инертен**: bootstrap контроллер не ставит; штатный локальный доступ — `kubectl -n factory port-forward svc/dark-factory 8000:8000`, затем `http://127.0.0.1:8000/docs`; живучесть туннелей (переживают перезапуск кластера и перезагрузку) — launchd-агенты из `deploy/local/port-forward/` (T-093).
 - **Secret-ы вне git**: chart никогда не создаёт Secret (проверяется тестом `tests/test_chart_dark_factory.py`).
 - Console (T036) будет собираться этим же chart'ом — схема values оставляет место под второй компонент.

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template rendered by install.sh (T-093). Placeholders are substituted with
+  sed, so every occurrence below must stay on a single line:
+  __LABEL__ __KUBECTL_PATH__ __KUBECTL_CTX__ __NAMESPACE__ __SERVICE__
+  __PORT_MAP__ __LOG_PATH__
+
+  Agents are installed into ~/Library/LaunchAgents. Do not edit the rendered
+  copies there - edit this template and re-run install.sh.
+
+  KeepAlive restarts kubectl whenever it exits (cluster restart, pod
+  recreation, reboot); while the cluster is down it retries at most once per
+  ThrottleInterval seconds. RunAtLoad restores the tunnels at login.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__LABEL__</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__KUBECTL_PATH__</string>
+        <string>--context</string>
+        <string>__KUBECTL_CTX__</string>
+        <string>--namespace</string>
+        <string>__NAMESPACE__</string>
+        <string>port-forward</string>
+        <string>svc/__SERVICE__</string>
+        <string>__PORT_MAP__</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__LOG_PATH__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_PATH__</string>
+</dict>
+</plist>
