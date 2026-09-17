@@ -1,22 +1,25 @@
 """Tests of the process entry point and its lazy composition (T-092, ADR-025).
 
 ``factory`` points at ``dark_factory.runtime.entrypoint:main``: the composition
-root binds the assembled runtime into the one command whose working path consumes
-it (``run advance``) and leaves every other command on the core path. These tests
-hold that split — the runtime is assembled and closed for ``run advance`` only,
-the bindings reach the runner, and a command without seams behaves as before.
+root binds the assembled runtime into the commands whose working path consumes it
+— ``run advance`` (stage executor and revision resolver) and ``api serve`` (the CI
+stage switchboard, T059) — and leaves every other command on the core path. These
+tests hold that split: the runtime is assembled and closed for exactly those
+commands, the bindings reach their consumer, and a command without seams behaves
+as before.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
 
+import dark_factory.cli.api as api_module
 import dark_factory.cli.runner as runner_module
 import dark_factory.runtime.entrypoint as entrypoint_module
 from dark_factory.changes.enums import Stage
 from dark_factory.changes.run import Change, ChangeRun, StageResult
-from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, RunAdvanceArgs
+from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ApiServeArgs, RunAdvanceArgs
 from dark_factory.cli.main import main as cli_main
 from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
 from dark_factory.orchestration.stages.gates import GateObservation
@@ -43,6 +46,16 @@ class FactsSentinel:
         raise AssertionError("the sentinel provider must not be called by the entry point")
 
 
+class CiTogglesSentinel:
+    """Identity sentinel of the assembled CI stage toggle port (T059)."""
+
+    async def values(self) -> Mapping[str, str]:
+        raise AssertionError("the sentinel toggle port must not be called by the entry point")
+
+    async def set_value(self, variable: str, value: str | None) -> None:
+        raise AssertionError("the sentinel toggle port must not be called by the entry point")
+
+
 class FakeRuntime:
     """Stand-in runtime: records how the entry point binds and releases it."""
 
@@ -50,6 +63,8 @@ class FakeRuntime:
         self.executor = ExecutorSentinel()
         self.resolver = ResolverSentinel()
         self.facts = FactsSentinel()
+        self.ci_stage_toggles: Any = CiTogglesSentinel()
+        self.ci_repository: Any = "small/pilot"
         self.executor_calls = 0
         self.revision_calls = 0
         self.facts_calls = 0
@@ -218,6 +233,92 @@ def test_a_parse_error_does_not_assemble_the_runtime(monkeypatch: pytest.MonkeyP
         with pytest.raises(SystemExit) as exit_info:
             entrypoint_module.main(argv)
         assert exit_info.value.code == EXIT_INVALID_INPUT
+
+
+# --- api serve: the CI stage switchboard (T059, ADR-027) ------------------
+
+
+def test_api_serve_assembles_the_runtime_and_passes_the_ci_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime()
+    built = _stub_runtime(monkeypatch, runtime)
+    calls = _record_cli(monkeypatch, EXIT_OK)
+    argv = ["api", "serve", "--host", "0.0.0.0", "--port", "8000"]
+
+    code = entrypoint_module.main(argv)
+
+    assert code == EXIT_OK
+    assert built == [1]
+    assert runtime.executor_calls == 0, "api serve consumes no stage executor"
+    assert runtime.revision_calls == 0, "api serve consumes no revision resolver"
+    assert len(calls) == 1
+    assert calls[0].argv == argv
+    assert calls[0].kwargs == {
+        "ci_toggles": runtime.ci_stage_toggles,
+        "ci_repository": runtime.ci_repository,
+    }
+    assert runtime.close_calls == 1, "the assembled adapters are released"
+
+
+def test_api_serve_without_github_configuration_passes_absent_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A contour without GitHub credentials still serves the stage catalog: the
+    # absence must travel as None, never as an invented port (fail-closed).
+    runtime = FakeRuntime()
+    runtime.ci_stage_toggles = None
+    runtime.ci_repository = None
+    _stub_runtime(monkeypatch, runtime)
+    calls = _record_cli(monkeypatch, EXIT_OK)
+
+    code = entrypoint_module.main(["api", "serve", "--host", "127.0.0.1", "--port", "8000"])
+
+    assert code == EXIT_OK
+    assert calls[0].kwargs == {"ci_toggles": None, "ci_repository": None}
+    assert runtime.close_calls == 1
+
+
+def test_api_serve_releases_the_runtime_even_when_the_command_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime()
+    _stub_runtime(monkeypatch, runtime)
+
+    def _failing_cli(argv: Sequence[str] | None = None, **kwargs: Any) -> int:
+        raise RuntimeError("the server blew up")
+
+    monkeypatch.setattr(entrypoint_module, "cli_main", _failing_cli)
+
+    with pytest.raises(RuntimeError, match="blew up"):
+        entrypoint_module.main(["api", "serve", "--host", "127.0.0.1", "--port", "8000"])
+
+    assert runtime.close_calls == 1
+
+
+def test_cli_main_forwards_the_ci_bindings_to_the_api_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def _fake_serve(args: ApiServeArgs, **kwargs: Any) -> int:
+        seen["args"] = args
+        seen.update(kwargs)
+        return EXIT_OK
+
+    monkeypatch.setattr(api_module, "run_api_serve_command", _fake_serve)
+    toggles = CiTogglesSentinel()
+
+    code = cli_main(
+        ["api", "serve", "--host", "127.0.0.1", "--port", "8000"],
+        ci_toggles=toggles,
+        ci_repository="small/pilot",
+    )
+
+    assert code == EXIT_OK
+    assert seen["args"] == ApiServeArgs(host="127.0.0.1", port=8000)
+    assert seen["ci_toggles"] is toggles
+    assert seen["ci_repository"] == "small/pilot"
 
 
 # --- the CLI seam itself --------------------------------------------------
