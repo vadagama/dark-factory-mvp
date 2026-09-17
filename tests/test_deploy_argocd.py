@@ -361,6 +361,72 @@ def test_seed_pilot_chart_requires_a_digest() -> None:
     assert completed.returncode != 0
 
 
+def test_seed_pilot_chart_fits_apps_dev_admission() -> None:
+    """TD-025: admission of the target namespace must accept the rendered pilot
+    workload. helm lint/template/kubeconform have no admission model and the
+    post-install verify.sh checks only the platform layer — this test is the
+    structural guard that reconciles the chart resources with the bootstrap
+    LimitRange/ResourceQuota of apps-dev (deploy/bootstrap/manifests/quotas.yaml)."""
+    quota_docs = _load_docs(REPO_ROOT / "deploy" / "bootstrap" / "manifests" / "quotas.yaml")
+    apps_dev_limit_range = next(
+        doc
+        for doc in quota_docs
+        if doc["kind"] == "LimitRange" and doc["metadata"]["namespace"] == "apps-dev"
+    )
+    apps_dev_quota = next(
+        doc
+        for doc in quota_docs
+        if doc["kind"] == "ResourceQuota" and doc["metadata"]["namespace"] == "apps-dev"
+    )
+    # The container-type item carries the admission constraints (T029).
+    constraint = next(
+        item for item in apps_dev_limit_range["spec"]["limits"] if item["type"] == "Container"
+    )
+    min_cpu = _cpu_cores(constraint["min"]["cpu"])
+    min_memory = _memory_mib(constraint["min"]["memory"])
+    max_cpu = _cpu_cores(constraint["max"]["cpu"])
+    max_memory = _memory_mib(constraint["max"]["memory"])
+
+    pilot_chart = GITOPS_SEED_DIR / "envs" / "dev" / "pilot"
+    completed = _helm("template", "pilot-dev", str(pilot_chart))
+    docs = [doc for doc in yaml.safe_load_all(completed.stdout) if doc is not None]
+    deployments = [doc for doc in docs if doc["kind"] == "Deployment"]
+    assert len(deployments) == 1
+    containers = deployments[0]["spec"]["template"]["spec"]["containers"]
+
+    totals = {"requests.cpu": 0.0, "requests.memory": 0, "limits.cpu": 0.0, "limits.memory": 0}
+    for container in containers:
+        resources = container["resources"]
+        request_cpu = _cpu_cores(resources["requests"]["cpu"])
+        request_memory = _memory_mib(resources["requests"]["memory"])
+        limit_cpu = _cpu_cores(resources["limits"]["cpu"])
+        limit_memory = _memory_mib(resources["limits"]["memory"])
+        # LimitRange min floor applies to requests (the admission error of the
+        # first live deploy: "minimum cpu usage per Container is 25m, but
+        # request is 10m"); max caps the limits; requests must not exceed
+        # limits (core API validation, independent of the LimitRange).
+        assert request_cpu >= min_cpu, f"request cpu {request_cpu} below LimitRange min {min_cpu}"
+        assert request_memory >= min_memory, (
+            f"request memory {request_memory}Mi below LimitRange min {min_memory}Mi"
+        )
+        assert limit_cpu <= max_cpu, f"limit cpu {limit_cpu} above LimitRange max {max_cpu}"
+        assert limit_memory <= max_memory, (
+            f"limit memory {limit_memory}Mi above LimitRange max {max_memory}Mi"
+        )
+        assert request_cpu <= limit_cpu
+        assert request_memory <= limit_memory
+        totals["requests.cpu"] += request_cpu
+        totals["requests.memory"] += request_memory
+        totals["limits.cpu"] += limit_cpu
+        totals["limits.memory"] += limit_memory
+
+    hard = apps_dev_quota["spec"]["hard"]
+    assert totals["requests.cpu"] <= _cpu_cores(hard["requests.cpu"])
+    assert totals["requests.memory"] <= _memory_mib(hard["requests.memory"])
+    assert totals["limits.cpu"] <= _cpu_cores(hard["limits.cpu"])
+    assert totals["limits.memory"] <= _memory_mib(hard["limits.memory"])
+
+
 def test_seed_rules_document_immutable_digests_and_mr_only_flow() -> None:
     readme = (GITOPS_SEED_DIR / "README.md").read_text()
     assert "sha256" in readme

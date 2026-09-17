@@ -12,14 +12,21 @@ image:
   # the first GitOps MR replaces it with the real digest of the built image.
   digest: "sha256:__PILOT_IMAGE_DIGEST__"
 
-# Minimal footprint inside the apps-dev quota (T029: requests 500m/1Gi,
-# limits 1 CPU/2Gi) and the deny-by-default egress posture (no external
-# network access is needed to sleep).
+# Minimal footprint inside the apps-dev admission posture (T029: ResourceQuota
+# requests 500m/1Gi, limits 1 CPU/2Gi) and the deny-by-default egress posture
+# (no external network access is needed to sleep).
+#
+# The bootstrap LimitRange of apps-dev enforces per-container minimums of
+# 25m CPU / 32Mi (TD-025): requests below them reject the pod at admission
+# even though the namespace quota would allow it. requests sit at the
+# minimums on purpose — the conformance test in tests/test_deploy_argocd.py
+# parses them from deploy/bootstrap/manifests/quotas.yaml, so a platform-side
+# minimum bump fails the seed validation instead of the live deploy.
 command: ["sleep", "infinity"]
 resources:
   requests:
-    cpu: 10m
-    memory: 16Mi
+    cpu: 25m
+    memory: 32Mi
   limits:
     cpu: 50m
     memory: 32Mi
