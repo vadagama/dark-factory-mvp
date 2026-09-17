@@ -14,8 +14,8 @@ from dark_factory.changes.enums import Role
 NON_CORE_ROLES = tuple(role for role in Role if role not in set(CORE_ROLES))
 
 
-def test_core_roles_are_exactly_the_three_mvp_roles() -> None:
-    assert CORE_ROLES == (Role.PRODUCT, Role.DEVELOP, Role.QUALITY)
+def test_core_roles_are_exactly_the_five_shipped_roles() -> None:
+    assert CORE_ROLES == (Role.PRODUCT, Role.DESIGN, Role.ARCHITECT, Role.DEVELOP, Role.QUALITY)
     assert set(CORE_ROLES) <= set(Role)
 
 
@@ -53,5 +53,5 @@ def test_profile_skills_exist_and_belong_to_the_role(role: Role) -> None:
 
 
 def test_non_core_role_error_names_the_role() -> None:
-    with pytest.raises(ProfileNotFoundError, match="'design'"):
-        get_profile(Role.DESIGN)
+    with pytest.raises(ProfileNotFoundError, match="'infrastructure'"):
+        get_profile(Role.INFRASTRUCTURE)

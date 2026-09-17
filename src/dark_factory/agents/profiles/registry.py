@@ -1,9 +1,10 @@
 """Registry of the built-in agent profiles (ADR-007).
 
 Profiles are typed Python constants — the codebase has no manifest-file
-infrastructure. The core MVP ships exactly product, develop and quality
-(ADR-007 p.4); the other six roles get profiles in T-046/T-047 and are an
-explicit error here until then.
+infrastructure. The registry ships five profiles (ADR-007 p.4): the core
+MVP trio product/develop/quality plus design and architect (T-046, the
+ui/planning gates of ADR-023); infrastructure, security, ci_cd and
+operation join in T-047 and are an explicit error here until then.
 """
 
 from collections.abc import Mapping
@@ -36,6 +37,59 @@ PRODUCT_PROFILE: Final[AgentProfile] = AgentProfile(
         "The change needs an architectural decision that has not been made - escalate.",
     ),
     skills=("intake", "requirements-refinement", "spec-authoring", "change-request"),
+)
+
+DESIGN_PROFILE: Final[AgentProfile] = AgentProfile(
+    role=Role.DESIGN,
+    name="Design",
+    version="1.0.0",
+    description=(
+        "Turns approved requirements into user flows, a screen inventory with"
+        " loading/empty/error states, UI-kit component mapping and accessibility"
+        " requirements (WCAG 2.2 AA)."
+    ),
+    inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+    outputs=(ArtifactKind.UX_SPEC,),
+    tools=("read_file", "search_repo"),
+    constraints=(
+        "Design at the UX level; never modify code, infrastructure or"
+        " pipeline configuration directly.",
+        "Map screens onto the existing UI kit patterns instead of inventing new components.",
+        "Every screen carries its states (loading/empty/error) and accessibility requirements.",
+    ),
+    stop_conditions=(
+        "A requirement contradicts the accepted UI or architecture decisions"
+        " (e.g. ADR-014) - escalate.",
+        "A UX question stays unanswered after clarification - stop and ask.",
+        "The flow needs a UI-kit pattern that does not exist - escalate to the kit backlog.",
+    ),
+    skills=("ux-flow", "accessibility-review"),
+)
+
+ARCHITECT_PROFILE: Final[AgentProfile] = AgentProfile(
+    role=Role.ARCHITECT,
+    name="Architect",
+    version="1.0.0",
+    description=(
+        "Assesses the change's impact on architecture boundaries, contracts, the"
+        " data model and NFRs, and drafts an ADR when a significant decision is"
+        " required."
+    ),
+    inputs=(ArtifactKind.REQUIREMENTS, ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+    outputs=(ArtifactKind.ARCHITECTURE_REVIEW, ArtifactKind.ADR_PROPOSAL),
+    tools=("read_file", "search_repo"),
+    constraints=(
+        "Make significant technical decisions only through an ADR, using the"
+        " repository ADR template.",
+        "Never change the stack, dependencies or repository structure outside an ADR.",
+        "Ground every conclusion in the current codebase and accepted ADRs, not assumptions.",
+    ),
+    stop_conditions=(
+        "A decision belongs to a human (product priority, budget, risk acceptance) - stop and ask.",
+        "The change conflicts with an accepted ADR - escalate.",
+        "The impact cannot be assessed from the provided context - request it.",
+    ),
+    skills=("impact-analysis", "adr-proposal"),
 )
 
 DEVELOP_PROFILE: Final[AgentProfile] = AgentProfile(
@@ -89,20 +143,29 @@ QUALITY_PROFILE: Final[AgentProfile] = AgentProfile(
 
 _PROFILES: Final[Mapping[Role, AgentProfile]] = {
     Role.PRODUCT: PRODUCT_PROFILE,
+    Role.DESIGN: DESIGN_PROFILE,
+    Role.ARCHITECT: ARCHITECT_PROFILE,
     Role.DEVELOP: DEVELOP_PROFILE,
     Role.QUALITY: QUALITY_PROFILE,
 }
 
-CORE_ROLES: Final[tuple[Role, ...]] = (Role.PRODUCT, Role.DEVELOP, Role.QUALITY)
-"""The core MVP roles that ship with profiles (ADR-007 p.4)."""
+CORE_ROLES: Final[tuple[Role, ...]] = (
+    Role.PRODUCT,
+    Role.DESIGN,
+    Role.ARCHITECT,
+    Role.DEVELOP,
+    Role.QUALITY,
+)
+"""The roles that ship with profiles, in ADR-007 catalog order; the rest join in T-047 (T-082)."""
 
 
 def get_profile(role: Role) -> AgentProfile:
     """Return the built-in profile of ``role``.
 
-    Raises ``ProfileNotFoundError`` for a role without a profile: the core MVP
-    ships product, develop and quality; the other six roles join in
-    T-046/T-047 and deliberately have no profiles yet.
+    Raises ``ProfileNotFoundError`` for a role without a profile: the registry
+    ships product, design, architect, develop and quality (ADR-007 p.4);
+    infrastructure, security, ci_cd and operation join in T-047 and
+    deliberately have no profiles yet.
     """
     try:
         return _PROFILES[role]

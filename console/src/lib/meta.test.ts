@@ -26,6 +26,12 @@ describe("meta snapshot", () => {
     expect(meta.factory_mode.human_gates).toEqual(["specification", "review"]);
     expect(meta.factory_mode.auto_merge_risk_classes).toEqual([]);
     expect(meta.limits.max_rework_rounds).toBe(3);
-    expect(meta.profiles.map((profile) => profile.role)).toEqual(["develop", "product", "quality"]);
+    expect(meta.profiles.map((profile) => profile.role)).toEqual([
+      "architect",
+      "design",
+      "develop",
+      "product",
+      "quality",
+    ]);
   });
 });
