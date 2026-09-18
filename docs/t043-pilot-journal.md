@@ -27,8 +27,39 @@
      operator-approve контракта операторским токеном; reconciler-склейка с драйвером.
   3. Для пилота — минимальный скрипт, записывающий контракт прямо в `execution` (обход
      контура, грязный; только как временный мост с фиксацией в журнале).
-- **Статус**: ждёт решения оператора; блокер зафиксирован, прогресс пилота продолжается
-  стадиями, не требующими контракта (planning-агенты p03–p10 + CI + review-путь p02).
+- **Статус**: решён оператором — **вариант 1**, реализован (см. следующую запись).
+  Блокер зафиксирован до реализации; прогресс пилота продолжался стадиями, не
+  требующими контракта (planning-агенты p03–p10 + CI + review-путь p02).
+
+## 2026-09-18 — Инкремент 1: прикрепление Implementation Contract через `run advance --contract-json` (вариант 1, закрыт)
+
+- **Реализация выбранного оператором варианта 1** — CLI-путь прикрепления контракта:
+  - `RunStore.attach_contract(run_id, contract)` (state/run_store.py): запуск без
+    контракта записывает переданный; идентичный — no-op; **другой** — отказ
+    `ContractConflictError` (новый подкласс `StateError` в state/repositories.py):
+    утверждённая граница работающего изменения не подменяется (ADR-018 p.3).
+    Идемпотентность `create_run` не тронута.
+  - `run advance --contract-json <path|->` (+ `--approve-contract`): контракт читается
+    (`-` — stdin), валидируется pydantic-схемой **до** обращения к store (битый
+    файл/JSON/схема → exit 2, ничего не записано) и прикрепляется к резолвнутому
+    запуску в той же транзакции, что и решение стадии, — обе ветки (`--change-id`:
+    контракт уходит в `create_run` + `attach_contract`; `--run-id`: `attach_contract`).
+  - `--approve-contract` проставляет human-утверждение (`approved_by=Role.PRODUCT`,
+    `decided_at=now(UTC)`) на загруженный контракт; флаг без `--contract-json` — exit 2;
+    контракт с уже стоящим approval вместе с флагом — двусмысленность, exit 2.
+    Утверждение — решение человека (ADR-011): агент флаг не ставит никогда.
+  - Контракт в `run status --json` виден (доменный `ChangeRun` несёт
+    `implementation_contract`).
+- **Документация**: contract cli.md (usage + блок Contract-опций),
+  docs/descriptions/cli.md (таблица §3 + §3.2, включая разбор `--contract-json`).
+- **Валидация**: юнит-тесты attach-семантики и CLI-ошибок (9 новых, test_cli_runner.py,
+  test_cli_parser.py), integration: attach идемпотентен/swap-free на PostgreSQL +
+  сквозной «advance с контрактом на существующем ране → контракт в run status --json»
+  (test_runner_advance.py). Полный набор: 1838 passed / 51 skipped (PostgreSQL 16 в
+  одноразовом docker-контейнере), ruff/mypy чисто.
+- **Дальше по пилоту**: черновики контрактов p02–p10 (deploy/local/pilot/contracts/),
+  утверждение оператором, advance p02–p05 (construction), затем тема маппинга
+  human-гейтов в `ScmFactsProvider` для UI-гейта R1 и control point `solution` R2.
 
 ## 2026-09-18 — Инкремент 1: публикация после смерженного спек-CR (фикс cr-after-merge)
 
