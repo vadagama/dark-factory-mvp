@@ -1,7 +1,8 @@
 # План T043 — E2E-пилот фабрики
 
 Статус: в работе; инкремент 0 закрыт 2026-09-18. Трекер:
-`specs/001-dark-factory-mvp/tasks.md` T043.
+`specs/001-dark-factory-mvp/tasks.md` T043. Операционный план доведения до DoD —
+`docs/plan-t043-closure.md`.
 Цель: 10 реальных задач (5 quick, 5 standard) через сквозной сценарий
 `intake → SDD → реализация → MR → CI/review → merge → image → GitOps → dev → smoke`,
 сбор метрик vision §7 и метрик FR-024, журнал отклонений, отчёт по SC-001…SC-008.
