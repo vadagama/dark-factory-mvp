@@ -1,7 +1,15 @@
 {{- if .Values.migrations.enabled }}
-{{- /* Schema migrations as a pre-install/pre-upgrade hook Job (factory chart
-pattern). The backend image ships alembic and migrations/; the DATABASE_URL
-secret must exist before the release is applied. */}}
+{{- /* Schema migrations as a post-install/pre-upgrade hook Job (factory chart
+pattern). post-install (NOT pre-install): a pre-install hook executes
+before ALL chart resources, so on the very first release into an empty
+cluster the Job cannot resolve the not-yet-created in-chart PostgreSQL
+Service - a first-install deadlock. A failed install keeps its resources,
+so the next Argo/helm attempt runs the same Job as pre-upgrade against a
+live database (convergent). The command wraps the migrations entrypoint in
+a wait-for-database retry because first-boot postgres initdb takes longer
+than the Service DNS record to appear. The backend image ships alembic and
+migrations/; the DATABASE_URL secret must exist before the release is
+applied. */}}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -10,7 +18,7 @@ metadata:
     {{- include "web-app.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrations
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook: post-install,pre-upgrade
     helm.sh/hook-weight: "0"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
@@ -34,7 +42,25 @@ spec:
         - name: migrations
           image: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          # sh -c 'script' arg0 args...: inside the script $0 is arg0 and
+          # "$@" are the remaining args, so migrations-wrapper is a placeholder
+          # and the values.migrations.command elements run verbatim. 30 tries
+          # x 5s sleep ~ 150s of waiting, within activeDeadlineSeconds: 300.
           command:
+            - sh
+            - -c
+            - |
+              i=0
+              until "$@"; do
+                i=$((i+1))
+                if [ "$i" -ge 30 ]; then
+                  echo "migrations: giving up after $i attempts" >&2
+                  exit 1
+                fi
+                echo "migrations: attempt $i failed (database not ready?), retrying in 5s" >&2
+                sleep 5
+              done
+            - migrations-wrapper
             {{- range .Values.migrations.command }}
             - {{ . | quote }}
             {{- end }}

@@ -461,11 +461,21 @@ class TestChartRenders:
     def test_migrations_job_is_a_hook(self, default_docs: list[dict[str, Any]]) -> None:
         job = _workload(default_docs, "Job", "migrations")
         annotations = job["metadata"]["annotations"]
-        assert annotations["helm.sh/hook"] == "pre-install,pre-upgrade"
+        # post-install (not pre-install): a pre-install hook runs BEFORE the
+        # chart's own PostgreSQL Service/StatefulSet exist and deadlocks the
+        # first release on an empty cluster; the retry loop absorbs first-boot
+        # initdb latency.
+        assert annotations["helm.sh/hook"] == "post-install,pre-upgrade"
         assert job["spec"]["backoffLimit"] == 0
         assert job["spec"]["activeDeadlineSeconds"] == 300
         container = job["spec"]["template"]["spec"]["containers"][0]
-        assert container["command"] == ["alembic", "upgrade", "head"]
+        command = container["command"]
+        assert command[0] == "sh"
+        assert command[1] == "-c"
+        assert "until" in command[2]
+        # values.migrations.command follows the sh $0 placeholder verbatim.
+        assert command[3] == "migrations-wrapper"
+        assert command[4:] == ["alembic", "upgrade", "head"]
         assert container["image"].endswith("@sha256:__BACKEND_IMAGE_DIGEST__")
 
     def test_postgres_statefulset_contract(self, default_docs: list[dict[str, Any]]) -> None:

@@ -86,8 +86,11 @@ frontend:
       memory: 128Mi
 
 migrations:
-  # Pre-install/pre-upgrade hook Job running the schema migrations (factory
-  # chart pattern). Requires the backend image to ship alembic + migrations/.
+  # post-install/pre-upgrade hook Job running the schema migrations with a
+  # wait-for-database retry (factory chart pattern). post-install (not
+  # pre-install) so the in-chart PostgreSQL Service exists on the very first
+  # install; the retry loop absorbs first-boot initdb latency.
+  # Requires the backend image to ship alembic + migrations/.
   enabled: true
   command:
     - alembic
