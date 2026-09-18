@@ -461,11 +461,11 @@ class TestChartRenders:
     def test_migrations_job_is_a_hook(self, default_docs: list[dict[str, Any]]) -> None:
         job = _workload(default_docs, "Job", "migrations")
         annotations = job["metadata"]["annotations"]
-        # post-install (not pre-install): a pre-install hook runs BEFORE the
-        # chart's own PostgreSQL Service/StatefulSet exist and deadlocks the
-        # first release on an empty cluster; the retry loop absorbs first-boot
-        # initdb latency.
-        assert annotations["helm.sh/hook"] == "post-install,pre-upgrade"
+        # POST phases only (not pre-*): Argo CD maps pre-install/pre-upgrade
+        # helm hooks to its PreSync phase, which runs BEFORE the chart's own
+        # PostgreSQL resources exist and deadlocks the first release on an
+        # empty cluster; the retry loop absorbs first-boot initdb latency.
+        assert annotations["helm.sh/hook"] == "post-install,post-upgrade"
         assert job["spec"]["backoffLimit"] == 0
         assert job["spec"]["activeDeadlineSeconds"] == 300
         container = job["spec"]["template"]["spec"]["containers"][0]

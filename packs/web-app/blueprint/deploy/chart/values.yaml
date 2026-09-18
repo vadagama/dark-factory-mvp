@@ -86,10 +86,11 @@ frontend:
       memory: 128Mi
 
 migrations:
-  # post-install/pre-upgrade hook Job running the schema migrations with a
-  # wait-for-database retry (factory chart pattern). post-install (not
-  # pre-install) so the in-chart PostgreSQL Service exists on the very first
-  # install; the retry loop absorbs first-boot initdb latency.
+  # post-install/post-upgrade hook Job running the schema migrations with a
+  # wait-for-database retry (factory chart pattern). POST phases only: Argo
+  # CD maps pre-* helm hooks to its PreSync phase, which runs before the
+  # chart's own resources and deadlocks the first release on an empty
+  # cluster; the retry loop absorbs first-boot initdb latency.
   # Requires the backend image to ship alembic + migrations/.
   enabled: true
   command:

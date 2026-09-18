@@ -1,15 +1,20 @@
 {{- if .Values.migrations.enabled }}
-{{- /* Schema migrations as a post-install/pre-upgrade hook Job (factory chart
-pattern). post-install (NOT pre-install): a pre-install hook executes
-before ALL chart resources, so on the very first release into an empty
-cluster the Job cannot resolve the not-yet-created in-chart PostgreSQL
-Service - a first-install deadlock. A failed install keeps its resources,
-so the next Argo/helm attempt runs the same Job as pre-upgrade against a
-live database (convergent). The command wraps the migrations entrypoint in
-a wait-for-database retry because first-boot postgres initdb takes longer
-than the Service DNS record to appear. The backend image ships alembic and
-migrations/; the DATABASE_URL secret must exist before the release is
-applied. */}}
+{{- /* Schema migrations as a post-install/post-upgrade hook Job (factory chart
+pattern). POST phases only, no pre-*: Argo CD maps helm.sh/hook pre-install
+and pre-upgrade to its PreSync phase, which runs BEFORE the chart's own
+resources are applied - so a pre-* hook cannot reach the in-chart
+PostgreSQL on the very first release (first-install deadlock, observed in
+the T043 pilot: "failed to resolve host <release>-postgres"). With
+post-install/post-upgrade the resources (postgres, backend, frontend)
+are applied first, then the hook runs and its wait-for-database retry
+absorbs first-boot initdb latency. A failed install/PostSync keeps its
+resources, so the next Argo/helm attempt runs the Job against a live
+database (convergent). Consequence: on upgrades migrations run AFTER the
+new backend is deployed - schema changes must be backward-compatible
+(expand/contract). The command wraps the migrations entrypoint in a retry
+because first-boot postgres initdb takes longer than the Service DNS
+record to appear. The backend image ships alembic and migrations/; the
+DATABASE_URL secret must exist before the release is applied. */}}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -18,7 +23,7 @@ metadata:
     {{- include "web-app.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrations
   annotations:
-    helm.sh/hook: post-install,pre-upgrade
+    helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "0"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
