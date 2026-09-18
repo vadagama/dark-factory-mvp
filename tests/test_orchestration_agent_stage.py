@@ -21,7 +21,7 @@ from dark_factory.adapters.fakes import (
 )
 from dark_factory.agents.profiles.manifest import AgentProfile
 from dark_factory.agents.profiles.registry import DEVELOP_PROFILE, PRODUCT_PROFILE
-from dark_factory.changes.enums import GateStatus, Route, Stage, StageStatus
+from dark_factory.changes.enums import ChangeRequestStatus, GateStatus, Route, Stage, StageStatus
 from dark_factory.changes.next_action import StopAction, WaitForCIAction
 from dark_factory.changes.refs import RepositoryRef
 from dark_factory.changes.usage import BudgetSnapshot, Usage
@@ -292,6 +292,77 @@ def test_a_custom_description_renderer_shapes_the_change_request_body() -> None:
 
     [request] = changes.opened
     assert request.description == f"CUSTOM chg-001 @ {result.artifacts[0].revision}"
+
+
+def test_publish_opens_a_fresh_request_when_the_existing_one_is_merged() -> None:
+    """A merged request cannot carry the commit: the attempt opens a new one (T-043).
+
+    The live pilot parked forever here: the operator's merge of the
+    specification request is the human decision (ADR-011), so the next
+    stage's publish found a merged request, pushed to its branch and waited
+    for CI that no open request would ever run. The publish must open a
+    fresh request instead - the wait then observes an open request whose
+    head the CI judges.
+    """
+    executor, _recorder, repo, changes = _executor()
+    repository = make_change().product
+    branch = branch_name("chg-001")
+    merged = asyncio.run(
+        changes.open(
+            OpenChangeRequest(
+                repository=repository,
+                change_id="chg-001",
+                source_branch=branch,
+                target_branch="main",
+                title="spec",
+                description="spec body",
+                head_sha=REVISION,
+            ),
+            idempotency_key="spec-open",
+        )
+    )
+    asyncio.run(changes.merge(merged, expected_sha=REVISION, idempotency_key="spec-merge"))
+
+    result = executor(_context(stage=Stage.PLANNING))
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForCIAction)
+    assert result.next_action.change_request is not None
+    assert result.next_action.change_request.number == 2
+    assert result.next_action.change_request.status is ChangeRequestStatus.OPEN
+    assert result.artifacts[0].revision == asyncio.run(repo.get_revision(repository, branch))
+    # The fresh request is the one a cold lookup resolves to (FR-011).
+    found = asyncio.run(changes.find_existing(repository, "chg-001"))
+    assert found is not None
+    assert found.number == 2
+
+
+def test_publish_reuses_the_open_request_of_the_change() -> None:
+    """An open request still carries the stage's commit: no duplicate is opened."""
+    changes = RecordingMergeRequests()
+    executor, _recorder, _repo, _changes = _executor(merge_requests=changes)
+    opened = asyncio.run(
+        changes.open(
+            OpenChangeRequest(
+                repository=make_change().product,
+                change_id="chg-001",
+                source_branch=branch_name("chg-001"),
+                target_branch="main",
+                title="spec",
+                description="spec body",
+                head_sha=REVISION,
+            ),
+            idempotency_key="spec-open",
+        )
+    )
+
+    result = executor(_context(stage=Stage.PLANNING))
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForCIAction)
+    assert result.next_action.change_request is not None
+    assert result.next_action.change_request.number == opened.number
+    assert len(changes.opened) == 1
 
 
 def test_gates_are_reported_pending_not_passed() -> None:
