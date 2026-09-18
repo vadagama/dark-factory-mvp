@@ -11,8 +11,18 @@
 #   dns                DNS still resolves (bootstrap allow-dns is additive)
 #   api_blocked        TCP 443 to the Kubernetes API (name and ClusterIP)
 #                      is dropped by the narrowed egress policy
+#   api_ip_blocked     (see api_blocked — asserted by IP instead of name)
 #   external_https     public HTTPS (github.com:443) is reachable
 #   http80_blocked     plain HTTP (port 80) is dropped
+#
+# The network negative checks (api_blocked, api_ip_blocked, http80_blocked)
+# are only meaningful when the cluster actually enforces NetworkPolicies:
+# some embedded distributions (Docker Desktop) have no policy-enforcing CNI,
+# so deny-by-default is inert there (TD-001). deploy/ci/verify.sh detects
+# enforcement with a canary pair and renders the mode into NET_NEGATIVE_MODE:
+# assert (default posture — failures fail the probe) or skip (failures are
+# reported as SKIPPED and do not fail the probe; positive and credential
+# checks stay hard in both modes).
 #
 # The job is created by verify.sh AS the runner service account
 # (`--as=system:serviceaccount:ci:factory-ci`), which doubles as the live RBAC
@@ -67,6 +77,11 @@ spec:
             limits:
               cpu: 500m
               memory: 128Mi
+          env:
+            # Rendered by verify.sh: "assert" on a policy-enforcing cluster,
+            # "skip" when the canary detects no NetworkPolicy enforcement.
+            - name: NET_NEGATIVE_MODE
+              value: "__NET_NEGATIVE_MODE__"
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -96,17 +111,26 @@ spec:
               else
                 res env_clean PASS
               fi
-              if nslookup kubernetes.default.svc >/dev/null 2>&1; then
+              # busybox nslookup does not walk the DNS search list the way
+              # glibc does (it stops at the first NXDOMAIN) — query the FQDN
+              # directly, the same target as the bootstrap probe's getent.
+              if nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1; then
                 res dns PASS
               else
                 res dns FAIL; fail=1
               fi
-              if nc -z -w 5 kubernetes.default.svc 443 >/dev/null 2>&1; then
+              if [ "$NET_NEGATIVE_MODE" = "skip" ]; then
+                res api_blocked SKIPPED
+              # FQDN: in assert mode a resolution failure must not be
+              # mistaken for the policy blocking the connection.
+              elif nc -z -w 5 kubernetes.default.svc.cluster.local 443 >/dev/null 2>&1; then
                 res api_blocked FAIL; fail=1
               else
                 res api_blocked PASS
               fi
-              if nc -z -w 5 __KUBERNETES_CLUSTER_IP__ 443 >/dev/null 2>&1; then
+              if [ "$NET_NEGATIVE_MODE" = "skip" ]; then
+                res api_ip_blocked SKIPPED
+              elif nc -z -w 5 __KUBERNETES_CLUSTER_IP__ 443 >/dev/null 2>&1; then
                 res api_ip_blocked FAIL; fail=1
               else
                 res api_ip_blocked PASS
@@ -116,7 +140,9 @@ spec:
               else
                 res external_https FAIL; fail=1
               fi
-              if wget -q -T 5 -O /dev/null http://github.com/robots.txt 2>/dev/null; then
+              if [ "$NET_NEGATIVE_MODE" = "skip" ]; then
+                res http80_blocked SKIPPED
+              elif wget -q -T 5 -O /dev/null http://github.com/robots.txt 2>/dev/null; then
                 res http80_blocked FAIL; fail=1
               else
                 res http80_blocked PASS
