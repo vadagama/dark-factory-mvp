@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router";
 import { createApiClient } from "../api/client";
-import { useAsync } from "../api/hooks";
+import { POLL_MS, useAsync } from "../api/hooks";
 import { EmptyState, ErrorState, Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatCost, formatDateTime, formatNumber, formatStage } from "../lib/format";
@@ -28,7 +28,7 @@ export function BudgetsPage() {
     const summaries = await api.listRuns({ limit: 20 });
     const runs = await Promise.all(summaries.map((summary) => api.getRun(summary.run_id)));
     return runs;
-  }, []);
+  }, [], { pollMs: POLL_MS });
 
   const limits = meta.limits;
 

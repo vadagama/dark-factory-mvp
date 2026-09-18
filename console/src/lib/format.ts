@@ -8,6 +8,11 @@ const DATE_TIME_FORMAT = new Intl.DateTimeFormat("ru-RU", {
   timeZone: "UTC",
 });
 
+const TIME_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+  timeStyle: "medium",
+  timeZone: "UTC",
+});
+
 export function formatDateTime(iso: string | null): string {
   if (!iso) {
     return "—";
@@ -17,6 +22,11 @@ export function formatDateTime(iso: string | null): string {
     return iso;
   }
   return `${DATE_TIME_FORMAT.format(date)} UTC`;
+}
+
+/** "HH:MM:SS" freshness stamp for the polling screens (UTC, like formatDateTime). */
+export function formatTime(timestamp: number): string {
+  return TIME_FORMAT.format(new Date(timestamp));
 }
 
 export function formatCost(cost: string | null): string {

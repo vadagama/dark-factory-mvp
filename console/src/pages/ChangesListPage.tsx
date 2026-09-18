@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { createApiClient } from "../api/client";
-import { useAsync } from "../api/hooks";
+import { POLL_MS, useAsync } from "../api/hooks";
 import { EmptyState, ErrorState, LoadingState, Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { TokenDialog } from "../components/TokenDialog";
-import { formatDateTime, formatProduct } from "../lib/format";
+import { formatDateTime, formatProduct, formatTime } from "../lib/format";
 import { statusTone } from "../lib/statusTone";
 import type { Change, RunStatus } from "../api/types";
 import { IntakeForm } from "../components/IntakeForm";
@@ -38,11 +38,18 @@ export function ChangesListPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
 
-  const state = useAsync<ChangesListModel>(async () => {
-    // limit=200 is the API maximum; enough for the MVP list.
-    const [changes, runs] = await Promise.all([api.listChanges({ limit: 200 }), api.listRuns({ limit: 200 })]);
-    return { changes, statusByChange: deriveStatusByChange(changes, runs) };
-  }, [reloadNonce]);
+  const state = useAsync<ChangesListModel>(
+    async () => {
+      // limit=200 is the API maximum; enough for the MVP list.
+      const [changes, runs] = await Promise.all([
+        api.listChanges({ limit: 200 }),
+        api.listRuns({ limit: 200 }),
+      ]);
+      return { changes, statusByChange: deriveStatusByChange(changes, runs) };
+    },
+    [reloadNonce],
+    { pollMs: POLL_MS },
+  );
 
   return (
     <>
@@ -50,6 +57,11 @@ export function ChangesListPage() {
         title="Изменения"
         description="Список изменений фабрики со статусом последнего прогона. Приёмка новых изменений — форма ниже (нужен токен changes:write)."
       >
+        {state.updatedAt !== null ? (
+          <p className="muted" data-testid="updated-at">
+            обновлено {formatTime(state.updatedAt)}
+          </p>
+        ) : null}
         {state.loading ? <LoadingState /> : null}
         {state.error ? (
           <ErrorState message={state.error.detail} />
@@ -113,4 +125,3 @@ export function ChangesListPage() {
     </>
   );
 }
-

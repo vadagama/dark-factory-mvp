@@ -66,4 +66,18 @@ describe("ChangesListPage", () => {
     const error = await screen.findByRole("alert");
     expect(error).toHaveTextContent("Store unavailable");
   });
+
+  it("shows a freshness stamp after a successful load (T-095)", async () => {
+    stubFetch([
+      { method: "GET", pattern: /\/api\/v1\/changes$/, handler: () => jsonResponse(200, [change]) },
+      {
+        method: "GET",
+        pattern: /\/api\/v1\/runs$/,
+        handler: () => jsonResponse(200, [runSummary, runSummarySecond]),
+      },
+    ]);
+    renderPage();
+    const stamp = await screen.findByTestId("updated-at");
+    expect(stamp).toHaveTextContent(/обновлено \d{2}:\d{2}:\d{2}/);
+  });
 });
