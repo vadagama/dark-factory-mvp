@@ -3,6 +3,153 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — T043: B6 повторён ×2 (p06, p10) — правило гейтов для фазы 3
+
+- **Что сделал оператор:** заапрувил и смержил пачку CR продукта за 19:22–19:24: #17 (p01b,
+  spec), #19 (p04b, spec), #20 (p05b, spec), #18 (p06, plan), #21 (p10, plan).
+- **Что наблюл драйвер:** spec-гейты p01b/p04b/p05b резолвнуты (`outcome: advanced`,
+  `next_stage: planning`) — merge резолвит чисто человеческую стадию ✓. plan-гейты p06/p10 —
+  `outcome: replayed`, `persisted: false` → **заклинены (B6 ×2)**: на момент мержа гейт `planning` был
+  машинным (контракт не прикреплён → эффективный класс = пол маршрута R0), а наблюдение с
+  `merged=True` не резолвит машинно-гейтованную стадию.
+- **Правило гейтов для фазы 3 (класс-зависимое):**
+  - **R1** (`p01b`, `p04b`, `p05b`): planning остаётся машинным гейтом → plan-CR **не мержить**;
+    после зелёного CI подать `advance-contract <id> <contract.json> --approve` — этот же вызов
+    резолвит planning (пайплайн на head) и пропускает гейт входа в construction.
+  - **R2** (`p06b`/`p10b`/`p08`/`p09`): сначала `advance-contract … --approve` (planning становится
+    человеческим), затем approving review на plan-CR (закрывает точку `solution`); merge допустим
+    (наблюдение `merged` резолвит чисто человеческую стадию), но review обязателен.
+  - Общий инвариант: **любой merge plan-CR до прикрепления контракта заклинивает ран** (TD-030 —
+    снять нечем). Merge — не универсальное «approve»: он резолвит только `review_verification` и
+    чисто человеческие стадии.
+- **Следствие:** p06 и p10 недоводимы без пере-intake/замены — решение оператора (**D8**);
+  набор D3 снова требует пересборки (p07 — B8, p06/p10 — B6). LLM-расход на повторных advance не рос
+  (replay без исполнения стадии).
+
+## 2026-09-18 — T043: D7 — p07 заменён на p10; B8 не воспроизвёлся
+
+- **Решение оператора D7** (p07 выпал из набора D3 — B8): третьим standard взят `p10`
+  («Extract shared FastAPI dependencies without changing endpoint contracts», рефакторинг без
+  изменения контрактов).
+- **Живая проверка:** `advance chg_t043_p10` — planning attempt 1 (роль product) **успешен**,
+  стадия опубликовала plan-CR `vadagama/dark-factory-product-1#21` и запарковалась на
+  `wait_for_ci`; CI 9/9 зелёный. Значит, B8 — не общий дефект стадии planning и не следствие
+  «плоского» пути spec-артефакта (`p10` — тоже flat `specs/extract-shared-fastapi-dependencies.md`),
+  а специфичен для `p07` (её ран остаётся `blocked` как отклонение).
+- **Состояние:** `chg_t043_p10` — `planning: waiting (attempts=1)`; план-CR #21 (R2) ждёт контракт
+  по рецепту §7.2: `advance-contract --approve` → approving review на plan-CR → `advance`.
+- **Риск (плана §9):** `p06` и `p10` оба могут трогать `backend/src/app/health.py` — изменения
+  сериализовать (p06 мержится раньше, p10 позже).
+
+## 2026-09-18 — T043: B8 — planning p07 не порождает изменений (`blocked`, воспроизводимо)
+
+- **Наблюдение.** `advance chg_t043_p07` (после успешной specification и зелёного гейта) →
+  `blocked`, attempt 1, reason «stage planning: the attempt produced no changes to publish»;
+  повторный `advance` → `blocked`, attempt 2, тот же reason. Воспроизводимость 2/2.
+- **Механика (по коду).** `stages/agent.py::_attempt` блокирует попытку, когда `_publish` вернул
+  `None`, а `_publish` возвращает `None` при пустом `collect_changes(workspace)` — тот же контракт,
+  что описан в ADR-029 для `review_verification`. Worktree стадии
+  (`df-workspaces/run_78f1f336…-planning-552e107…`) чист, включая untracked; в зеркале
+  `df-mirrors` и в `df-workspaces` новых файлов нет — агент роли product не записал ничего.
+- **Возможные причины** (не подтверждены — нужен транскрипт/usage попытки): детерминированный
+  no-op модели (одинаковый контекст → тот же результат, поэтому слепой retry не помогает); либо
+  артефакт записан за пределами workspace стадии. `.factory/factory.yaml` путей артефактов не
+  задаёт — путь выбирает агент.
+- **Не общее правило стадии:** `p06` (тот же маршрут и класс, то же время) опубликовал
+  `specs/version-endpoint/plan.md` и пошёл дальше.
+- **Следствие.** `p07` выпадает из набора D3; третий standard нужно заменить (кандидат — `p10`,
+  рефакторинг без изменения контрактов) — решение оператора (**D7**). Живой `blocked`-ран остаётся
+  в журнале как отклонение; LLM-расход — 2 planning-попытки.
+
+## 2026-09-18 — T043: D6 — p04 и p05 пере-intake'нуты как p04b/p05b
+
+- **Основание:** решение оператора D6 (p04/p05 заклинены — B6).
+- **Что сделано** (ветка `chore/t-043-p04-p05-reintake`, MR #106): в `deploy/local/pilot/tasks.json`
+  добавлены `chg_t043_p04b` (`t043-pilot-04b`) и `chg_t043_p05b` (`t043-pilot-05b`); подготовлены
+  `contracts/chg_t043_p04b.contract.json` и `contracts/chg_t043_p05b.contract.json` (R1,
+  `approval: null`), scope/AC как у p04/p05. Заклиненные раны не тронуты.
+- **Живая проверка:** `intake` — 2 created (p04b, p05b), 11 replayed, 0 failed; первые `advance` —
+  specification опубликовала CR и запарковалась на human-гейте (exit 10): `product-1#19` (p04b),
+  `product-1#20` (p05b).
+- **Живое состояние фазы 3 (на момент записи):** p01b — spec-CR #17 `waiting`; p04b — #19 `waiting`;
+  p05b — #20 `waiting`; p06 — planning `waiting`, plan-CR #18 (CI 9/9, ждёт контракт + решение
+  `solution`); p07 — `blocked` (B8); p01/p02/p04/p05 — отклонения.
+
+## 2026-09-18 — T043: фаза 3 — p06 standard доведён до plan-CR
+
+- **Что сделано** (`dark-factory`, после merge фикса B1): `advance chg_t043_p06` — planning
+  attempt 1 (роль product, ~49 с) опубликовал план и запарковался на `wait_for_ci`;
+  plan-CR `vadagama/dark-factory-product-1#18` — CI 9/9 зелёный, SHA `5bb8ca48…`,
+  `reviewDecision=REVIEW_REQUIRED`, `mergeable`.
+- **Состояние:** `chg_t043_p06` — `planning: waiting (attempts=1)`, `gate planning: pending`;
+  `specification: succeeded`, `gate specification: passed`.
+- **Порядок дальше (рецепт §7.2, решение D5a):** оператор
+  `advance-contract chg_t043_p06 contracts/chg_t043_p06.contract.json --approve` → approving review
+  на plan-CR #18 (**не merge**) → `advance` резолвит planning наблюдаемым `Gate.PLANNING` и уводит
+  ран в construction. Merge plan-CR недопустим: `merged` не создаёт решения → точка `solution`
+  останется незакрытой.
+- **Ждёт оператора также:** `chg_t043_p01b` (spec-CR #17) — approving review на spec-CR.
+
+## 2026-09-18 — T043: находки B6 (p04/p05 заклинены) и B7 (латентная: точка `ux` на R2+)
+
+- **B6 — merge plan-CR до резолва wait лишает ран пути резолва (наблюдено).**
+  `chg_t043_p04` (planning attempts=2) и `chg_t043_p05` (attempts=1) стоят `waiting`
+  (`next_action=wait_for_ci`); повторные `advance` → `outcome: replayed`, `persisted: false`.
+  Их plan-CR `product-1#15`/`#16` смержены (18:27:14Z/18:27:41Z), CI на них был зелёным (9/9).
+  Корень: планирование R1 — машинный гейт (`required_human_gates(STANDARD, PLANNING, R1)` пуст),
+  а `gate_resolved` при `merged=True` возвращает True только для `review_verification` или чисто
+  человеческой стадии — то есть merge CR **до** наблюдения зелёного пайплайна закрывает оба пути
+  резолва. Правильный порядок: зелёный CI → `advance` (резолв машинного гейта) → затем merge CR.
+  Следствие: p04/p05 недоводимы без снятия рана (TD-030) — класс p02. Восстановление через
+  пере-intake (новый `id`, как p01b) — вопрос решения оператора (D6).
+- **B7 — точка `ux` (R2+) недостижима, если контракт прикреплён до резолва specification
+  (выведено из кода; живьём в пилоте не воспроизводилось).** `_approvals` несёт **один** гейт на
+  ревью — первый по значению из `required_human_gates(...)`. Для стадии `specification` это
+  `specification` (`s` < `u`), поэтому ревью spec-CR никогда не даёт решения на гейте `ui`, а
+  `missing_control_points(STANDARD, SPECIFICATION, R2, …)` требует и точку `ux` →
+  `risk_escalation_violation` на границе specification→planning заблокирует ран. Пилотные R2-задачи
+  это не задевают: их контракт прикрепляется на гейте planning, когда specification уже пройден при
+  классе R0 (ниже R2 проверка точек не действует). Кандидат в TD: нести решение на каждый
+  человеческий гейт стадии (или на все требуемые точки), а не только на первый.
+
+## 2026-09-18 — T043: W2 — p01 пере-intake'нут, B3 закрыт
+
+- **Причина:** `chg_t043_p01` был приколот к битой snapshot-ревизии (B3): спецификация не
+  публиковалась, `specification` держала 3 blocked-попытки. Лечение — новое изменение, старая
+  запись не трогается (решение D4a).
+- **Что сделано** (ветка `chore/t-043-p01-reintake`, MR #104): в `deploy/local/pilot/tasks.json`
+  добавлена `chg_t043_p01b` (`external_ref` `t043-pilot-01b`, title/description/risk_class = p01);
+  подготовлен черновик `contracts/chg_t043_p01b.contract.json` (R1, scope `README.md`,
+  `approval: null`).
+- **Живая проверка (AC W2):** `intake` — `1 created, 10 replayed, 0 failed` (старые не тронуты,
+  дедуп по id/external_ref); первый `advance` не упал `WorkspaceError` — specification
+  (роль product, attempt 1, ~2 мин) опубликовала `vadagama/dark-factory-product-1#17` на ветке
+  `factory/chg_t043_p01b` и запарковалась на human-гейте (ADR-018/ADR-029). Exit 10 = waiting —
+  норма.
+- **Состояние:** `chg_t043_p01b` — `waiting`, гейты `specification`/`ui` `pending`; CR #17 — OPEN,
+  `MERGEABLE`. Дальше — approving review + merge спека-CR оператором (ADR-011), затем
+  `advance-contract … --approve` по рецепту §7.1 (контракт до резолва перехода planning→
+  construction — решение D5a).
+- **Метрика:** ручных вмешательств в W2 нет; LLM-расход — одна specification-попытка.
+
+## 2026-09-18 — T043: W1 — фикс B1 (риск-осознанный маппинг гейтов) в ветке, MR #103
+
+- **Что сделано** (ветка `fix/t-043-risk-aware-gate-mapping`, MR #103): `ScmFactsProvider` теперь
+  считает эффективный риск-класс рана в `__call__` и читает гейт ревью из
+  `required_human_gates(route, stage, risk_class)`; фолбэк `Gate.REVIEW` сохранён для стадий без
+  человеческих гейтов. Это закрывает B1: ревью plan-CR на R2+ теперь несёт `Gate.PLANNING`,
+  wait резолвится, контрольная точка `solution` закрывается (было — всегда `Gate.REVIEW`, deadlock
+  на p06–p10).
+- **Проверки (фактически запущены):** `uv run pytest` — 1835 passed, 74 skipped;
+  `tests/test_runtime_facts.py` — 11 passed (7 прежних + 4 новых: R2-planning → `Gate.PLANNING` и
+  точка `solution` закрыта; R1-planning → фолбэк и wait не резолвится; `specification`/
+  `review_verification` без изменений; `merged` резолвит стадию независимо от маппинга);
+  `uv run mypy` — clean (294 файла); `ruff check .`/`ruff format --check .` — clean.
+- **Merge:** MR #103 смержен в `main` оператором 2026-09-18 (merge commit `bb9a302`) — фикс
+  действует на `main`; план закрытия и решения D1–D5 тоже в `main` (PR #102, `82a5ce5`).
+- **Осталось:** живая валидация W1 — прогнать p06 по §7.2 (approving review на plan-CR → `advance`
+  резолвит planning и уводит ран в construction) в фазе 3.
+
 ## 2026-09-18 — T043: решения D1–D5 по плану закрытия приняты (оператор)
 
 - **Основание:** `docs/plan-t043-closure.md` §4; оператор принял рекомендованные варианты
