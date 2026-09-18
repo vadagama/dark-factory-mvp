@@ -4,6 +4,7 @@
 - **Дата**: 2026-09-18
 - **Автор**: architect
 - Записано по решению оператора, принятому на живом e2e-пилоте T-043 (изменение `chg_t043_p02`, 2026-09-18) и зафиксированному в журнале `docs/t043-pilot-journal.md`. Уточняет [ADR-018](ADR-018-human-participation-autonomous-execution.md) п.1 (базовый набор человеческих гейтов) и [ADR-023](ADR-023-risk-classes-and-control-points.md) п.1, п.3, п.4, п.6 (место гейта `ui` в матрицах). Опирается на [ADR-005](ADR-005-stage-scoped-graphs-light-workflow-core.md) п.2 (review завершается через merge), [ADR-011](ADR-011-risk-based-merge-release-policy.md) п.2 (merge — человеческое решение) и [ADR-009](ADR-009-minimal-bootstrap-otel.md) п.7 (version-bound approval).
+- **Уточнено** (2026-09-18, живой прогон T-043, `chg_t043_p02`): наблюдаемый merge сам по себе не закрывает `review_verification` — стадия завершается merge'ом, **авторизованным** version-bound approving review на итоговом SHA ([ADR-011](ADR-011-risk-based-merge-release-policy.md) п.2, [ADR-009](ADR-009-minimal-bootstrap-otel.md) п.7, T-032); merge без такого review паркует ран в `waiting` (п.5). Design-стадии (`specification`) закрываются самим merge'ом дизайн-CR (п.2/п.4).
 
 ## Контекст
 
@@ -43,6 +44,8 @@ machine_gates(route, stage, risk_class)
 ### 5. `review_verification` завершается без публикации change
 
 `review_verification` завершается **без публикации изменения кода**: ревьюер проверяет change request, который уже находится в ревью (change request стадии construction), и стадия резолвится человеческим merge'ом ([ADR-011](ADR-011-risk-based-merge-release-policy.md) п.2). Попытка ревью, не породившая изменений в workspace, **не должна** блокироваться с «no changes to publish»: отсутствие файловых изменений — нормальный результат ревью, а именованный стадией CR — это CR ревьюируемого изменения (живой lookup открытого change request'а изменения через порт merge-requests, FR-011), а не новый CR. Стадия паркуется в `waiting` на человеческий merge (наблюдение `merged=True` уже обрабатывается `_resolve_review`, `orchestration/stages/gates.py:355-409`).
+
+Завершение стадии идёт при этом **через merge policy**, а не через сам факт merge: наблюдаемый merge несёт merge-контекст (`executor="human"`), и политика требует version-bound approving decision на гейте `review` при `commit_sha == expected_sha` (`orchestration/policy/merge.py::evaluate_merge`; T-032 `rules/merge_protection.py`: `required_approving_reviews=1`) — merge без такого решения паркует ран в `waiting`, не завершая стадию (живая проверка — `chg_t043_p02`, 2026-09-18, `docs/t043-pilot-journal.md`). Этим `review_verification` отличается от design-стадий, которые резолвятся самим merge'ом дизайн-change-request'а (п.2/п.4).
 
 ## Реализация
 
