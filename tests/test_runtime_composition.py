@@ -18,12 +18,19 @@ from dark_factory.adapters.harness import PydanticAIHarness
 from dark_factory.adapters.scm.github import GitHubAdapter, StaticTokenProvider
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter
 from dark_factory.agents.profiles.registry import DEVELOP_PROFILE
+from dark_factory.changes.enums import Role, Route, Stage
+from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.execution import (
     WORKSPACE_MIRROR_ROOT_ENV_VAR,
     WORKSPACE_ROOT_ENV_VAR,
     WorktreeExecution,
 )
 from dark_factory.orchestration.stages.agent import AgentStageExecutor, ScmRevision
+from dark_factory.orchestration.stages.context import StageContext, build_context
+from dark_factory.orchestration.stages.pr_description import (
+    PR_TEMPLATE_ENV_VAR,
+    PrDescriptionRenderer,
+)
 from dark_factory.orchestration.stages.tools import WorkspaceTools
 from dark_factory.ports import WorkspaceRequest
 from dark_factory.runtime import RuntimeNotConfiguredError, build_runtime
@@ -196,6 +203,51 @@ def test_broken_telemetry_configuration_is_not_swallowed() -> None:
         build_runtime(
             env={"DARK_FACTORY_TELEMETRY_EXPORTER": "file"}, token_provider=_static_tokens()
         )
+
+
+# --- the change-request description renderer (T-094) -------------------------
+
+
+def _description_context() -> StageContext:
+    """A minimal stage context to render a change-request body against."""
+    return build_context(
+        change=make_change(),
+        stage=Stage.CONSTRUCTION,
+        route=Route.STANDARD,
+        run_id="run-001",
+        input_revision="abc123",
+        budget=BudgetSnapshot(),
+    )
+
+
+def test_build_runtime_provides_the_default_description_renderer() -> None:
+    runtime = build_runtime(env={})
+
+    assert isinstance(runtime.descriptions, PrDescriptionRenderer)
+
+
+def test_the_pr_template_env_var_points_the_renderer_at_a_custom_file(tmp_path: Path) -> None:
+    template = tmp_path / "pr-description.md"
+    template.write_text("CUSTOM {{change_id}} @ {{commit_sha}}", encoding="utf-8")
+
+    runtime = build_runtime(env={PR_TEMPLATE_ENV_VAR: str(template)})
+
+    assert isinstance(runtime.descriptions, PrDescriptionRenderer)
+    body = runtime.descriptions.render(
+        _description_context(),
+        role=Role.DEVELOP,
+        source_branch="factory/chg-001",
+        target_branch="main",
+        commit_sha="deadbeef",
+    )
+    assert body == "CUSTOM chg-001 @ deadbeef"
+
+
+def test_a_set_but_missing_pr_template_fails_closed() -> None:
+    # Fail-closed like the workspace configuration: a set-but-unreadable
+    # template override is a misconfiguration (an error), not an absence.
+    with pytest.raises(ValueError, match=PR_TEMPLATE_ENV_VAR):
+        build_runtime(env={PR_TEMPLATE_ENV_VAR: "/nonexistent/t-094/pr-description.md"})
 
 
 def test_aclose_releases_the_assembled_adapters() -> None:

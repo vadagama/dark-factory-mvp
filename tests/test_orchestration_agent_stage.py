@@ -32,6 +32,7 @@ from dark_factory.orchestration.stages.agent import (
     branch_name,
 )
 from dark_factory.orchestration.stages.context import StageContext, build_context
+from dark_factory.orchestration.stages.pr_description import PrDescriptionRenderer
 from dark_factory.orchestration.stages.tools import (
     TOOL_NAMES,
     ToolFunction,
@@ -42,8 +43,10 @@ from dark_factory.orchestration.stages.tools import (
 )
 from dark_factory.ports import (
     AgentResult,
+    ChangeRequestRef,
     HarnessPort,
     HealthStatus,
+    OpenChangeRequest,
     PortError,
     TaskEnvelope,
     WorkspaceHandle,
@@ -156,11 +159,27 @@ class RecordingExecution(FakeExecution):
         await super().write_file(workspace, path, content, idempotency_key=idempotency_key)
 
 
+class RecordingMergeRequests(FakeMergeRequests):
+    """Merge-request fake that records every ``open`` input for assertions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened: list[OpenChangeRequest] = []
+
+    async def open(self, request: OpenChangeRequest, *, idempotency_key: str) -> ChangeRequestRef:
+        self.opened.append(request)
+        return await super().open(request, idempotency_key=idempotency_key)
+
+
 def _context(
-    *, stage: Stage = Stage.CONSTRUCTION, input_revision: str | None = REVISION, attempt: int = 1
+    *,
+    stage: Stage = Stage.CONSTRUCTION,
+    input_revision: str | None = REVISION,
+    attempt: int = 1,
+    description: str | None = None,
 ) -> StageContext:
     return build_context(
-        change=make_change(),
+        change=make_change().model_copy(update={"description": description}),
         stage=stage,
         route=Route.STANDARD,
         run_id=RUN_ID,
@@ -178,6 +197,7 @@ def _executor(
     execution: FakeExecution | None = None,
     telemetry: FakeTelemetry | None = None,
     factory: RecordingHarnessFactory | None = None,
+    descriptions: PrDescriptionRenderer | None = None,
 ) -> tuple[AgentStageExecutor, RecordingHarnessFactory, FakeRepository, FakeMergeRequests]:
     repo = repository or FakeRepository()
     changes = merge_requests or FakeMergeRequests()
@@ -188,6 +208,7 @@ def _executor(
         merge_requests=changes,
         execution=execution or FakeExecution(),
         telemetry=telemetry,
+        descriptions=descriptions,
     )
     return executor, recorder, repo, changes
 
@@ -215,6 +236,39 @@ def test_successful_stage_waits_for_ci_with_a_change_request() -> None:
     assert result.artifacts[0].revision == head
     assert repo.commits_of(repository, branch) == (head,)
     assert recorder.calls == [("develop", DEVELOP_PROFILE.tools)]
+
+
+def test_change_request_description_is_rendered_from_the_template() -> None:
+    changes = RecordingMergeRequests()
+    executor, _, _, _ = _executor(merge_requests=changes)
+    task_text = "Bug: the health page reports the backend down when only the database is down."
+    result = executor(_context(description=task_text))
+
+    [request] = changes.opened
+    description = request.description or ""
+    assert "## Summary" in description
+    assert "Add export button" in description
+    assert task_text in description
+    assert "factory/chg-001" in description
+    assert "main" in description
+    head = result.artifacts[0].revision
+    assert head is not None
+    assert head in description
+    # The body is the structured document rendered from the template, not the
+    # raw tracker text the change carried.
+    assert not description.startswith(task_text)
+
+
+def test_a_custom_description_renderer_shapes_the_change_request_body() -> None:
+    changes = RecordingMergeRequests()
+    executor, _, _, _ = _executor(
+        merge_requests=changes,
+        descriptions=PrDescriptionRenderer("CUSTOM {{change_id}} @ {{commit_sha}}"),
+    )
+    result = executor(_context())
+
+    [request] = changes.opened
+    assert request.description == f"CUSTOM chg-001 @ {result.artifacts[0].revision}"
 
 
 def test_gates_are_reported_pending_not_passed() -> None:

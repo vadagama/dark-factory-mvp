@@ -24,16 +24,17 @@
 
 ## 3. `build_runtime` и `Runtime` (`composition.py`)
 
-`build_runtime(*, env=None, execution=None, token_provider=None, transport=None, base_ref, branch_prefix) -> Runtime` — одна функция сборки. Неполная конфигурация даёт **отсутствующий** адаптер, а не fallback:
+`build_runtime(*, env=None, execution=None, token_provider=None, transport=None, base_ref, branch_prefix, descriptions=None) -> Runtime` — одна функция сборки. Неполная конфигурация даёт **отсутствующий** адаптер, а не fallback:
 
 | Пропущено | Следствие |
 |---|---|
 | `DARK_FACTORY_LLM_*` | `harness_config` пуст; `harness_of` бросает `RuntimeNotConfiguredError` с подсказкой |
 | `DARK_FACTORY_GITHUB_*` | Нет `GitHubAdapter` → `repository`/`merge_requests`/`revision_of()`/`facts_provider()` — `None` |
 | `DARK_FACTORY_GITOPS_*` | Нет GitOps-адаптера → `release_stage_executor()` — `None` (release-стадия остаётся с inner-исполнителем) |
+| `DARK_FACTORY_PR_TEMPLATE` | Тела change-request'ов рендерятся из встроенного шаблона `orchestration/stages/templates/pr-description.md` (`PrDescriptionRenderer`) |
 | `DARK_FACTORY_WORKSPACE_ROOT` / `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` | Нет `WorktreeExecution` (TD-022) → `agent_stage_executor()` — `None` |
 
-Исключение — telemetry: её конфигурация **fail-closed** (`TelemetryConfig.from_env` бросает `ValueError` на неизвестный exporter или `file` без пути), потому что тихая подмена скрыла бы опечатку; адаптер присутствует всегда (в MVP — console). `WorktreeExecutionConfig` fail-closed в той же степени, в какой это возможно: незаданные переменные — отсутствующий адаптер, а заданные криво (относительный путь, нечисловой таймаут) — `ValueError`, не тихое игнорирование.
+Исключение — telemetry: её конфигурация **fail-closed** (`TelemetryConfig.from_env` бросает `ValueError` на неизвестный exporter или `file` без пути), потому что тихая подмена скрыла бы опечатку; адаптер присутствует всегда (в MVP — console). `WorktreeExecutionConfig` fail-closed в той же степени, в какой это возможно: незаданные переменные — отсутствующий адаптер, а заданные криво (относительный путь, нечисловой таймаут) — `ValueError`, не тихое игнорирование. Тот же контракт у рендерера описаний change-request'ов (`PrDescriptionRenderer`, `orchestration/stages/pr_description.py`): незаданный `DARK_FACTORY_PR_TEMPLATE` — встроенный шаблон; заданный, но нечитаемый файл — `PrTemplateError` (подкласс `ValueError`, fail-closed); шаблон с неизвестным плейсхолдером `{{…}}` падает тем же `PrTemplateError` при старте, а не при публикации. Рендерер передаётся в `AgentStageExecutor` и формирует Markdown-тело каждого change-request'а, который открывает фабрика; маркер change-id дописывает в тело адаптер провайдера отдельно.
 
 `Runtime` — frozen dataclass и пассивный держатель адаптеров. Его методы — только связывание:
 

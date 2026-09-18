@@ -13,6 +13,8 @@ Optional pieces stay absent rather than degrading silently:
   gate-facts observer (``facts_provider`` is ``None``);
 - no ``DARK_FACTORY_GITHUB_REPOSITORY_SLUG`` → no CI stage toggle port
   (``ci_stage_toggles`` is ``None``; T059/ADR-027);
+- no ``DARK_FACTORY_PR_TEMPLATE`` → change-request bodies are rendered from the
+  packaged default template (``orchestration.stages.pr_description``);
 - no workspace configuration (``DARK_FACTORY_WORKSPACE_ROOT`` /
   ``DARK_FACTORY_WORKSPACE_MIRROR_ROOT``) → no execution port → no agent stage
   executor. The isolated-worktree adapter (T-092) mints workspaces from an
@@ -46,6 +48,7 @@ from dark_factory.orchestration.stages.agent import (
     AgentStageExecutor,
     ScmRevision,
 )
+from dark_factory.orchestration.stages.pr_description import PrDescriptionRenderer
 from dark_factory.orchestration.stages.release import (
     InnerStageExecutor,
     ReleaseStageExecutor,
@@ -153,6 +156,9 @@ class Runtime:
     gitops_base_ref: str = DEFAULT_TARGET_BRANCH
     harness_config: HarnessConfig | None = None
     execution: ExecutionPort | None = None
+    descriptions: PrDescriptionRenderer | None = None
+    """Renderer of change-request bodies; ``None`` lets the executor fall back
+    to the packaged default template (``templates/pr-description.md``)."""
     base_ref: str = DEFAULT_BASE_REF
     branch_prefix: str = DEFAULT_BRANCH_PREFIX
 
@@ -210,6 +216,7 @@ class Runtime:
             merge_requests=self.github.pull_requests,
             execution=self.execution,
             telemetry=self.telemetry,
+            descriptions=self.descriptions,
             target_branch=self.base_ref,
             branch_prefix=self.branch_prefix,
         )
@@ -293,6 +300,7 @@ def build_runtime(
     transport: Any | None = None,
     base_ref: str = DEFAULT_BASE_REF,
     branch_prefix: str = DEFAULT_BRANCH_PREFIX,
+    descriptions: PrDescriptionRenderer | None = None,
 ) -> Runtime:
     """Assemble a :class:`Runtime` from ``env`` (default: the process environment).
 
@@ -301,6 +309,8 @@ def build_runtime(
     from the ``DARK_FACTORY_WORKSPACE_*`` variables (``from_env`` returning
     ``None`` leaves the port absent). ``token_provider`` and ``transport``
     replace the GitHub App flow and HTTP transport (the contract emulator).
+    ``descriptions`` supplies the change-request body renderer; an explicit
+    injection wins over the environment (``DARK_FACTORY_PR_TEMPLATE``).
     Secrets are read from ``env`` only and never stored beyond the adapter that
     needs them (ADR-009).
     """
@@ -337,6 +347,9 @@ def build_runtime(
         gitops_config=gitops_config,
         harness_config=HarnessConfig.from_env(env),
         execution=execution,
+        descriptions=(
+            descriptions if descriptions is not None else PrDescriptionRenderer.from_env(env)
+        ),
         base_ref=base_ref,
         branch_prefix=branch_prefix,
     )
