@@ -3,6 +3,52 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: p02 не закрывается наблюдаемым merge — нужен approving review на CR
+
+- **Факт.** После merge `vadagama/dark-factory-product-1#12` (merge `0e15cad`, head
+  `f61f247a`, `merged_by=vadagama`) выполнен `advance chg_t043_p02` → снова `waiting`
+  (exit 10): `no human approval on gate 'review' bound to the final SHA f61f247a…
+  (ADR-009 p.7, FR-010)`. Ран в `release` не перешёл.
+- **Механика (поведение гейта, не дефект).** `_resolve_review`
+  (`orchestration/stages/gates.py`) на `merged=True` строит merge-результат с
+  merge-контекстом (`executor="human"`), а merge policy требует version-bound
+  approving decision на гейте `review` при `commit_sha == expected_sha`
+  (`orchestration/policy/merge.py::evaluate_merge`, `_latest_human_decision`).
+  Approvals в контекст даёт только SCM-наблюдение
+  (`runtime/facts.py::ScmFactsProvider._approvals` →
+  `MergeRequestPort.observe().reviews`); approving review на итоговом SHA нет →
+  `manual_merge_required` → парковка в `waiting` (`flow.py::_wait_for_human_merge`).
+  Закреплено тестами: `test_advance_run_parks_the_observed_merge_for_the_human`
+  (merged + `approvals=()`) против
+  `test_advance_run_advances_to_release_on_an_observed_merge_with_approval`.
+- **Коррекция хендоффа.** Запись ниже («стадия review завершится на observed merge»)
+  неверна. Merge сам по себе закрывает **design**-стадии — `specification` резолвится
+  merge'ом дизайн-CR (ADR-029 п.2/п.4, `_resolve_human_gated`), а
+  `review_verification` завершается merge'ом, **авторизованным** approving review на
+  итоговом SHA (ADR-011 п.2, ADR-009 п.7, T-032 `rules/merge_protection.py`:
+  `required_approving_reviews=1`). Это уже было записано ниже («Известные открытые
+  темы»): «Для пилота путь аппрува — review на change request'е».
+- **Почему p02 не закрыть.** У #12 ревью нет (`gh api .../pulls/12/reviews` → `[]`),
+  approving review на `f61f247a` пост-фактум недостижим — PR merged. Ран остаётся в
+  `waiting`, в `release` не перейдёт.
+- **Живые дефекты окружения (найдены тем же прогоном).**
+  - `main` продуктового репо **не защищён**: `branches/main/protection` → 404 «Branch
+    not protected». Требования ADR-011 п.2 / T-032 (protected branch, ≥1 approving
+    review, required checks, squash-only, dismiss stale) в окружении не выполнены —
+    жёстче задокументированного в TD-026 ослабления для gitops.
+  - Фабрика **не наблюдает** настройки защиты: `protection_violations` вызывается
+    только тестами (`docs/descriptions/rules.md` §4.2), наблюдение адаптером (T-030)
+    не подключено.
+- **Решение оператора (2026-09-18, ADR-011 — решение человека).** Вариант «протокол»:
+  перед merge ставить approving review на CR (автор CR — `dark-factory-local-1[bot]`,
+  поэтому approve человеком возможен; GitHub запрещает approve только своих PR). Гейт
+  не ослабляем, код не меняем; `decision-store ↔ драйвер` остаётся отдельным куском
+  (см. открытые темы ниже). `chg_t043_p02` — **невалидный прогон по
+  протоколу/окружению**; пере-запуск ради продукта не делаем (код изменения уже в
+  `main`). Формулировка ADR-029 п.5 уточнена.
+- **Дальше.** p03…p10 — по протоколу «approve CR → merge»; вопрос «снять или оставить
+  зависший ран p02» — решение оператора.
+
 ## 2026-09-18 — Инкремент 1: p02 `review_verification` запаркован в waiting (ждёт merge)
 
 - **Шаг после ADR-029**: `advance chg_t043_p02` — retry стадии `review_verification`
@@ -22,7 +68,8 @@
   attempt 2 `waiting`, run `waiting`, `next_action=wait_for_ci`.
 - **Хендофф (человек)**: merge `vadagama/dark-factory-product-1#12` → `advance chg_t043_p02`
   (стадия review завершится на observed merge) → стадия `release`. Решение — оператора
-  (ADR-011); агенты не мержат.
+  (ADR-011); агенты не мержат. **Уточнено 2026-09-18**: merge без version-bound
+  approving review стадию не закрывает — см. запись выше.
 - **Наблюдение по метрикам (FR-024)**: usage попытки-чекпоинта не попадает в отчёт advance;
   ранее найденная потеря usage при `supersede` (см. запись про пилотный прогон) остаётся
   открытой темой и здесь не измеряется.

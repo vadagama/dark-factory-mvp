@@ -131,3 +131,14 @@ approval мержа закрывает точку `problem` (биндинг к h
 input_revision). След: advance p02–p10 → planning; p01 — пере-intake после
 подтверждения резолва p02. Следующий advance каждой стадии planning
 запускает агента (LLM-расход). Детали — `docs/t043-pilot-journal.md`.
+
+Прогресс (2026-09-18, p02 после merge #12): оператор смержил `product-1#12`,
+но advance p02 снова вернул `waiting` (exit 10) — merge policy требует
+version-bound approving review на итоговом SHA (`f61f247a`), а у #12 ревью не
+было; ран в `release` не перешёл. Решение оператора — протокол: перед merge
+ставить approving review на CR (автор — фабричный бот, approve человеком
+возможен), гейт не ослабляем, кода не меняем; p02 — невалидный прогон,
+пере-запуск ради продукта не делается (код изменения уже в `main`). Попутно
+найдено: `main` продукта не защищён (404 «Branch not protected»), фабрика не
+наблюдает настройки защиты (`protection_violations` — только в тестах).
+Формулировка ADR-029 п.5 уточнена. Детали — `docs/t043-pilot-journal.md`.
