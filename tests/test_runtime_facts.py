@@ -16,18 +16,22 @@ from dark_factory.changes.enums import (
     DecisionOutcome,
     DecisionSource,
     Gate,
+    RiskClass,
+    Route,
     Stage,
 )
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.refs import ChangeRequestRef, RepositoryRef
-from dark_factory.changes.run import Change
+from dark_factory.changes.run import Change, ChangeRun
+from dark_factory.orchestration.policy.risk import missing_control_points
+from dark_factory.orchestration.stages.gates import gate_resolved
 from dark_factory.ports import (
     ChangeRequestObservation,
     OpenChangeRequest,
     PipelineStatus,
 )
 from dark_factory.runtime.facts import ScmFactsProvider
-from tests.changes_factories import make_change, make_run
+from tests.changes_factories import make_change, make_contract, make_run
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
 HEAD = "abc1234"
@@ -206,3 +210,96 @@ def test_reobserving_the_same_reviews_yields_the_same_decisions() -> None:
 
     assert first is not None and second is not None
     assert second.approvals == first.approvals
+
+
+def _run_declaring(risk_class: RiskClass) -> ChangeRun:
+    """A run whose approved contract declares ``risk_class`` (the effective-class input)."""
+    contract = make_contract().model_copy(update={"risk_class": risk_class})
+    return make_run().model_copy(update={"implementation_contract": contract})
+
+
+def _change_with_an_approving_review() -> tuple[Change, FakeMergeRequests]:
+    """A change whose request carries one approving human review at ``HEAD``."""
+    change = _change_with_request(make_change())
+    merge_requests = FakeMergeRequests()
+    ref = asyncio.run(merge_requests.open(_open_request(change), idempotency_key="k1"))
+    merge_requests.record_review(
+        ref, author="octocat", state="approved", commit_sha=HEAD, submitted_at=NOW
+    )
+    return change, merge_requests
+
+
+def test_an_r2_run_maps_the_planning_review_to_the_widened_planning_gate() -> None:
+    # B1 (T-043 increment 1): on R2+ the planning gate is human, so the review of
+    # the plan change request must decide Gate.PLANNING — otherwise the wait never
+    # resolves and the ``solution`` control point is never closed.
+    run = _run_declaring(RiskClass.R2)
+    change, merge_requests = _change_with_an_approving_review()
+
+    observed = _provider(merge_requests, StubPipelines())(run, Stage.PLANNING, change)
+
+    assert observed is not None
+    assert [decision.gate for decision in observed.approvals] == [Gate.PLANNING]
+    assert gate_resolved(
+        observed, stage=Stage.PLANNING, route=Route.STANDARD, risk_class=RiskClass.R2
+    )
+    assert (
+        missing_control_points(
+            Route.STANDARD,
+            Stage.PLANNING,
+            RiskClass.R2,
+            observed.approvals,
+            sha=observed.head_sha,
+        )
+        == frozenset()
+    )
+
+
+def test_an_r1_run_keeps_the_planning_review_on_the_fallback_merge_gate() -> None:
+    # The widened ``planning`` gate is R2+ only: on R1 the stage is machine-gated,
+    # so its review must not become a human decision.
+    run = _run_declaring(RiskClass.R1)
+    change, merge_requests = _change_with_an_approving_review()
+
+    observed = _provider(merge_requests, StubPipelines())(run, Stage.PLANNING, change)
+
+    assert observed is not None
+    assert [decision.gate for decision in observed.approvals] == [Gate.REVIEW]
+    assert not gate_resolved(
+        observed, stage=Stage.PLANNING, route=Route.STANDARD, risk_class=RiskClass.R1
+    )
+
+
+def test_the_specification_and_review_mappings_are_unchanged() -> None:
+    run = _run_declaring(RiskClass.R1)
+    change, merge_requests = _change_with_an_approving_review()
+    provider = _provider(merge_requests, StubPipelines())
+
+    at_specification = provider(run, Stage.SPECIFICATION, change)
+    at_review = provider(run, Stage.REVIEW_VERIFICATION, change)
+
+    assert at_specification is not None
+    assert [decision.gate for decision in at_specification.approvals] == [Gate.SPECIFICATION]
+    assert at_review is not None
+    assert [decision.gate for decision in at_review.approvals] == [Gate.REVIEW]
+
+
+def test_a_merged_request_resolves_the_stage_regardless_of_the_gate_mapping() -> None:
+    # The observed merge is the human decision on the review stage and is checked
+    # before the gate mapping (ADR-011 p.2), so it must not depend on the class.
+    change = _change_with_request(make_change())
+    merge_requests = FakeMergeRequests()
+    ref = asyncio.run(merge_requests.open(_open_request(change), idempotency_key="k1"))
+    asyncio.run(merge_requests.merge(ref, expected_sha=HEAD, idempotency_key="m1"))
+
+    observed = _provider(merge_requests, StubPipelines())(
+        _run_declaring(RiskClass.R2), Stage.REVIEW_VERIFICATION, change
+    )
+
+    assert observed is not None and observed.merged is True
+    assert gate_resolved(
+        observed,
+        stage=Stage.REVIEW_VERIFICATION,
+        route=Route.STANDARD,
+        risk_class=RiskClass.R2,
+    )

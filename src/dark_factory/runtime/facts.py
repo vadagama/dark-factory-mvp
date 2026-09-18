@@ -29,11 +29,13 @@ from dark_factory.changes.enums import (
     DecisionOutcome,
     DecisionSource,
     Gate,
+    RiskClass,
     Route,
     Stage,
 )
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import Change, ChangeRun
+from dark_factory.orchestration.policy.risk import effective_change_risk_class
 from dark_factory.orchestration.stages.gates import GateObservation
 from dark_factory.ports import (
     MergeRequestPort,
@@ -41,7 +43,7 @@ from dark_factory.ports import (
     PipelineStatus,
     ReviewObservation,
 )
-from dark_factory.rules.gates import HUMAN_GATES, required_gates
+from dark_factory.rules.gates import required_human_gates
 
 _APPROVAL_OUTCOMES: Final[Mapping[str, DecisionOutcome]] = {
     "approved": DecisionOutcome.APPROVED,
@@ -77,13 +79,18 @@ class ScmFactsProvider:
         """Observe the external facts ``change``'s waiting ``stage`` waits for.
 
         Synchronous because the driver is; the async ports are driven through
-        a private loop, like the executor's own seam. ``run`` and ``stage``
-        are part of the driver's protocol and are not consulted: the facts
-        depend on the change's request and its pipeline alone.
+        a private loop, like the executor's own seam. ``stage`` selects the gate
+        the reviews decide, and ``run`` contributes its route and its
+        *effective* risk class — declared, derived facts and the route floor
+        (ADR-023 p.2). The class matters here: a risk-widened human gate such as
+        ``planning`` on R2+ is only observable through it (T-043 increment 1).
         """
-        return asyncio.run(self._observe(change, stage))
+        risk_class = effective_change_risk_class(run.implementation_contract, run.route)
+        return asyncio.run(self._observe(change, stage, route=run.route, risk_class=risk_class))
 
-    async def _observe(self, change: Change, stage: Stage) -> GateObservation | None:
+    async def _observe(
+        self, change: Change, stage: Stage, *, route: Route, risk_class: RiskClass
+    ) -> GateObservation | None:
         ref = change.change_request
         if ref is None:
             ref = await self._merge_requests.find_existing(change.product, change.id)
@@ -97,26 +104,38 @@ class ScmFactsProvider:
             head_sha=observed.head_sha,
             merged=observed.status is ChangeRequestStatus.MERGED,
             pipeline_status=None if pipeline is None else pipeline.status,
-            approvals=self._approvals(observed.reviews, stage),
+            approvals=self._approvals(observed.reviews, stage, route=route, risk_class=risk_class),
         )
 
     @staticmethod
-    def _approvals(reviews: Sequence[ReviewObservation], stage: Stage) -> tuple[Decision, ...]:
+    def _approvals(
+        reviews: Sequence[ReviewObservation],
+        stage: Stage,
+        *,
+        route: Route,
+        risk_class: RiskClass,
+    ) -> tuple[Decision, ...]:
         """The reviews that are human decisions, version-bound to their SHA.
 
         ``approved`` and ``changes_requested`` decide the stage's human gate
-        (``rules.gates``): a review of the stage's change request is the human
-        decision on that stage — the specification review decides the
-        specification gate, the review/verification review decides the review
-        gate (the base human set has exactly these two). The merge policy
-        weighs the latest version-bound decision (ADR-009 p.7), so every
-        outcome is carried and the policy — not this seam — decides. A review
-        without a SHA or a submission instant binds to nothing and authorizes
-        nothing: it is dropped rather than guessed. The decision id is
-        namespaced by the provider review id, so re-observing the same review
-        yields the same decision (replay-dedup in the decision store).
+        (``rules.gates``); the gate is read off the *risk-aware* human set of the
+        triple ``(route, stage, risk_class)`` (ADR-023 p.3), so a review of the
+        stage's change request decides exactly the gate that wait is parked on:
+        the specification review decides the specification gate, the
+        review/verification review decides the merge gate, and the planning
+        review decides a risk-widened ``planning`` gate (human on R2+, T-043
+        increment 1). A stage without a required human gate (machine-gated
+        construction, ``planning`` on R1) falls back to the merge gate
+        ``Gate.REVIEW``: its reviews authorize nothing there and the pipeline
+        verdict alone resolves the wait. The merge policy weighs the latest
+        version-bound decision (ADR-009 p.7), so every outcome is carried and the
+        policy — not this seam — decides. A review without a SHA or a submission
+        instant binds to nothing and authorizes nothing: it is dropped rather
+        than guessed. The decision id is namespaced by the provider review id, so
+        re-observing the same review yields the same decision (replay-dedup in
+        the decision store).
         """
-        human = HUMAN_GATES & required_gates(Route.STANDARD, stage)
+        human = required_human_gates(route, stage, risk_class)
         gate = sorted(human, key=lambda item: item.value)[0] if human else Gate.REVIEW
         decisions: list[Decision] = []
         for review in reviews:
