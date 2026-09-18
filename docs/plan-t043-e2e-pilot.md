@@ -151,3 +151,15 @@ construction (нет Implementation Contract) — `blocked` (exit 20, LLM не �
 (construction). p03 — на human-гейте: CR `product-1#13` (CI 9/9) ждёт approving
 review + merge → advance → `release`. p05 — той же схемой; p06–p10 (R2) — упираются
 в блокер `solution`. Детали — `docs/t043-pilot-journal.md`.
+
+Прогресс (2026-09-18, оператор смержил #13/#14): p03 доведён до `release` — approving
+review на `db6c9f6` + merge `product-1#13`; `review_verification` закрылась наблюдаемым
+merge, все гейты кроме `release` — `passed`. `release` attempt 1 — `blocked`:
+`no skill is mapped to this stage (role 'ci_cd')` — в окружении нет блока
+`DARK_FACTORY_GITOPS_*` (промоушен-исполнитель не связывается) и драйвер не передаёт
+`--expected-digest`; плюс открыт вопрос модели промоушена (один digest vs две картинки
+пилота). p04: `advance` при `blocked`-planning перезапустил planning (attempt 2, LLM) и
+открыл continuation-CR `product-1#15` — гейт входа в construction атрибутируется
+исходящей стадии (`flow._stop`), retry переделывает её работу; обход — утверждать контракт
+до резолва перехода. Оператору: p04 — `advance-contract … --approve` до следующего
+`advance`; p03 — решение по GitOps-блоку/digest (или вынос release из объёма инкремента).
