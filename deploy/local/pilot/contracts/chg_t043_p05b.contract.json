@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p05b",
+  "scope": {
+    "in_scope": [
+      "backend/src/app/db.py"
+    ],
+    "out_of_scope": [
+      "backend/src/app/health.py",
+      "backend/tests/**",
+      "frontend/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "backend/src/app/db.py carries a module docstring and function docstrings explaining the engine/sessionmaker lifecycle and the per-request get_session dependency"
+    },
+    {
+      "id": "ac-2",
+      "description": "Documentation only: no behavior changes and the existing suite stays green"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision"
+  ],
+  "risk_class": "R1",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [],
+  "approval": null
+}
