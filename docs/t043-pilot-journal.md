@@ -3,6 +3,43 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — T043: фаза 3 — p06 standard доведён до plan-CR
+
+- **Что сделано** (`dark-factory`, после merge фикса B1): `advance chg_t043_p06` — planning
+  attempt 1 (роль product, ~49 с) опубликовал план и запарковался на `wait_for_ci`;
+  plan-CR `vadagama/dark-factory-product-1#18` — CI 9/9 зелёный, SHA `5bb8ca48…`,
+  `reviewDecision=REVIEW_REQUIRED`, `mergeable`.
+- **Состояние:** `chg_t043_p06` — `planning: waiting (attempts=1)`, `gate planning: pending`;
+  `specification: succeeded`, `gate specification: passed`.
+- **Порядок дальше (рецепт §7.2, решение D5a):** оператор
+  `advance-contract chg_t043_p06 contracts/chg_t043_p06.contract.json --approve` → approving review
+  на plan-CR #18 (**не merge**) → `advance` резолвит planning наблюдаемым `Gate.PLANNING` и уводит
+  ран в construction. Merge plan-CR недопустим: `merged` не создаёт решения → точка `solution`
+  останется незакрытой.
+- **Ждёт оператора также:** `chg_t043_p01b` (spec-CR #17) — approving review на spec-CR.
+
+## 2026-09-18 — T043: находки B6 (p04/p05 заклинены) и B7 (латентная: точка `ux` на R2+)
+
+- **B6 — merge plan-CR до резолва wait лишает ран пути резолва (наблюдено).**
+  `chg_t043_p04` (planning attempts=2) и `chg_t043_p05` (attempts=1) стоят `waiting`
+  (`next_action=wait_for_ci`); повторные `advance` → `outcome: replayed`, `persisted: false`.
+  Их plan-CR `product-1#15`/`#16` смержены (18:27:14Z/18:27:41Z), CI на них был зелёным (9/9).
+  Корень: планирование R1 — машинный гейт (`required_human_gates(STANDARD, PLANNING, R1)` пуст),
+  а `gate_resolved` при `merged=True` возвращает True только для `review_verification` или чисто
+  человеческой стадии — то есть merge CR **до** наблюдения зелёного пайплайна закрывает оба пути
+  резолва. Правильный порядок: зелёный CI → `advance` (резолв машинного гейта) → затем merge CR.
+  Следствие: p04/p05 недоводимы без снятия рана (TD-030) — класс p02. Восстановление через
+  пере-intake (новый `id`, как p01b) — вопрос решения оператора (D6).
+- **B7 — точка `ux` (R2+) недостижима, если контракт прикреплён до резолва specification
+  (выведено из кода; живьём в пилоте не воспроизводилось).** `_approvals` несёт **один** гейт на
+  ревью — первый по значению из `required_human_gates(...)`. Для стадии `specification` это
+  `specification` (`s` < `u`), поэтому ревью spec-CR никогда не даёт решения на гейте `ui`, а
+  `missing_control_points(STANDARD, SPECIFICATION, R2, …)` требует и точку `ux` →
+  `risk_escalation_violation` на границе specification→planning заблокирует ран. Пилотные R2-задачи
+  это не задевают: их контракт прикрепляется на гейте planning, когда specification уже пройден при
+  классе R0 (ниже R2 проверка точек не действует). Кандидат в TD: нести решение на каждый
+  человеческий гейт стадии (или на все требуемые точки), а не только на первый.
+
 ## 2026-09-18 — T043: W2 — p01 пере-intake'нут, B3 закрыт
 
 - **Причина:** `chg_t043_p01` был приколот к битой snapshot-ревизии (B3): спецификация не
