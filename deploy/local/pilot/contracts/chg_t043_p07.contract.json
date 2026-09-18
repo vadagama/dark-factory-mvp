@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p07",
+  "scope": {
+    "in_scope": [
+      "frontend/src/pages/AboutPage.tsx",
+      "frontend/src/pages/AboutPage.test.tsx",
+      "frontend/src/App.tsx"
+    ],
+    "out_of_scope": [
+      "backend/**",
+      "infrastructure/**",
+      "frontend/src/api/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "AboutPage renders a static 'About' section using at least the Card component and the StatusBadge pattern from @small/ui"
+    },
+    {
+      "id": "ac-2",
+      "description": "Imports come only from the @small/ui package root (UI policy gates)"
+    },
+    {
+      "id": "ac-3",
+      "description": "The page is reachable from App.tsx and a component test follows HealthPage.test.tsx patterns"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision",
+    "Frontend-only change; no API calls from the page"
+  ],
+  "risk_class": "R2",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [],
+  "approval": null
+}

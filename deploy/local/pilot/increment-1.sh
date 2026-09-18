@@ -21,6 +21,7 @@
 #   deploy/local/pilot/increment-1.sh intake
 #   deploy/local/pilot/increment-1.sh status [change-id]
 #   deploy/local/pilot/increment-1.sh advance <change-id>
+#   deploy/local/pilot/increment-1.sh advance-contract <change-id> <contract.json> [--approve]
 #   deploy/local/pilot/increment-1.sh advance-all
 #
 # Exit codes of `advance` mirror the CLI contract (cli.md): 0 advanced or
@@ -192,6 +193,30 @@ cmd_advance() {
   return "${rc}"
 }
 
+cmd_advance_contract() {
+  [ $# -ge 2 ] || die "usage: advance-contract <change-id> <contract.json> [--approve]"
+  local change_id="${1}" contract="${2}"
+  shift 2
+  local approve=""
+  if [ "${1:-}" = "--approve" ]; then
+    approve="--approve-contract"
+  fi
+  [ -f "${contract}" ] || die "contract file not found: ${contract}"
+  pilot_env
+  cmd_pg_forward start >/dev/null
+  local rc=0
+  uv run factory run advance --change-id "${change_id}" \
+    --contract-json "${contract}" ${approve} --json || rc=$?
+  case "${rc}" in
+    0) log "advance-contract ${change_id}: stage advanced with the contract attached (exit 0)" ;;
+    10) log "advance-contract ${change_id}: waiting - human gate or CI (exit 10)" ;;
+    20) log "advance-contract ${change_id}: blocked - needs operator attention (exit 20)" ;;
+    1) log "advance-contract ${change_id}: error (exit 1)" ;;
+    2) log "advance-contract ${change_id}: invalid input (contract or store) (exit 2)" ;;
+  esac
+  return "${rc}"
+}
+
 cmd_advance_all() {
   pilot_env
   cmd_pg_forward start >/dev/null
@@ -219,7 +244,7 @@ cmd_advance_all() {
 }
 
 main() {
-  [ $# -ge 1 ] || die "usage: increment-1.sh <command> [args]; commands: pg-forward, env-check, doctor, intake, status, advance, advance-all"
+  [ $# -ge 1 ] || die "usage: increment-1.sh <command> [args]; commands: pg-forward, env-check, doctor, intake, status, advance, advance-contract, advance-all"
   local command="${1}"
   shift
   case "${command}" in
@@ -229,6 +254,7 @@ main() {
     intake) cmd_intake "$@" ;;
     status) cmd_status "$@" ;;
     advance) cmd_advance "$@" ;;
+    advance-contract) cmd_advance_contract "$@" ;;
     advance-all) cmd_advance_all "$@" ;;
     *) die "unknown command: ${command}" ;;
   esac

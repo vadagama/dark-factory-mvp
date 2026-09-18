@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p04",
+  "scope": {
+    "in_scope": [
+      "backend/tests/unit/test_index.py"
+    ],
+    "out_of_scope": [
+      "backend/src/**",
+      "frontend/**",
+      "infrastructure/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "backend/tests/unit/test_index.py covers GET /: status 200 and a JSON body carrying the configured app_name and version"
+    },
+    {
+      "id": "ac-2",
+      "description": "The test reuses the style and fixtures of backend/tests/unit/test_health.py and the whole suite stays green"
+    },
+    {
+      "id": "ac-3",
+      "description": "No production code changes"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision"
+  ],
+  "risk_class": "R1",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [],
+  "approval": null
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p06",
+  "scope": {
+    "in_scope": [
+      "backend/src/app/",
+      "backend/tests/integration/test_version.py"
+    ],
+    "out_of_scope": [
+      "frontend/**",
+      "infrastructure/**",
+      "backend/migrations/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "GET /api/version returns {'app': <app_name>, 'version': <app.__version__>} without touching the database"
+    },
+    {
+      "id": "ac-2",
+      "description": "An integration test backend/tests/integration/test_version.py follows the pattern of backend/tests/integration/test_health_database.py"
+    },
+    {
+      "id": "ac-3",
+      "description": "The endpoint requires no authentication and no database connectivity; existing endpoints stay unchanged"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision"
+  ],
+  "risk_class": "R2",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [
+    "public_api"
+  ],
+  "approval": null
+}

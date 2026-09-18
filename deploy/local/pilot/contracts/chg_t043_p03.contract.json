@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p03",
+  "scope": {
+    "in_scope": [
+      "frontend/src/pages/HealthPage.tsx",
+      "frontend/src/pages/HealthPage.test.tsx"
+    ],
+    "out_of_scope": [
+      "backend/**",
+      "infrastructure/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "The h1 of HealthPage renders 'Service Status' in both the ready and error states instead of the repository name"
+    },
+    {
+      "id": "ac-2",
+      "description": "HealthPage.test.tsx expectations updated accordingly and the existing suite stays green"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision"
+  ],
+  "risk_class": "R1",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [],
+  "approval": null
+}
