@@ -155,6 +155,41 @@ def test_client_maps_unexpected_status_to_github_api_error() -> None:
         asyncio.run(client.get_json("/repos/unknown/repo/pulls"))
 
 
+def test_aclose_of_a_client_from_a_closed_loop_does_not_raise() -> None:
+    # The sync seams run one asyncio.run each; the entrypoint closes the runtime
+    # in a fresh loop afterwards. A pool bound to the closed loop must be dropped
+    # for the GC, not awaited - awaiting it crashes with "Event loop is closed"
+    # (T-043 increment 1) and fails the process after the work was already done.
+    emulator = GitHubApiEmulator()
+    client = GitHubClient(
+        GITHUB_API_BASE_URL,
+        StaticTokenProvider(GITHUB_INSTALLATION_TOKEN),
+        transport=emulator.transport(),
+    )
+    asyncio.run(client.get_json("/repos/small/pilot/git/ref/heads/main"))
+
+    asyncio.run(client.aclose())  # must not raise on the foreign loop
+
+    assert client._client is None  # the dropped-pool invariant
+
+
+def test_aclose_of_the_running_loop_client_closes_it() -> None:
+    emulator = GitHubApiEmulator()
+    client = GitHubClient(
+        GITHUB_API_BASE_URL,
+        StaticTokenProvider(GITHUB_INSTALLATION_TOKEN),
+        transport=emulator.transport(),
+    )
+
+    async def use_and_close() -> None:
+        await client.get_json("/repos/small/pilot/git/ref/heads/main")
+        await client.aclose()
+
+    asyncio.run(use_and_close())
+
+    assert client._client is None  # the closed-pool invariant
+
+
 def test_static_token_provider_never_refreshes() -> None:
     provider = StaticTokenProvider("fixed")
     assert asyncio.run(provider.token()) == "fixed"

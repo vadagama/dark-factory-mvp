@@ -110,11 +110,23 @@ class GitHubClient:
         return response
 
     async def aclose(self) -> None:
-        """Release the underlying connection pool (of the running loop)."""
-        if self._client is not None:
-            await self._client.aclose()
+        """Release the underlying connection pool (of the running loop).
+
+        A client left over from a previous, already closed loop is dropped for
+        the garbage collector instead: an awaited ``aclose`` would schedule back
+        onto that dead loop and crash with ``RuntimeError: Event loop is closed``
+        (found in T-043 increment 1 - the entrypoint closes the runtime in a
+        fresh ``asyncio.run`` after the sync seams ran their own loops).
+        """
+        if self._client is None:
+            return
+        if self._loop is not asyncio.get_running_loop():
             self._client = None
             self._loop = None
+            return
+        await self._client.aclose()
+        self._client = None
+        self._loop = None
 
     async def _send(
         self,
