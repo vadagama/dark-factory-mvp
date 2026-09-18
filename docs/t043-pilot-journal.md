@@ -3,6 +3,16 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: резолюция human-гейтов (PR #88), оператор смержил спеки
+
+- **Оператор выразил решения мержем всех 9 спек-CR (product-1#1–#9, без формальных review).** На момент проверки все PR `MERGED`, CI зелёный. Механизм такое решение не съедал — три дефекта доводки (PR #88, ветка `fix/t-043-human-gate-resolution`):
+  1. `gate_resolved` учитывал `merged` только для review-стадии — чисто human-gated стадия с мерженым CR оставалась в waiting навсегда (живой блокер). Теперь merge CR резолвит human-gated стадию (наблюдаемый human merge — сильнейшая форма решения, ADR-011 p.2).
+  2. `build_gate_resolution` гнал резолвнутую human-gated стадию через `_resolve_machine_gated`: machine-набор пуст → `unsatisfied=[specification]` → честный BLOCKED с нерелевантной FR-009-причиной. Даже review-approval ушёл бы в BLOCKED. Выделен `_resolve_human_gated`: SUCCESS + human-гейт PASSED, забинженный к observed head SHA (ADR-009 p.7).
+  3. Control points R2+ (`flow._escalation_reason`) биндинг к `result.input_revision` (base-коммит стадии), а approval забинжен к head CR — версии никогда не совпадают → p06–p10 (R2) остановились бы «risk class R2 obligations are not met». Теперь точка биндится к SHA, на котором прошёл human-гейт стадии (фолбэк — input_revision, прежнее поведение); unbound approval больше не закрывает точку при зафиксированном SHA (усиление по ADR-009 p.7, тесты сьюта flow-policy обновлены под bound-approvals).
+- **Проверки**: pytest 1799 passed/72 skipped (+7 новых тестов: truth-table резолва, builder для approval/merge, интеграция раннера merged/approval/replay, control-point binding), ruff check+format чисто, mypy чисто (176 файлов).
+- **След**: advance p02–p10 → раны в planning (стадия pending; следующий advance запускает агента планирования — LLM-расход). p01 — пере-intake после подтверждения резолва p02. Прим.: изменения доков в PR #88 — только журнал/план.
+- **Инфра-замечание**: read-инструменты сессии отдавали устаревший снимок файлов (конфликт с checkout'ом веток) — правки вносились python-патчерами с якорями «ровно одно вхождение», диф сверялся через `git diff` перед коммитом. Кандидат в tech-dept: надёжность инструментов чтения агента не относится к продукту, но паттерн «якорь + проверка дифа» стоит держать в AR-памяти.
+
 ## 2026-09-18 — Инкремент 1: доводка драйвера (PR #85/#86), матрица на гейтах
 
 - **Tool-ошибки роняли попытку агента (fixed, PR #86).** Модель читала ещё не созданный файл → `read_file` → `collect_evidence` поднимал `KeyError` → harness-адаптер переводил исключение в `ok=False` → попытка целиком `blocked` («harness did not produce a result»). p04 пережила 2 такие попытки (3–4), p08/p09 — застряли на attempt 1. → `_model_facing`-декоратор в `WorkspaceTools`: модель-корректируемые сбои (`KeyError`, `UnsafeWorkspacePath`, пустые argv/pattern) возвращаются модели текстом `error: ...` — по собственной политике модуля; неожиданные исключения продолжают пробрасываться. `resolve_path` не изменён — изоляция workspace прежняя. Evidence: p08/p09 после фикса с первой попытки опубликовали спеки (product-1#8, product-1#9).

@@ -36,7 +36,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, Literal, assert_never
 
-from dark_factory.changes.enums import RiskClass, RunStatus, Stage, StageStatus, StopOutcome
+from dark_factory.changes.enums import (
+    GateStatus,
+    RiskClass,
+    RunStatus,
+    Stage,
+    StageStatus,
+    StopOutcome,
+)
 from dark_factory.changes.findings import Decision, GateResult
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
@@ -74,7 +81,7 @@ from dark_factory.orchestration.policy.merge import (
     evaluate_merge,
 )
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
-from dark_factory.rules.gates import unsatisfied_gates
+from dark_factory.rules.gates import required_human_gates, unsatisfied_gates
 from dark_factory.rules.limits import continuation_violations, rework_violation
 
 type NextActionType = Literal[
@@ -491,9 +498,13 @@ def _escalation_reason(
     The obligations of a R2+ effective risk class — the route band and the
     human control points of the stage being left — are checked next (T-080,
     ADR-023 p.3/p.5); the check is produced here, by the engine, so a R2+
-    change never advances on a missing, unbound or stale approval. The
-    contract's autonomy budget bounds the stage attempts last (an iteration is
-    one ``StageRun`` occurrence).
+    change never advances on a missing, unbound or stale approval. A human
+    gate that passed on a resolved wait is bound to the revision its approval
+    authorizes — the observed head of the stage's change request (T-043
+    increment 1) — so the control points close on the approval bound to that
+    same revision; a gate without a passing SHA falls back to the stage's
+    input revision. The contract's autonomy budget bounds the stage attempts
+    last (an iteration is one ``StageRun`` occurrence).
     """
     declared = escalation_stop_reason(result.escalations)
     if declared is not None:
@@ -507,13 +518,30 @@ def _escalation_reason(
         route=run.route,
         stage=result.stage,
         decisions=human_decisions,
-        sha=result.input_revision,
+        sha=_control_point_sha(run, result),
     )
     if obligations is not None:
         # Rendered with its rule, as declared escalations are: the stop reason
         # names the gate that fired, not just the missing obligation.
         return f"{obligations.rule.value}: {obligations.reason}"
     return _autonomy_budget_reason(run)
+
+
+def _control_point_sha(run: ChangeRun, result: StageResult) -> str | None:
+    """The revision the stage's human control points are checked against.
+
+    A human gate that passed on a resolved wait carries the SHA its approval
+    was observed at — the head of the stage's change request (T-043 increment
+    1, ADR-009 p.7): the approval authorizes that revision, so the control
+    points of the stage being left bind to it. Gates that passed without a
+    SHA (or that are still pending on the deterministic path) fall back to the
+    stage's input revision — the historical binding.
+    """
+    human_gates = required_human_gates(run.route, result.stage, _effective_risk_class(run))
+    for gate_result in result.gate_results:
+        if gate_result.gate in human_gates and gate_result.status is GateStatus.PASSED:
+            return gate_result.sha or result.input_revision
+    return result.input_revision
 
 
 def _effective_risk_class(run: ChangeRun) -> RiskClass:

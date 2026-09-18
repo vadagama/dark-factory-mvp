@@ -953,6 +953,90 @@ def test_advance_run_replays_a_waiting_stage_on_an_unresolved_observation() -> N
     assert run.status is RunStatus.WAITING
 
 
+def test_advance_run_resolves_a_waiting_specification_stage_on_a_merged_request() -> None:
+    """The observed merge of the spec request completes the human gate (T-043 increment 1).
+
+    A purely human-gated stage parks on ``wait_for_input``; the human merges
+    the stage's change request — the strongest form of the decision — and the
+    next advance resumes the same attempt into planning.
+    """
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=True, pipeline_status="success"))
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return f"scm-{stage.value}"
+
+    advance = _advance(
+        store, executor=_waiting(), change=change, gate_facts=facts, revision_of=revision_of
+    )
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.PLANNING
+    assert advance.result.attempt_number == 1
+    assert advance.result.input_revision == REVISION
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert isinstance(advance.result.next_action, ExecuteStageAction)
+    assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+    ]
+    assert facts.calls == [Stage.SPECIFICATION, Stage.SPECIFICATION]
+    assert store.created_stages == [
+        StagePlacement(stage=Stage.PLANNING, input_revision="scm-planning")
+    ]
+    assert store.history == [advance.result]
+    assert run.status is RunStatus.RUNNING
+    assert run.stages[0].status is StageStatus.SUCCEEDED
+    assert run.stages[1].status is StageStatus.PENDING
+
+
+def test_advance_run_resolves_a_waiting_specification_stage_on_an_approval() -> None:
+    """An approved, version-bound review of the spec request resolves the human gate."""
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    approval = make_merge_approval(sha=HEAD).model_copy(update={"gate": Gate.SPECIFICATION})
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD, merged=False, pipeline_status="success", approvals=(approval,)
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.PLANNING
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+    ]
+    assert run.stages[1].status is StageStatus.PENDING
+
+
+def test_advance_run_keeps_a_merged_machine_gated_stage_waiting() -> None:
+    """A merge observation resolves only the human-gated stages and the review stage."""
+    run = _run_at_construction_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.CONSTRUCTION))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=True, pipeline_status="success"))
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result.status is StageStatus.WAITING
+    assert store.history == [advance.result]
+
+
 def test_advance_run_resolves_a_waiting_construction_stage_on_pipeline_success() -> None:
     """A green pipeline at the head SHA resumes the same attempt into the review stage."""
     run = _run_at_construction_waiting()

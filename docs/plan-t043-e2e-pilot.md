@@ -111,3 +111,14 @@ p07→#5, p08→#8, p09→#9, p10→#6 (CI продукта зелёный). `ch
 ран приколот к битому snapshot-digest (создан до PR #85), снимается
 пере-intake после первого решения оператора. Решения по гейтам —
 оператор (ADR-011/ADR-018); детали — `docs/t043-pilot-journal.md`.
+
+Прогресс (2026-09-18, PR #88): оператор смержил все 9 спек-CR
+(product-1#1–#9, без формальных review) — решение выражено мержем. Механизм
+резолюции доведён до этого решения (3 дефекта): merge CR резолвит
+human-gated стадию (`gate_resolved`); резолвнутая human-gated стадия строит
+SUCCESS с human-гейтом PASSED на observed head SHA (`_resolve_human_gated`);
+control points R2+ биндятся к SHA, на котором прошёл human-гейт стадии —
+approval мержа закрывает точку `problem` (биндинг к head CR, не к
+input_revision). След: advance p02–p10 → planning; p01 — пере-intake после
+подтверждения резолва p02. Следующий advance каждой стадии planning
+запускает агента (LLM-расход). Детали — `docs/t043-pilot-journal.md`.

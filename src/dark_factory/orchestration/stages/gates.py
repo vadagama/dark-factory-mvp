@@ -67,6 +67,20 @@ _PIPELINE_FAILURES: Final[frozenset[str]] = frozenset({"failure", "canceled"})
 """The pipeline verdicts that fail every machine gate of the stage."""
 
 
+def _human_gates(route: Route, stage: Stage) -> frozenset[Gate]:
+    """The human gates among the required gates of ``(route, stage)`` (rules.gates)."""
+    return required_gates(route, stage) & HUMAN_GATES
+
+
+def _is_purely_human_gated(route: Route, stage: Stage) -> bool:
+    """Whether every required gate of ``(route, stage)`` is a human one.
+
+    A purely human-gated stage has an empty machine gate set: its completion is
+    a human decision, never a pipeline verdict (T-043 increment 1).
+    """
+    return bool(_human_gates(route, stage)) and not (required_gates(route, stage) - HUMAN_GATES)
+
+
 @dataclass(frozen=True, slots=True)
 class GateObservation:
     """Provider facts observed for one waiting stage attempt (T-092 S3).
@@ -122,12 +136,15 @@ def gate_resolved(observation: GateObservation | None, *, stage: Stage, route: R
     if stage is Stage.RELEASE:
         return False
     if observation.merged:
-        return stage is Stage.REVIEW_VERIFICATION
-    human_gates = required_gates(route, stage) & HUMAN_GATES
-    if human_gates and not (required_gates(route, stage) - HUMAN_GATES):
-        # A purely human-gated stage: only a human decision resolves it.
+        # The observed human merge outranks a pipeline verdict (ADR-011 p.2):
+        # it completes the review stage through the merge policy, and it is
+        # the human decision on a purely human-gated stage — the merge of the
+        # stage's change request approves the stage (T-043 increment 1).
+        return stage is Stage.REVIEW_VERIFICATION or _is_purely_human_gated(route, stage)
+    if _is_purely_human_gated(route, stage):
         return any(
-            decision.outcome is DecisionOutcome.APPROVED and decision.gate in human_gates
+            decision.outcome is DecisionOutcome.APPROVED
+            and decision.gate in _human_gates(route, stage)
             for decision in observation.approvals
         )
     if observation.pipeline_status == _PIPELINE_SUCCESS:
@@ -185,6 +202,15 @@ def build_gate_resolution(
             history=history,
             now=now,
         )
+    if _is_purely_human_gated(run.route, stage):
+        return _resolve_human_gated(
+            run=run,
+            stage=stage,
+            observation=observation,
+            input_revision=input_revision,
+            attempt_number=attempt_number,
+            now=now,
+        )
     return _resolve_machine_gated(
         run=run,
         stage=stage,
@@ -193,6 +219,60 @@ def build_gate_resolution(
         attempt_number=attempt_number,
         now=now,
     )
+
+
+def _resolve_human_gated(
+    *,
+    run: ChangeRun,
+    stage: Stage,
+    observation: GateObservation,
+    input_revision: str,
+    attempt_number: int,
+    now: datetime,
+) -> GateResolution:
+    """Resolve a stage whose completion is a human decision (T-043 increment 1).
+
+    The wait resolved on the human approval or the observed merge of the
+    stage's change request, so the human gate passes version-bound to the
+    observed head SHA — the revision the decision authorizes (ADR-009 p.7).
+    The flow then advances past the stage; its R2+ control-point check weighs
+    the same observed approvals against this SHA.
+    """
+    gate = sorted(_human_gates(run.route, stage), key=lambda item: item.value)[0]
+    successor = route_profile(run.route).next_stage(stage)
+    if successor is None:  # pragma: no cover - a human-gated stage always has a successor
+        raise ValueError(f"stage {stage.value} on route {run.route.value} has no successor")
+    if observation.merged:
+        reason = (
+            f"change request observed merged at {observation.head_sha}"
+            if observation.head_sha is not None
+            else "change request observed merged"
+        )
+    else:
+        reason = (
+            f"human approval observed at {observation.head_sha}"
+            if observation.head_sha is not None
+            else "human approval observed on the change request"
+        )
+    result = StageResult(
+        stage=stage,
+        run_id=run.id,
+        change_id=run.change_id,
+        attempt_number=attempt_number,
+        input_revision=input_revision,
+        status=StageStatus.SUCCEEDED,
+        next_action=ExecuteStageAction(next_stage=successor, reason=reason),
+        gate_results=[
+            GateResult(
+                gate=gate,
+                status=GateStatus.PASSED,
+                sha=observation.head_sha,
+                summary=reason,
+            )
+        ],
+        produced_at=now,
+    )
+    return GateResolution(result=result, merge_context=None)
 
 
 def _resolve_machine_gated(
