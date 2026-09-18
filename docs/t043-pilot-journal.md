@@ -33,6 +33,37 @@
 
 ## 2026-09-18 — Инкремент 1: прикрепление Implementation Contract через `run advance --contract-json` (вариант 1, закрыт)
 
+- **Живой прогон p02 после одобрения оператора (контракт attach+approve → advance).** Контракт
+  прикреплён и утверждён (БД: `implementation_contract` не NULL, `approval.approved_by=product`);
+  повторная передача того же файла с `--approve` честно отказана
+  (`already carries a different implementation contract` — `decided_at` отличается), дальше
+  продвижение идёт обычным `advance` без флага.
+- **Маршрут p02**: planning attempt 3 (ReadTimeout на attempt 2 — разовый сбой LLM) → PR
+  `product-1#12` (коммит `f61f247a`, CI зелёный) → гейты `code`+`ui` passed → **construction
+  attempt 1**: агент изменил ровно in-scope файлы контракта (`frontend/src/pages/HealthPage.tsx`
+  +3/-1, `HealthPage.test.tsx` +64/-3), PR #12, revision `f61f247a`, usage 313,722 токена →
+  стадия `waiting` (CI) → CI зелёный → construction `succeeded`, run → `review_verification`.
+- **Блокер дальнейшего e2e (новый, честная находка)**: `review_verification` attempt 1 —
+  `blocked`, reason «the attempt produced no changes to publish» (агент роли quality отработал,
+  298,529 токенов). Причина в коде: `stages/agent.py::_publish` возвращает `None`, когда
+  `collect_changes(workspace)` пуст, а `checks.py` (`_STAGES_REQUIRING_CHANGE_REQUEST`)
+  требует change request для review-стадии (её завершение — через `merge`, ADR-005 p.2,
+  ADR-011). Ревью уже сделанного изменения файловых изменений не порождает → у стадии нет
+  пути опубликовать вердикт. Все 10 ранов упрутся в это место. Нужно решение: привязывать
+  change request стадии к PR, который ревьюится (артефакт предыдущей стадии), или считать
+  вердикт артефактом без публикации commit'а.
+- **Находка (политика гейтов)**: у смешанной стадии construction (`code` machine + `ui` human,
+  R1+standard) **оба** гейта прошли по `pipeline success at f61f247a…` — machine-путь
+  (`stages/gates.py::_resolve_machine_gated`) резолвит и human-гейт стадии. Human-вердикт
+  по UI на пилоте фактически не требуется; подтвердить как решение или разделить резолюцию
+  (purely-human → только version-bound approval, mixed → human-часть отдельно).
+- **Находка (метрики, FR-024)**: при резолюции waiting-чекпоинта `stage_result` той же попытки
+  **перезаписывается** (`supersede`, ADR-006 p.8), и usage ожидавшего результата теряется:
+  construction attempt 1 после резолюции несёт `usage = NULL` (313,722 токена не учтены в
+  store; сумма по p02 = 343,515 вместо ~657k). Кандидат фикса — переносить usage/артефакты
+  чекпоинта в superseding-результат.
+
+
 - **Реализация выбранного оператором варианта 1** — CLI-путь прикрепления контракта:
   - `RunStore.attach_contract(run_id, contract)` (state/run_store.py): запуск без
     контракта записывает переданный; идентичный — no-op; **другой** — отказ
