@@ -3,6 +3,42 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: решения по хендоффу (p02, p03, окружение)
+
+- **#94 (`docs/t-043-review-gate-finding`) смержен** оператором после зелёного CI —
+  протокол «approving review → merge» зафиксирован в журнале, плане и ADR-029.
+  Merge выполнен человеком (ADR-011), агенты не мержат; этот же протокол
+  распространяется на CR остальных задач (p02…p10).
+- **Зависший ран p02 — решение: оставить в `waiting` как есть.** Снятие/отзыв не
+  поддерживается: операторской cancel/withdraw-команды нет (`factory run` знает
+  только `advance`/`status`/`publish`, `cli/main.py`), а ожидающий run — легитимное
+  паркованное состояние; снятие как отдельный переход — территория reconciler
+  (ADR-006), не пилотного фикса. `chg_t043_p02` уже квалифицирован как невалидный
+  проход (merge без version-bound approving review); пере-запуск ради продукта не
+  нужен. Ограничение зафиксировано как **TD-030**.
+- **p03 — контракт готов к утверждению оператором.** Черновик
+  `deploy/local/pilot/contracts/chg_t043_p03.contract.json` сверен с задачей
+  (R1, `in_scope` = `frontend/src/pages/HealthPage.tsx` + тест, 2 AC) и валиден по
+  схеме `ImplementationContract`; все девять черновиков (p02–p10) валидны
+  (read-only сверка, `approval: null`). Прикрепление и утверждение — одно действие
+  человека (ADR-018 п.3; флаг `--approve-contract` агент не ставит никогда):
+  `deploy/local/pilot/increment-1.sh advance-contract chg_t043_p03 \
+  deploy/local/pilot/contracts/chg_t043_p03.contract.json --approve`, затем
+  `advance chg_t043_p03` (construction, LLM-расход).
+- **Окружение: защита `main` продуктового репо применена** (было: 404 «Branch not
+  protected»). Настройка по образцу уже принятой для `dark-factory-gitops`
+  (TD-026): required pull request + ≥1 approving review, запрет force-push и
+  удаления, `enforce_admins=false` (на Free «Include administrators» недоступен —
+  оговорка TD-026 в силе). Дополнительно `dismiss_stale_reviews=true` — прямое
+  требование T-032/`rules/merge_protection.py` (ADR-009 п.7) и ровно смысл нового
+  протокола «approval привязан к SHA». Намеренно отложены `required_status_checks`
+  (нужны точные имена check'ов продуктового CI) и squash-only (меняет семантику
+  истории merge'ей пилота) — по плану погашения TD-026.
+- **Наблюдение `protection_violations` (T-032)** по-прежнему не подключено к
+  адаптеру (T-030): защита применена на провайдере, но фабрика её не наблюдает.
+- **Открытая тема метрик (FR-024)**: потеря usage при `supersede` ожидающего
+  чекпоинта (см. ниже) остаётся нерешённой и в этом прогоне не измерялась.
+
 ## 2026-09-18 — Инкремент 1: p02 не закрывается наблюдаемым merge — нужен approving review на CR
 
 - **Факт.** После merge `vadagama/dark-factory-product-1#12` (merge `0e15cad`, head
