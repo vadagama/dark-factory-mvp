@@ -101,6 +101,15 @@ SC-001…SC-008 (SC-004…SC-006 — CLI/Console/roll back — покрываю�
 `docs/t043-pilot-journal.md`. Гейт — решение оператора; `chg_t043_p01`
 пере-intake после закрытия гейта p02 (run до фикса приколот к digest).
 
+Прогресс (2026-09-18, MR #91): контур гейтов дожат до construction. planning p02
+резолвнута зелёным CI continuation-PR product-1#10 (PLANNING PASSED на `c96a8b7c`),
+planning p03 — через continuation-PR product-1#11, открытый автоматически фиксом
+`fix/t-043-publish-continues-after-merge` (публикация после смерженного спек-CR
+открывает свежий CR). Оба рана остановлены гейтом входа в construction: нет пути
+прикрепления Implementation Contract к рану (T-016 wiring) — решение оператора,
+варианты в `docs/t043-pilot-journal.md`. p04–p10 — planning по той же схеме
+(advance → CI → advance); p01 — пере-intake. Детали — `docs/t043-pilot-journal.md`.
+
 Прогресс (2026-09-18, PR #86): доводка продолжена — tool-ошибки порта
 (`KeyError` отсутствующего файла, отклонённый путь) больше не роняют
 попытку: модель получает текст `error: ...` (`WorkspaceTools._model_facing`);
