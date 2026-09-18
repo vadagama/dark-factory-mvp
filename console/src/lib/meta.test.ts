@@ -23,7 +23,7 @@ describe("meta snapshot", () => {
   it("reflects the committed defaults (with_approvals, squash-only)", () => {
     expect(meta.schema_version).toBe(1);
     expect(meta.factory_mode.mode).toBe("with_approvals");
-    expect(meta.factory_mode.human_gates).toEqual(["specification", "review"]);
+    expect(meta.factory_mode.human_gates).toEqual(["specification", "ui", "review"]);
     expect(meta.factory_mode.auto_merge_risk_classes).toEqual([]);
     expect(meta.limits.max_rework_rounds).toBe(3);
     expect(meta.profiles.map((profile) => profile.role)).toEqual([

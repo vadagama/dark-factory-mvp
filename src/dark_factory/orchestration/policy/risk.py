@@ -16,7 +16,9 @@ T-080 (ADR-023) adds the control-point matrix on top: a control point is a named
 human decision bound to an existing ``(stage, gate)`` pair, mandatory exactly
 when its gate is required *and* human for the triple ``(route, stage, risk)``.
 The matrix follows from ``rules.gates.required_human_gates`` — it is not
-maintained as a second table, so it cannot drift from the gate policy.
+maintained as a second table, so it cannot drift from the gate policy. ADR-028
+p.2 moves the ``ux`` point with its gate to the design phase: it is bound to
+``(specification, ui)``, because the human confirms UX/UI before construction.
 """
 
 from collections.abc import Mapping, Sequence
@@ -160,12 +162,15 @@ class ControlPointBinding:
 CONTROL_POINT_BINDING: Final[Mapping[ControlPoint, ControlPointBinding]] = {
     ControlPoint.PROBLEM: ControlPointBinding(stage=Stage.SPECIFICATION, gate=Gate.SPECIFICATION),
     ControlPoint.SOLUTION: ControlPointBinding(stage=Stage.PLANNING, gate=Gate.PLANNING),
-    ControlPoint.UX: ControlPointBinding(stage=Stage.CONSTRUCTION, gate=Gate.UI),
+    # ADR-028 p.2: the UX/UI confirmation is a design-phase decision, so the
+    # point follows the ``ui`` gate to the specification stage.
+    ControlPoint.UX: ControlPointBinding(stage=Stage.SPECIFICATION, gate=Gate.UI),
     ControlPoint.DISCOVERY_RELEASE: ControlPointBinding(
         stage=Stage.REVIEW_VERIFICATION, gate=Gate.REVIEW
     ),
 }
-"""Bindings of the four ADR-023 p.4 control points to existing gates."""
+"""Bindings of the four ADR-023 p.4 control points to existing gates (``ux`` on specification,
+ADR-028 p.2)."""
 
 
 def required_control_points(
@@ -176,8 +181,9 @@ def required_control_points(
     The single rule of the matrix: a point is mandatory exactly when its gate is
     a required human gate of the triple. ``problem`` and ``discovery_release``
     therefore hold for every class (they are the ADR-018 base human gates), while
-    ``solution``/``ux`` appear only when the class (and the route) make their
-    gate human.
+    ``solution`` appears only when the class (and the route) make its gate human
+    and ``ux`` whenever the route requires ``ui`` — a base human gate since
+    ADR-028 p.2, so it holds on every route that requires it.
     """
     human_gates = required_human_gates(route, stage, risk_class)
     return frozenset(

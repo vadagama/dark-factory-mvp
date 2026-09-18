@@ -487,7 +487,8 @@ def test_advance_run_advances_exactly_one_stage_and_keeps_running() -> None:
         executor=_executor(
             status=StageStatus.SUCCEEDED,
             next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
-            gate_results=[_satisfied(Gate.SPECIFICATION)],
+            # The design stage requires both human gates (ADR-028 p.1).
+            gate_results=[_satisfied(Gate.SPECIFICATION), _satisfied(Gate.UI)],
         ),
     )
 
@@ -571,7 +572,8 @@ def test_advance_run_builds_the_context_from_the_run_and_the_snapshot() -> None:
     assert context.run_id == run.id
     assert context.input_revision == REVISION
     assert context.budget is run.budget
-    assert context.required_gates == frozenset({Gate.SPECIFICATION})
+    # The design stage carries the UI gate since ADR-028 p.1.
+    assert context.required_gates == frozenset({Gate.SPECIFICATION, Gate.UI})
 
 
 def test_advance_run_opened_the_attempt_of_the_operation_and_leased_the_run() -> None:
@@ -626,7 +628,7 @@ def test_advance_run_declares_the_successor_stage_the_decision_created() -> None
         executor=_executor(
             status=StageStatus.SUCCEEDED,
             next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
-            gate_results=[_satisfied(Gate.SPECIFICATION)],
+            gate_results=[_satisfied(Gate.SPECIFICATION), _satisfied(Gate.UI)],
         ),
     )
 
@@ -899,7 +901,7 @@ def test_advance_run_pins_the_created_successor_with_the_resolver() -> None:
         executor=_executor(
             status=StageStatus.SUCCEEDED,
             next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
-            gate_results=[_satisfied(Gate.SPECIFICATION)],
+            gate_results=[_satisfied(Gate.SPECIFICATION), _satisfied(Gate.UI)],
         ),
         revision_of=revision_of,
         lease_ttl=TTL,
@@ -992,7 +994,8 @@ def test_advance_run_resolves_a_waiting_specification_stage_on_a_merged_request(
     assert advance.result.status is StageStatus.SUCCEEDED
     assert isinstance(advance.result.next_action, ExecuteStageAction)
     assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
-        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD),
+        (Gate.UI, GateStatus.PASSED, HEAD),
     ]
     assert facts.calls == [Stage.SPECIFICATION, Stage.SPECIFICATION]
     assert store.created_stages == [
@@ -1026,7 +1029,8 @@ def test_advance_run_resolves_a_waiting_specification_stage_on_an_approval() -> 
     assert advance.decision.next_stage is Stage.PLANNING
     assert advance.result.status is StageStatus.SUCCEEDED
     assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
-        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD),
+        (Gate.UI, GateStatus.PASSED, HEAD),
     ]
     assert run.stages[1].status is StageStatus.PENDING
 
@@ -1073,7 +1077,6 @@ def test_advance_run_resolves_a_waiting_construction_stage_on_pipeline_success()
     assert isinstance(advance.result.next_action, ExecuteStageAction)
     assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
         (Gate.CODE, GateStatus.PASSED, HEAD),
-        (Gate.UI, GateStatus.PASSED, HEAD),
     ]
     # The facts are read twice per resumed advance: once before the lease, once
     # re-derived under it (ADR-024, условие 2).
@@ -1182,10 +1185,9 @@ def test_advance_run_resolves_a_pipeline_failure_into_a_rework_round() -> None:
     assert "failure" in rework.reason
     assert [item.origin for item in advance.result.findings] == [
         FindingOrigin.CI,
-        FindingOrigin.CI,
     ]
     assert all(item.severity is FindingSeverity.BLOCKER for item in advance.result.findings)
-    assert [item.category for item in advance.result.findings] == ["code", "ui"]
+    assert [item.category for item in advance.result.findings] == ["code"]
     # The rework handler spent the round and re-enters construction: the same
     # stage-run occurrence ends FAILED while the run keeps running.
     assert run.budget.used_rework_rounds == 1
@@ -1307,7 +1309,7 @@ def test_advance_run_replays_when_a_concurrent_writer_resolved_the_wait() -> Non
         input_revision=REVISION,
         status=StageStatus.SUCCEEDED,
         next_action=ExecuteStageAction(next_stage=Stage.REVIEW_VERIFICATION),
-        gate_results=[_satisfied(Gate.CODE), _satisfied(Gate.UI)],
+        gate_results=[_satisfied(Gate.CODE)],
         produced_at=NOW,
     )
     store = FakeStore(run=run, conflict_result=resolved)
@@ -1364,7 +1366,7 @@ def test_advance_run_does_not_observe_facts_without_a_waiting_checkpoint() -> No
             input_revision=REVISION,
             status=StageStatus.SUCCEEDED,
             next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
-            gate_results=[_satisfied(Gate.SPECIFICATION)],
+            gate_results=[_satisfied(Gate.SPECIFICATION), _satisfied(Gate.UI)],
             produced_at=NOW,
         )
     )

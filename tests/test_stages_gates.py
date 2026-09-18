@@ -11,6 +11,7 @@ from dark_factory.changes.enums import (
     FindingStatus,
     Gate,
     GateStatus,
+    RiskClass,
     Route,
     Stage,
     StageStatus,
@@ -40,6 +41,7 @@ from tests.changes_factories import (
     NOW,
     make_change,
     make_change_request,
+    make_contract,
     make_merge_approval,
     make_run,
 )
@@ -91,7 +93,9 @@ def _build(
 
 def test_nothing_observed_never_resolves_the_wait() -> None:
     for stage in (Stage.CONSTRUCTION, Stage.REVIEW_VERIFICATION):
-        assert gate_resolved(None, stage=stage, route=Route.STANDARD) is False
+        assert (
+            gate_resolved(None, stage=stage, route=Route.STANDARD, risk_class=RiskClass.R1) is False
+        )
 
 
 @pytest.mark.parametrize(
@@ -115,10 +119,19 @@ def test_gate_resolved_truth_table(
     # A green pipeline completes a machine-gated stage; the review stage
     # completes only through the merge (flow.FLOW_TRANSITIONS).
     assert (
-        gate_resolved(observation, stage=Stage.CONSTRUCTION, route=Route.STANDARD) is construction
+        gate_resolved(
+            observation, stage=Stage.CONSTRUCTION, route=Route.STANDARD, risk_class=RiskClass.R1
+        )
+        is construction
     )
     assert (
-        gate_resolved(observation, stage=Stage.REVIEW_VERIFICATION, route=Route.STANDARD) is review
+        gate_resolved(
+            observation,
+            stage=Stage.REVIEW_VERIFICATION,
+            route=Route.STANDARD,
+            risk_class=RiskClass.R1,
+        )
+        is review
     )
 
 
@@ -136,15 +149,60 @@ def test_the_release_wait_never_resolves_from_pipeline_observations(
     # Release resolves only through release facts, never pipeline observations.
     observation = GateObservation(head_sha=HEAD, merged=merged, pipeline_status=pipeline_status)
 
-    assert gate_resolved(observation, stage=Stage.RELEASE, route=Route.STANDARD) is False
+    assert (
+        gate_resolved(
+            observation, stage=Stage.RELEASE, route=Route.STANDARD, risk_class=RiskClass.R1
+        )
+        is False
+    )
 
 
 def test_a_purely_human_gated_stage_never_resolves_on_the_pipeline() -> None:
-    # Specification's only gate is the human one: a green pipeline must not
-    # complete the human decision for the flow (T-043 increment 1 finding).
+    # Specification requires ``specification`` and (non-quick) ``ui`` — both
+    # human: a green pipeline must not complete the human decision for the flow
+    # (T-043 increment 1 finding, ADR-028 p.2).
     observation = GateObservation(head_sha=HEAD, merged=False, pipeline_status="success")
 
-    assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is False
+    assert (
+        gate_resolved(
+            observation, stage=Stage.SPECIFICATION, route=Route.STANDARD, risk_class=RiskClass.R1
+        )
+        is False
+    )
+
+
+def test_a_risk_widened_human_gate_is_never_resolved_by_the_pipeline() -> None:
+    """A R2 ``planning`` gate is human, so a green pipeline parks the stage (ADR-028 p.2).
+
+    This is the leak the pilot found: the pipeline verdict satisfied a
+    risk-widened human gate instead of waiting for the human decision.
+    """
+    run = make_run()
+    run.implementation_contract = make_contract().model_copy(update={"risk_class": RiskClass.R2})
+    observation = GateObservation(head_sha=HEAD, merged=False, pipeline_status="success")
+
+    assert (
+        gate_resolved(
+            observation, stage=Stage.PLANNING, route=Route.STANDARD, risk_class=RiskClass.R2
+        )
+        is False
+    )
+    approval = make_merge_approval(sha=HEAD).model_copy(update={"gate": Gate.PLANNING})
+    approved = GateObservation(
+        head_sha=HEAD, merged=False, pipeline_status="success", approvals=(approval,)
+    )
+    assert (
+        gate_resolved(approved, stage=Stage.PLANNING, route=Route.STANDARD, risk_class=RiskClass.R2)
+        is True
+    )
+    # The same observation on R1 leaves ``planning`` a machine gate: it resolves
+    # on the pipeline, exactly as before ADR-028.
+    assert (
+        gate_resolved(
+            observation, stage=Stage.PLANNING, route=Route.STANDARD, risk_class=RiskClass.R1
+        )
+        is True
+    )
 
 
 def test_an_observed_human_approval_resolves_the_human_gated_stage() -> None:
@@ -156,14 +214,24 @@ def test_an_observed_human_approval_resolves_the_human_gated_stage() -> None:
         approvals=(approval,),
     )
 
-    assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is True
+    assert (
+        gate_resolved(
+            observation, stage=Stage.SPECIFICATION, route=Route.STANDARD, risk_class=RiskClass.R1
+        )
+        is True
+    )
 
 
 def test_an_observed_merge_resolves_the_human_gated_stage() -> None:
     """The merge of the stage's change request is the human decision on the stage."""
     observation = GateObservation(head_sha=HEAD, merged=True, pipeline_status="success")
 
-    assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is True
+    assert (
+        gate_resolved(
+            observation, stage=Stage.SPECIFICATION, route=Route.STANDARD, risk_class=RiskClass.R1
+        )
+        is True
+    )
 
 
 def test_human_gated_resolution_builds_the_success_result_from_an_approval() -> None:
@@ -185,7 +253,8 @@ def test_human_gated_resolution_builds_the_success_result_from_an_approval() -> 
     )
     assert resolution.merge_context is None
     assert [(item.gate, item.status, item.sha) for item in result.gate_results] == [
-        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD),
+        (Gate.UI, GateStatus.PASSED, HEAD),
     ]
     assert result.attempt_number == 1
     assert result.input_revision == REVISION
@@ -202,7 +271,8 @@ def test_human_gated_resolution_builds_the_success_result_from_a_merge() -> None
     assert result.status is StageStatus.SUCCEEDED
     assert isinstance(result.next_action, ExecuteStageAction)
     assert [(item.gate, item.status, item.sha) for item in result.gate_results] == [
-        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD),
+        (Gate.UI, GateStatus.PASSED, HEAD),
     ]
 
 
@@ -221,10 +291,12 @@ def test_construction_resolution_passes_the_machine_gates_at_the_head_sha() -> N
         Stage.CONSTRUCTION
     )
     assert resolution.merge_context is None
+    # ``ui`` lives on the specification stage since ADR-028 p.1, so the pipeline
+    # maps construction's machine gate ``code`` alone — never the human UI gate.
     assert [(item.gate, item.status, item.sha) for item in result.gate_results] == [
         (Gate.CODE, GateStatus.PASSED, HEAD),
-        (Gate.UI, GateStatus.PASSED, HEAD),
     ]
+    assert all(item.gate is not Gate.UI for item in result.gate_results)
     # The result carries the waiting attempt's identity verbatim (ADR-006 p.8).
     assert result.attempt_number == 1
     assert result.input_revision == REVISION
@@ -245,7 +317,6 @@ def test_construction_resolution_turns_a_failed_pipeline_into_a_rework_round() -
     assert "failure" in rework.reason
     assert [(item.id, item.origin, item.severity, item.category) for item in result.findings] == [
         ("ci-pipeline:code", FindingOrigin.CI, FindingSeverity.BLOCKER, "code"),
-        ("ci-pipeline:ui", FindingOrigin.CI, FindingSeverity.BLOCKER, "ui"),
     ]
     assert all(
         item.status is GateStatus.FAILED and item.sha == HEAD for item in result.gate_results

@@ -106,7 +106,12 @@ def _park_on_wait(
 def _resolution_result(
     run_id: str, change: Change, revision: str, *, attempt_number: int
 ) -> StageResult:
-    """The final outcome of a parked attempt: a green specification gate (FR-009)."""
+    """The final outcome of a parked attempt: the design stage's human gates (FR-009).
+
+    The specification stage carries two human gates on the standard route
+    (`specification` and `ui`, ADR-028): the human approval of the design
+    covers both, so a resolved attempt records both as passed at the same SHA.
+    """
     return StageResult(
         stage=Stage.SPECIFICATION,
         run_id=run_id,
@@ -115,7 +120,10 @@ def _resolution_result(
         input_revision=revision,
         status=StageStatus.SUCCEEDED,
         next_action=ExecuteStageAction(next_stage=Stage.PLANNING, reason="wait resolved"),
-        gate_results=[GateResult(gate=Gate.SPECIFICATION, status=GateStatus.PASSED, sha=revision)],
+        gate_results=[
+            GateResult(gate=Gate.SPECIFICATION, status=GateStatus.PASSED, sha=revision),
+            GateResult(gate=Gate.UI, status=GateStatus.PASSED, sha=revision),
+        ],
         produced_at=NOW,
     )
 

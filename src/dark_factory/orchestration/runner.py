@@ -61,7 +61,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from dark_factory.changes.enums import RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import RiskClass, RunStatus, Stage, StageStatus
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
     RETRYABLE_STAGE_STATUSES,
@@ -75,6 +75,7 @@ from dark_factory.changes.run import (
 from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import FlowDecision, apply_result
 from dark_factory.orchestration.policy.merge import MergeRequestContext
+from dark_factory.orchestration.policy.risk import effective_change_risk_class
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 from dark_factory.orchestration.stages.context import StageContext
 from dark_factory.orchestration.stages.gates import (
@@ -408,7 +409,12 @@ def advance_run(
             and stage is not Stage.RELEASE
             else None
         )
-        if observation is not None and gate_resolved(observation, stage=stage, route=run.route):
+        if observation is not None and gate_resolved(
+            observation,
+            stage=stage,
+            route=run.route,
+            risk_class=_effective_risk_class(run),
+        ):
             return _resume_waiting(
                 store=store,
                 run=run,
@@ -472,6 +478,7 @@ def advance_run(
         input_revision=input_revision,
         budget=run.budget,
         attempt_number=attempt_number,
+        risk_class=_effective_risk_class(run),
     )
     result = stage_executor(context)
     decision = apply_result(
@@ -601,8 +608,22 @@ def _external_wait_resolved(
     if stage is Stage.RELEASE:
         return release_facts is not None and release_resolved(release_facts(run, stage, change))
     return gate_facts is not None and gate_resolved(
-        gate_facts(run, stage, change), stage=stage, route=run.route
+        gate_facts(run, stage, change),
+        stage=stage,
+        route=run.route,
+        risk_class=_effective_risk_class(run),
     )
+
+
+def _effective_risk_class(run: ChangeRun) -> RiskClass:
+    """Effective risk class of the run: declared, derived facts and the route floor.
+
+    The same derivation the flow applies on every transition (T-080, ADR-023
+    p.2): the gate resolution must weigh the human gate set of the same class,
+    or a risk-widened human gate (``ui``, R2 ``planning``) could be resolved
+    against a different set than the flow checks (ADR-028 p.3).
+    """
+    return effective_change_risk_class(run.implementation_contract, run.route)
 
 
 def _resume_release_waiting(

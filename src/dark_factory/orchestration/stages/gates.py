@@ -39,6 +39,7 @@ from dark_factory.changes.enums import (
     FindingStatus,
     Gate,
     GateStatus,
+    RiskClass,
     Route,
     Stage,
     StageStatus,
@@ -58,7 +59,7 @@ from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
 from dark_factory.orchestration.rework import ReviewPass, finding_signature, plan_rework
-from dark_factory.rules.gates import HUMAN_GATES, required_gates, unsatisfied_gates
+from dark_factory.rules.gates import required_gates, required_human_gates, unsatisfied_gates
 
 _PIPELINE_SUCCESS: Final[str] = "success"
 """The pipeline verdict a gate passes on (mirrors the provider ports' values)."""
@@ -67,18 +68,24 @@ _PIPELINE_FAILURES: Final[frozenset[str]] = frozenset({"failure", "canceled"})
 """The pipeline verdicts that fail every machine gate of the stage."""
 
 
-def _human_gates(route: Route, stage: Stage) -> frozenset[Gate]:
-    """The human gates among the required gates of ``(route, stage)`` (rules.gates)."""
-    return required_gates(route, stage) & HUMAN_GATES
+def _human_gates(route: Route, stage: Stage, risk_class: RiskClass) -> frozenset[Gate]:
+    """The human gates among the required gates of ``(route, stage)`` (rules.gates).
+
+    The set is risk-aware: the effective class widens the ADR-018 base human set
+    (ADR-023 p.3, ADR-028 p.2), so ``ui`` and a R2+ ``planning`` are human as
+    well. It is the single definition the resolution paths share.
+    """
+    return required_human_gates(route, stage, risk_class)
 
 
-def _is_purely_human_gated(route: Route, stage: Stage) -> bool:
+def _is_purely_human_gated(route: Route, stage: Stage, risk_class: RiskClass) -> bool:
     """Whether every required gate of ``(route, stage)`` is a human one.
 
     A purely human-gated stage has an empty machine gate set: its completion is
-    a human decision, never a pipeline verdict (T-043 increment 1).
+    a human decision, never a pipeline verdict (T-043 increment 1, ADR-028 p.3).
     """
-    return bool(_human_gates(route, stage)) and not (required_gates(route, stage) - HUMAN_GATES)
+    human = _human_gates(route, stage, risk_class)
+    return bool(human) and not (required_gates(route, stage) - human)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +124,13 @@ class GateResolution:
     merge_context: MergeRequestContext | None
 
 
-def gate_resolved(observation: GateObservation | None, *, stage: Stage, route: Route) -> bool:
+def gate_resolved(
+    observation: GateObservation | None,
+    *,
+    stage: Stage,
+    route: Route,
+    risk_class: RiskClass,
+) -> bool:
     """Whether the observation resolves the external wait of ``stage`` (T-092 S3).
 
     A stage whose required gates are all human resolves on an observed
@@ -129,6 +142,12 @@ def gate_resolved(observation: GateObservation | None, *, stage: Stage, route: R
     (``flow.FLOW_TRANSITIONS``), so a green pipeline there is not a
     resolution: waking the attempt would build a merge result the policy can
     only park again. ``None`` (nothing observed) is never a resolution.
+
+    ``risk_class`` is the *effective* class of the run
+    (:func:`~dark_factory.orchestration.policy.risk.effective_change_risk_class`):
+    it widens the human gate set of the stage (ADR-023 p.3), so a pipeline
+    verdict never resolves a stage that still owes a human gate — a
+    risk-widened ``ui`` or ``planning`` parks the wait instead (ADR-028 p.2).
     """
     if observation is None:
         return False
@@ -140,14 +159,21 @@ def gate_resolved(observation: GateObservation | None, *, stage: Stage, route: R
         # it completes the review stage through the merge policy, and it is
         # the human decision on a purely human-gated stage — the merge of the
         # stage's change request approves the stage (T-043 increment 1).
-        return stage is Stage.REVIEW_VERIFICATION or _is_purely_human_gated(route, stage)
-    if _is_purely_human_gated(route, stage):
+        return stage is Stage.REVIEW_VERIFICATION or _is_purely_human_gated(
+            route, stage, risk_class
+        )
+    if _is_purely_human_gated(route, stage, risk_class):
         return any(
             decision.outcome is DecisionOutcome.APPROVED
-            and decision.gate in _human_gates(route, stage)
+            and decision.gate in _human_gates(route, stage, risk_class)
             for decision in observation.approvals
         )
     if observation.pipeline_status == _PIPELINE_SUCCESS:
+        # A pipeline verdict satisfies machine gates only (ADR-028 p.2): a stage
+        # that still requires a human gate is never resolved by a green
+        # pipeline — it stays parked for the human decision instead.
+        if _human_gates(route, stage, risk_class):
+            return False
         return stage is not Stage.REVIEW_VERIFICATION
     return observation.pipeline_status in _PIPELINE_FAILURES
 
@@ -172,21 +198,24 @@ def build_gate_resolution(
     the flow matches the result to the parked stage run.
 
     On a construction-style stage the machine gates (``rules.gates`` minus the
-    base human set) are mapped onto the pipeline verdict: a pass at the head
-    SHA advances to the next stage of the route, a failure is a bounded rework
-    round (the flow enforces the limit, FR-008), and a success that cannot be
-    attributed to a SHA blocks honestly (FR-009). On the review stage an
-    observed merge builds the merge result with its merge context (ADR-011
-    p.2) — the flow then advances or parks for the human merge per policy —
-    while a failing pipeline runs the rework-loop policy (T-014) over the
-    review passes of the run's earlier review attempts.
+    risk-aware human set, ADR-028 p.3) are mapped onto the pipeline verdict: a
+    pass at the head SHA advances to the next stage of the route, a failure is a
+    bounded rework round (the flow enforces the limit, FR-008), and a success
+    that cannot be attributed to a SHA blocks honestly (FR-009). On the review
+    stage an observed merge builds the merge result with its merge context
+    (ADR-011 p.2) — the flow then advances or parks for the human merge per
+    policy — while a failing pipeline runs the rework-loop policy (T-014) over
+    the review passes of the run's earlier review attempts.
 
     Raises ``ValueError`` when the observation does not resolve the wait of
     ``stage`` (the driver replays the checkpoint instead) and when a merged
     observation names no change request (neither the checkpoint's
     ``wait_for_ci`` action nor the change snapshot carries one).
     """
-    if not gate_resolved(observation, stage=stage, route=run.route):
+    # The effective class of the run, recomputed by the policy (T-080, ADR-023
+    # p.2): the resolution must weigh the same human gate set the flow checks.
+    risk_class = effective_change_risk_class(run.implementation_contract, run.route)
+    if not gate_resolved(observation, stage=stage, route=run.route, risk_class=risk_class):
         raise ValueError(
             f"observation of stage {stage.value} does not resolve its external wait; "
             "the driver replays the waiting checkpoint instead"
@@ -200,15 +229,17 @@ def build_gate_resolution(
             input_revision=input_revision,
             attempt_number=attempt_number,
             history=history,
+            risk_class=risk_class,
             now=now,
         )
-    if _is_purely_human_gated(run.route, stage):
+    if _is_purely_human_gated(run.route, stage, risk_class):
         return _resolve_human_gated(
             run=run,
             stage=stage,
             observation=observation,
             input_revision=input_revision,
             attempt_number=attempt_number,
+            risk_class=risk_class,
             now=now,
         )
     return _resolve_machine_gated(
@@ -217,6 +248,7 @@ def build_gate_resolution(
         observation=observation,
         input_revision=input_revision,
         attempt_number=attempt_number,
+        risk_class=risk_class,
         now=now,
     )
 
@@ -228,17 +260,21 @@ def _resolve_human_gated(
     observation: GateObservation,
     input_revision: str,
     attempt_number: int,
+    risk_class: RiskClass,
     now: datetime,
 ) -> GateResolution:
     """Resolve a stage whose completion is a human decision (T-043 increment 1).
 
     The wait resolved on the human approval or the observed merge of the
-    stage's change request, so the human gate passes version-bound to the
-    observed head SHA — the revision the decision authorizes (ADR-009 p.7).
-    The flow then advances past the stage; its R2+ control-point check weighs
-    the same observed approvals against this SHA.
+    stage's change request, so every human gate of the stage passes
+    version-bound to the observed head SHA — the revision the decision
+    authorizes (ADR-009 p.7). A design stage carries two human gates
+    (``specification`` and ``ui``, ADR-028 p.1): all of them are recorded, or
+    ``flow._block_reason`` would block the advance on the missing one. The flow
+    then advances past the stage; its R2+ control-point check weighs the same
+    observed approvals against this SHA.
     """
-    gate = sorted(_human_gates(run.route, stage), key=lambda item: item.value)[0]
+    human_gates = sorted(_human_gates(run.route, stage, risk_class), key=lambda item: item.value)
     successor = route_profile(run.route).next_stage(stage)
     if successor is None:  # pragma: no cover - a human-gated stage always has a successor
         raise ValueError(f"stage {stage.value} on route {run.route.value} has no successor")
@@ -269,6 +305,7 @@ def _resolve_human_gated(
                 sha=observation.head_sha,
                 summary=reason,
             )
+            for gate in human_gates
         ],
         produced_at=now,
     )
@@ -282,10 +319,16 @@ def _resolve_machine_gated(
     observation: GateObservation,
     input_revision: str,
     attempt_number: int,
+    risk_class: RiskClass,
     now: datetime,
 ) -> GateResolution:
-    """Resolve a stage whose completion is decided by the pipeline verdict alone."""
-    machine_results = _machine_gate_results(run.route, stage, observation)
+    """Resolve a stage whose completion is decided by the pipeline verdict alone.
+
+    Reached only for a stage without required human gates: the machine set is
+    the required set minus the risk-aware human set (ADR-028 p.3), so the
+    pipeline can never satisfy a human gate.
+    """
+    machine_results = _machine_gate_results(run.route, stage, observation, risk_class)
     unsatisfied = unsatisfied_gates(run.route, stage, machine_results)
     if not unsatisfied:
         successor = route_profile(run.route).next_stage(stage)
@@ -361,6 +404,7 @@ def _resolve_review(
     input_revision: str,
     attempt_number: int,
     history: Sequence[StageResult],
+    risk_class: RiskClass,
     now: datetime,
 ) -> GateResolution:
     """Resolve the review stage: merge (ADR-011 p.2) or the bounded rework loop."""
@@ -379,7 +423,7 @@ def _resolve_review(
                 )
             )
         gate_results.extend(
-            _machine_gate_results(run.route, Stage.REVIEW_VERIFICATION, observation)
+            _machine_gate_results(run.route, Stage.REVIEW_VERIFICATION, observation, risk_class)
         )
         result = StageResult(
             stage=Stage.REVIEW_VERIFICATION,
@@ -407,7 +451,9 @@ def _resolve_review(
                 human_approvals=observation.approvals,
             ),
         )
-    machine_results = _machine_gate_results(run.route, Stage.REVIEW_VERIFICATION, observation)
+    machine_results = _machine_gate_results(
+        run.route, Stage.REVIEW_VERIFICATION, observation, risk_class
+    )
     failed = _failed_gates(machine_results)
     findings = _pipeline_findings(failed, observation)
     prior = _review_passes(history)
@@ -458,18 +504,19 @@ def _resolve_review(
 
 
 def _machine_gate_results(
-    route: Route, stage: Stage, observation: GateObservation
+    route: Route, stage: Stage, observation: GateObservation, risk_class: RiskClass
 ) -> list[GateResult]:
     """The stage's machine gates mapped onto the observed pipeline verdict.
 
-    Machine gates are the required set minus the base human gates
-    (``rules.gates``): a green pipeline at the head SHA passes them bound to
-    that SHA, a failed or canceled pipeline fails them (bound to the SHA when
-    one was observed), and anything else — including a success without a SHA —
-    produces no result at all, so no gate is satisfied on missing facts
-    (FR-009).
+    Machine gates are the required set minus the *risk-aware* human set
+    (``rules.gates.required_human_gates``, ADR-028 p.3): a green pipeline at
+    the head SHA passes them bound to that SHA, a failed or canceled pipeline
+    fails them (bound to the SHA when one was observed), and anything else —
+    including a success without a SHA — produces no result at all, so no gate
+    is satisfied on missing facts (FR-009). A human gate is never in the set,
+    so the pipeline can never pass it (ADR-028 p.2).
     """
-    required = required_gates(route, stage) - HUMAN_GATES
+    required = required_gates(route, stage) - required_human_gates(route, stage, risk_class)
     if not required:
         return []
     if observation.pipeline_status == _PIPELINE_SUCCESS and observation.head_sha is not None:

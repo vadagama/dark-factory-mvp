@@ -82,11 +82,11 @@ def test_stage_run_json_matches_contract(
     assert payload["input_revision"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
     assert payload["artifacts"] == []
     assert payload["evidence"] == []
-    # Standard route (the default): construction requires the code and UI gates,
-    # unevaluated by the deterministic path (FR-009) and reported pending.
+    # Standard route (the default): construction carries the machine gate ``code``
+    # alone since ADR-028 moved ``ui`` to the design stage; it is unevaluated by the
+    # deterministic path (FR-009) and reported pending.
     assert payload["gate_results"] == [
         {"gate": "code", "status": "pending", "sha": None, "summary": None, "evidence_ids": []},
-        {"gate": "ui", "status": "pending", "sha": None, "summary": None, "evidence_ids": []},
     ]
     assert payload["findings"] == []
     assert payload["usage"] is None
@@ -103,7 +103,7 @@ def test_stage_run_text_output_is_a_human_summary(
     assert "run_id=run_01H" in captured.out
     assert "operation_key=run_01H:construction:" in captured.out
     assert "next_action=wait_for_input" in captured.out
-    assert "reason: required gates not evaluated: code, ui" in captured.out
+    assert "reason: required gates not evaluated: code" in captured.out
 
 
 def test_route_selects_gate_applicability(

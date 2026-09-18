@@ -84,25 +84,52 @@ def test_required_human_gates_follow_the_class_and_the_route() -> None:
     assert required_human_gates(Route.STANDARD, Stage.PLANNING, RiskClass.R2) == frozenset(
         {Gate.PLANNING}
     )
-    assert required_human_gates(Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R0) == frozenset()
-    assert required_human_gates(Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R1) == frozenset(
-        {Gate.UI}
+    assert required_human_gates(Route.STANDARD, Stage.SPECIFICATION, RiskClass.R0) == frozenset(
+        {Gate.SPECIFICATION, Gate.UI}
     )
+    assert required_human_gates(Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R1) == frozenset()
+
+
+@pytest.mark.parametrize("risk_class", [RiskClass.R1, RiskClass.R2])
+def test_standard_specification_is_human_and_construction_is_machine(
+    risk_class: RiskClass,
+) -> None:
+    """ADR-028 p.1/p.4: the design stage carries both human gates, construction none.
+
+    The human confirms the specification and the UX/UI before implementation;
+    construction is then a purely machine stage resolved by the pipeline verdict
+    on ``code``.
+    """
+    assert required_gates(Route.STANDARD, Stage.SPECIFICATION) == {Gate.SPECIFICATION, Gate.UI}
+    assert required_human_gates(Route.STANDARD, Stage.SPECIFICATION, risk_class) == frozenset(
+        {Gate.SPECIFICATION, Gate.UI}
+    )
+    assert required_gates(Route.STANDARD, Stage.CONSTRUCTION) == {Gate.CODE}
+    assert required_human_gates(Route.STANDARD, Stage.CONSTRUCTION, risk_class) == frozenset()
+
+
+def test_the_ui_gate_is_human_whenever_the_route_requires_it() -> None:
+    """``ui`` joined the ADR-018 base set (ADR-028 p.2); ``quick`` never requires it."""
+    for route in Route:
+        for risk_class in RiskClass:
+            humans = required_human_gates(route, Stage.SPECIFICATION, risk_class)
+            assert (Gate.UI in humans) is (route is not Route.QUICK), route.value
 
 
 def test_a_gate_the_route_does_not_require_never_becomes_human() -> None:
-    """``ui`` is human from R1 on, but ``quick`` does not require it at all.
+    """``ui`` is a base human gate, but ``quick`` does not require it at all.
 
     R3/R4 make every gate the route requires human, so the empty set holds only
-    while the UI gate is the class-side addition (R1/R2) — exactly the "R0/R1
-    short route, no UI gate" rule of ADR-023 p.4.
+    while the machine gate is the route's own requirement — exactly the "R0/R1
+    short route, no UI gate" rule of ADR-023 p.4, with ``ui`` now required on
+    the design stage (ADR-028 p.1).
     """
-    assert required_human_gates(Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R1) == frozenset(
-        {Gate.UI}
-    )
+    assert required_human_gates(Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R1) == frozenset()
     assert route_allows_risk(Route.QUICK, RiskClass.R2) is False
     for risk_class in (RiskClass.R0, RiskClass.R1, RiskClass.R2):
-        assert required_human_gates(Route.QUICK, Stage.CONSTRUCTION, risk_class) == frozenset()
+        assert required_human_gates(Route.QUICK, Stage.SPECIFICATION, risk_class) == frozenset(
+            {Gate.SPECIFICATION}
+        )
     assert required_human_gates(Route.QUICK, Stage.CONSTRUCTION, RiskClass.R3) == frozenset(
         {Gate.CODE}
     )
@@ -119,16 +146,21 @@ def test_r3_and_r4_make_every_required_gate_human() -> None:
 
 @pytest.mark.parametrize("route", [Route.STANDARD, Route.ARCHITECTURE, Route.FOUNDATION])
 def test_the_ux_control_point_is_mandatory_on_every_route_but_quick(route: Route) -> None:
-    """Every route but ``quick`` requires the UI gate, so ``ux`` is a real point there."""
-    assert required_control_points(route, Stage.CONSTRUCTION, RiskClass.R2) == frozenset(
-        {ControlPoint.UX}
-    )
+    """Every route but ``quick`` requires the human ``ui`` gate, so ``ux`` is a real point.
+
+    The point follows its gate to the specification stage (ADR-028 p.2).
+    """
+    required = required_control_points(route, Stage.SPECIFICATION, RiskClass.R2)
+    assert ControlPoint.UX in required
+    assert ControlPoint.PROBLEM in required
+    assert required_control_points(route, Stage.CONSTRUCTION, RiskClass.R2) == frozenset()
 
 
 def test_the_ux_control_point_never_appears_on_the_quick_route() -> None:
     for risk_class in RiskClass:
-        required = required_control_points(Route.QUICK, Stage.CONSTRUCTION, risk_class)
-        assert ControlPoint.UX not in required
+        for stage in Stage:
+            required = required_control_points(Route.QUICK, stage, risk_class)
+            assert ControlPoint.UX not in required
 
 
 def test_human_gates_are_always_a_subset_of_the_required_gates() -> None:

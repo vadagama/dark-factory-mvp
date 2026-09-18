@@ -51,7 +51,9 @@ def test_gate_results_mirror_the_route_policy() -> None:
                 for gate in sorted(required_gates(route, stage), key=lambda g: g.value)
             ]
     standard = run_deterministic_stage(_context(Stage.CONSTRUCTION, Route.STANDARD))
-    assert [record.gate for record in standard.gate_results] == [Gate.CODE, Gate.UI]
+    assert [record.gate for record in standard.gate_results] == [Gate.CODE]
+    specification = run_deterministic_stage(_context(Stage.SPECIFICATION, Route.STANDARD))
+    assert [record.gate for record in specification.gate_results] == [Gate.SPECIFICATION, Gate.UI]
     quick = run_deterministic_stage(_context(Stage.CONSTRUCTION, Route.QUICK))
     assert [record.gate for record in quick.gate_results] == [Gate.CODE]
 
@@ -90,7 +92,7 @@ def test_stage_waits_with_an_honest_reason() -> None:
     assert result.schema_version == 1
     assert result.status is StageStatus.WAITING
     assert isinstance(result.next_action, WaitForInputAction)
-    assert "required gates not evaluated: code, ui" in result.next_action.reason
+    assert "required gates not evaluated: code" in result.next_action.reason
     assert result.attempt_number == 1
     assert result.run_id == RUN_ID
     assert result.change_id == "chg-001"

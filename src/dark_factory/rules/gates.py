@@ -3,9 +3,12 @@
 The seven MVP gates are bound to the stages that evaluate them. Every route
 except ``quick`` requires all seven — ``quick`` skips the UI gate
 (contracts/cli.md: quick skips UI/extended gates, human gates stay per
-ADR-018; the four-route matrix is ADR-023 p.6). Gate execution itself (machine
-checks on the final SHA) is T-013/T-021; this module only decides which gates a
-stage must satisfy before the flow may advance.
+ADR-018; the four-route matrix is ADR-023 p.6). Since ADR-028 p.1 the UI gate
+sits on the ``specification`` (design) stage, not construction: the human
+confirms the specification, the UX/UI and the architecture at the design phase,
+before implementation spends anything. Gate execution itself (machine checks on
+the final SHA) is T-013/T-021; this module only decides which gates a stage must
+satisfy before the flow may advance.
 
 ``RISK_HUMAN_GATES`` and :func:`required_human_gates` add the risk-class side of
 the same policy (T-080, ADR-023 p.3): the class never adds machine gates — the
@@ -32,30 +35,36 @@ _STAGE_GATES: Final[Mapping[Stage, frozenset[Gate]]] = {
 
 # Gates added by a route on top of the stage base set. ``quick`` is the only
 # route without the UI gate: every other route requires all seven gates
-# (ADR-023 p.6), so ``ui`` — and with it the ``ux`` control point — is part of
-# their construction stage.
+# (ADR-023 p.6). ``ui`` — and with it the ``ux`` control point — belongs to the
+# design phase since ADR-028 p.1, so it is added to the ``specification`` stage
+# instead of construction; ``standard`` construction therefore carries no gate
+# beyond the machine ``code``.
 _ROUTE_EXTRA_GATES: Final[Mapping[Route, Mapping[Stage, frozenset[Gate]]]] = {
     Route.QUICK: {},
-    Route.STANDARD: {Stage.CONSTRUCTION: frozenset({Gate.UI})},
-    Route.ARCHITECTURE: {Stage.CONSTRUCTION: frozenset({Gate.UI})},
-    Route.FOUNDATION: {Stage.CONSTRUCTION: frozenset({Gate.UI})},
+    Route.STANDARD: {Stage.SPECIFICATION: frozenset({Gate.UI})},
+    Route.ARCHITECTURE: {Stage.SPECIFICATION: frozenset({Gate.UI})},
+    Route.FOUNDATION: {Stage.SPECIFICATION: frozenset({Gate.UI})},
 }
 
 # A skipped gate was evaluated as not applicable, so it does not block.
 _GATE_SATISFIED: Final[frozenset[GateStatus]] = frozenset({GateStatus.PASSED, GateStatus.SKIPPED})
 
-# Stages where the flow waits for an explicit human decision (ADR-018 p.1):
-# specification covers requirement/UX/architecture discovery approval, review
-# carries the human-confirmed merge (ADR-011 p.2). Deploy to dev after merge
-# is human-off-the-loop, prod is manual post-MVP (T-091). This is the *base*
-# set: it does not depend on the route (contracts/cli.md: quick skips
-# UI/extended gates, not human ones) nor on the risk class — the class widens it
-# through :func:`required_human_gates` (ADR-023 p.3).
-HUMAN_GATES: Final[frozenset[Gate]] = frozenset({Gate.SPECIFICATION, Gate.REVIEW})
+# Gates where the flow waits for an explicit human decision (ADR-018 p.1):
+# specification covers the requirement/UX/architecture discovery approval and
+# carries the UI gate (ADR-028 p.1/p.2), review carries the human-confirmed
+# merge (ADR-011 p.2). Deploy to dev after merge is human-off-the-loop, prod is
+# manual post-MVP (T-091). This is the *base* set: it does not depend on the
+# route (contracts/cli.md: quick skips UI/extended gates, not human ones — and
+# since ``quick`` does not require ``ui`` at all, the gate never becomes human
+# there) nor on the risk class — the class widens it through
+# :func:`required_human_gates` (ADR-023 p.3).
+HUMAN_GATES: Final[frozenset[Gate]] = frozenset({Gate.SPECIFICATION, Gate.UI, Gate.REVIEW})
 
 # Human gates a risk class adds on top of the ADR-018 base set (ADR-023 p.3);
 # the class never removes a base human gate. R3/R4 make every gate of the stage
-# human, so those rows enumerate all seven gates.
+# human, so those rows enumerate all seven gates. The ``ui`` entries of R1/R2
+# are redundant since ADR-028 moved ``ui`` into the base set: the union still
+# keeps the gate, so the table stays as it is instead of being restructured.
 RISK_HUMAN_GATES: Final[Mapping[RiskClass, frozenset[Gate]]] = {
     RiskClass.R0: frozenset(),
     RiskClass.R1: frozenset({Gate.UI}),
