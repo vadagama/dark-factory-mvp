@@ -116,6 +116,12 @@ class RunAdvanceArgs:
     (falling back to ``DARK_FACTORY_RUNS_ROOT``) enables the run-record
     publication after a terminal advance (ADR-015 p.4). Without them the
     command behaves exactly as before S4.
+
+    The contract options (T-016) attach the Implementation Contract of the
+    advance: ``contract_json`` (a path or ``-`` for stdin) is validated and
+    attached to the resolved run — idempotently, never swapping a different
+    contract under it — and ``approve_contract`` records the human approval
+    (ADR-011) on the loaded contract before it is attached.
     """
 
     change_id: str | None
@@ -131,6 +137,8 @@ class RunAdvanceArgs:
     smoke_digest_header: str | None = None
     application: str | None = None
     runs_root: str | None = None
+    contract_json: str | None = None
+    approve_contract: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +361,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--runs-root",
         help="Checkout of dark-factory-runs; defaults to DARK_FACTORY_RUNS_ROOT.",
     )
+    run_advance_contract = run_advance.add_argument_group("implementation contract (T-016)")
+    run_advance_contract.add_argument(
+        "--contract-json",
+        help=(
+            "Path of the implementation contract JSON ('-' = stdin); attaches it to the"
+            " run, idempotently and without swapping a different one (T-016)."
+        ),
+    )
+    run_advance_contract.add_argument(
+        "--approve-contract",
+        action="store_true",
+        help="Record the human approval on the loaded contract (operator decision, ADR-011).",
+    )
     run_advance.add_argument(
         "--json", action="store_true", help="Emit the advance outcome as JSON on stdout."
     )
@@ -568,6 +589,8 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 smoke_digest_header=_option_str(data, "smoke_digest_header"),
                 application=_option_str(data, "application"),
                 runs_root=_option_str(data, "runs_root"),
+                contract_json=_option_str(data, "contract_json"),
+                approve_contract=_flag(data, "approve_contract"),
             )
         case "run_publish":
             return RunPublishArgs(

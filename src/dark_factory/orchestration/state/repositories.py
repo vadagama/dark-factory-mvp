@@ -59,6 +59,10 @@ class LeaseLostError(StateError):
     """A lease could not be acquired or renewed; another owner holds it."""
 
 
+class ContractConflictError(StateError):
+    """A run that already carries an implementation contract was given another one."""
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 

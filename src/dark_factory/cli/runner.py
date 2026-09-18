@@ -27,6 +27,13 @@ of the run (ADR-019 p.5). A new run starts from the default budget snapshot and
 without an approved Implementation Contract — entering construction without one
 is blocked by the policy (T-016), which is the honest S1 outcome.
 
+``--contract-json`` attaches the Implementation Contract of the advance inside
+the advance's transaction (T-016, ADR-018 p.3): a run without a contract
+records it, the identical contract is a no-op and a different one is refused —
+the approved boundary of a running change is never swapped. The path ``-``
+reads the contract from stdin; ``--approve-contract`` records the human
+approval on the loaded contract and never stands alone.
+
 ``factory run status`` reads the persisted run back and prints its status and
 stages. Its ``--json`` document is the domain ``ChangeRun`` (``changes/run.py``):
 ``id``, ``change_id``, ``route``, ``provider``, ``status``, ``state_revision``,
@@ -73,15 +80,20 @@ which may embed credentials (ADR-009); the ``owner_id`` of the run lease is
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dark_factory.changes.enums import Route, StageStatus
+from dark_factory.changes.enums import Role, Route, StageStatus
+from dark_factory.changes.implementation_contract import (
+    ContractApproval,
+    ImplementationContract,
+)
 from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.run import Change, ChangeRun
 from dark_factory.changes.run_records import RunRecord
@@ -121,7 +133,7 @@ from dark_factory.orchestration.state.engine import (
     create_state_engine,
     session_scope,
 )
-from dark_factory.orchestration.state.repositories import StateError
+from dark_factory.orchestration.state.repositories import ContractConflictError, StateError
 from dark_factory.orchestration.state.run_store import RunStore
 
 DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
@@ -214,6 +226,61 @@ def _validate_release_options(args: RunAdvanceArgs) -> str | None:
     )
 
 
+def _contract_schema_error(exc: ValidationError) -> str:
+    """One-line summary of a contract schema violation (input problem, exit 2)."""
+    first = exc.errors()[0]
+    loc = ".".join(str(part) for part in first["loc"]) or "(root)"
+    return f"{loc}: {first['msg']}"
+
+
+def _load_contract(args: RunAdvanceArgs, now: datetime | None) -> ImplementationContract | None:
+    """Load and validate ``--contract-json``; apply ``--approve-contract`` (T-016).
+
+    ``-`` reads the contract from stdin. Any problem — an unreadable file,
+    broken JSON, a schema violation — raises :class:`InvalidRunnerInput`
+    before the advance touches the store (exit 2, nothing written).
+    ``--approve-contract`` records the human approval (ADR-011:
+    ``approved_by=Role.PRODUCT``) on a contract that carries none yet; a
+    contract that already has an approval makes the flag ambiguous and is
+    refused. The flag never stands alone.
+    """
+    if args.contract_json is None:
+        if args.approve_contract:
+            raise InvalidRunnerInput("--approve-contract requires --contract-json")
+        return None
+    try:
+        raw = (
+            sys.stdin.read()
+            if args.contract_json == "-"
+            else Path(args.contract_json).read_text(encoding="utf-8")
+        )
+    except OSError as exc:
+        detail = exc.strerror or exc.__class__.__name__
+        raise InvalidRunnerInput(f"cannot read the contract file: {detail}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InvalidRunnerInput(
+            f"the contract is not valid JSON: {exc.msg} (line {exc.lineno})"
+        ) from exc
+    try:
+        contract = ImplementationContract.model_validate(data)
+    except ValidationError as exc:
+        raise InvalidRunnerInput(
+            f"the contract violates the schema: {_contract_schema_error(exc)}"
+        ) from exc
+    if args.approve_contract:
+        if contract.approval is not None:
+            raise InvalidRunnerInput(
+                "the contract already carries an approval; --approve-contract is ambiguous"
+            )
+        decided_at = now if now is not None else datetime.now(UTC)
+        contract = contract.model_copy(
+            update={"approval": ContractApproval(approved_by=Role.PRODUCT, decided_at=decided_at)}
+        )
+    return contract
+
+
 def run_advance_command(
     args: RunAdvanceArgs,
     *,
@@ -245,10 +312,20 @@ def run_advance_command(
     advance publishes the run record into the ``dark-factory-runs`` checkout
     (ADR-015 p.4) when ``--runs-root``/``DARK_FACTORY_RUNS_ROOT`` is set —
     best-effort, a publication failure never changes the exit code.
+
+    The contract options (T-016) are validated here too — the file, its JSON
+    and its schema, and the ``--approve-contract`` flag — before the store is
+    touched: a broken contract is invalid input (exit 2), nothing written.
     """
     try:
         _validate_release_options(args)
     except ReleaseVerifyError as exc:
+        return _report(
+            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
+        )
+    try:
+        contract = _load_contract(args, now)
+    except InvalidRunnerInput as exc:
         return _report(
             "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
         )
@@ -265,6 +342,7 @@ def run_advance_command(
             revision_of=revision_of,
             gate_facts=gate_facts,
             release_facts=release_facts,
+            contract=contract,
         )
     try:
         engine = create_state_engine(_database_url())
@@ -283,6 +361,7 @@ def run_advance_command(
             revision_of=revision_of,
             gate_facts=gate_facts,
             release_facts=release_facts,
+            contract=contract,
         )
     finally:
         engine.dispose()
@@ -395,6 +474,7 @@ def _advance(
     revision_of: RevisionResolver | None,
     gate_facts: FactsProvider | None,
     release_facts: ReleaseFactsProvider | None,
+    contract: ImplementationContract | None,
 ) -> int:
     """Advance one stage in one transaction and emit the outcome (contract cli.md)."""
     try:
@@ -408,6 +488,7 @@ def _advance(
                 revision_of=revision_of,
                 gate_facts=gate_facts,
                 release_facts=release_facts,
+                contract=contract,
             )
     except InvalidRunnerInput as exc:
         return _report(
@@ -417,6 +498,13 @@ def _advance(
         # An unknown run or a terminal one: the command cannot advance the run,
         # and nothing was written. A committed failed/blocked attempt is not a
         # refusal any more — the next advance retries it (ADR-006 p.7).
+        return _report(
+            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
+        )
+    except ContractConflictError as exc:
+        # Swapping the contract of a run that already carries one is refused by
+        # the store (T-016): nothing was written, and the text names the run —
+        # the operator supplied the id themselves.
         return _report(
             "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
         )
@@ -448,10 +536,11 @@ def _advance_in_session(
     revision_of: RevisionResolver | None,
     gate_facts: FactsProvider | None,
     release_facts: ReleaseFactsProvider | None,
+    contract: ImplementationContract | None,
 ) -> RunAdvance:
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
-    run_id, change = _resolve_run(session, store, args, revision_of=revision_of)
+    run_id, change = _resolve_run(session, store, args, revision_of=revision_of, contract=contract)
     return advance_run(
         store=store,
         change=change,
@@ -471,6 +560,7 @@ def _resolve_run(
     args: RunAdvanceArgs,
     *,
     revision_of: RevisionResolver | None = None,
+    contract: ImplementationContract | None = None,
 ) -> tuple[str, Change]:
     """Run id and change snapshot of the command; raises :class:`InvalidRunnerInput`.
 
@@ -480,6 +570,11 @@ def _resolve_run(
     supplied a resolver (ADR-006 p.4): the agent executor mints its workspace at
     that revision, and a snapshot digest — not a git object — would block the
     stage at the workspace boundary on every attempt.
+
+    With ``contract`` set, the contract is attached to the resolved run inside
+    the same transaction (T-016): ``create_run`` records it on a fresh run and
+    :meth:`RunStore.attach_contract` enforces the idempotent, swap-free
+    attachment on an existing one.
     """
     changes = ChangeRepository(session)
     if args.change_id is not None:
@@ -498,7 +593,10 @@ def _resolve_run(
             budget=BudgetSnapshot(),
             input_revision=store.stage_input_revision(change),
             initial_stage_revision=initial_stage_revision,
+            implementation_contract=contract,
         )
+        if contract is not None:
+            store.attach_contract(created.id, contract)
         return created.id, change
     if args.run_id is None:
         raise InvalidRunnerInput("exactly one of --change-id / --run-id is required")
@@ -510,6 +608,8 @@ def _resolve_run(
         raise InvalidRunnerInput(
             f"run {run.id!r} references change {run.change_id!r}, which is not in intake"
         )
+    if contract is not None:
+        store.attach_contract(run.id, contract)
     return run.id, change
 
 

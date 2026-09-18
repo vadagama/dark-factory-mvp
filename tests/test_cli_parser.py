@@ -170,6 +170,27 @@ def test_run_advance_parses_the_release_options() -> None:
     )
 
 
+def test_run_advance_parses_the_contract_options() -> None:
+    args = parse_command(
+        [
+            "run",
+            "advance",
+            "--run-id",
+            "run_01H",
+            "--contract-json",
+            "-",
+            "--approve-contract",
+        ]
+    )
+    assert args == RunAdvanceArgs(
+        change_id=None,
+        run_id="run_01H",
+        json_output=False,
+        contract_json="-",
+        approve_contract=True,
+    )
+
+
 @pytest.mark.parametrize(
     "argv",
     [
