@@ -6,8 +6,10 @@ contract, the outcome-to-exit-code mapping, the rendering and the error paths,
 with the store, the intake repository and the driver stubbed out.
 """
 
+import io
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -15,7 +17,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 import dark_factory.cli.runner as runner_module
-from dark_factory.changes.enums import Provider, Route, RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import Provider, Role, Route, RunStatus, Stage, StageStatus
+from dark_factory.changes.implementation_contract import (
+    ContractApproval,
+    ImplementationContract,
+)
 from dark_factory.changes.next_action import WaitForInputAction
 from dark_factory.changes.run import Change, ChangeRun, StageResult, StageRun
 from dark_factory.changes.usage import BudgetSnapshot
@@ -34,8 +40,8 @@ from dark_factory.execution.runs.errors import UnsafeRunRecordError
 from dark_factory.orchestration.flow import FlowDecision
 from dark_factory.orchestration.runner import RunAdvance, RunAdvanceOutcome
 from dark_factory.orchestration.stages.gates import GateObservation
-from dark_factory.orchestration.state.repositories import LeaseLostError
-from tests.changes_factories import make_change, make_manifest, make_run
+from dark_factory.orchestration.state.repositories import ContractConflictError, LeaseLostError
+from tests.changes_factories import make_change, make_contract, make_manifest, make_run
 
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 RUN_ID = "run-001"
@@ -95,6 +101,8 @@ class StubStore:
             )
         )
         self.created: list[dict[str, Any]] = []
+        self.attached: list[tuple[str, ImplementationContract]] = []
+        self.attach_error: Exception | None = None
         StubStore.last = self
 
     @staticmethod
@@ -109,6 +117,12 @@ class StubStore:
 
     def create_run(self, **kwargs: Any) -> ChangeRun:
         self.created.append(kwargs)
+        return self.run
+
+    def attach_contract(self, execution_id: str, contract: ImplementationContract) -> ChangeRun:
+        self.attached.append((execution_id, contract))
+        if self.attach_error is not None:
+            raise self.attach_error
         return self.run
 
 
@@ -249,6 +263,7 @@ def test_run_advance_creates_the_run_from_the_change_snapshot(
             "budget": BudgetSnapshot(),
             "input_revision": REVISION,
             "initial_stage_revision": None,
+            "implementation_contract": None,
         }
     ]
     assert "run run-001: waiting" in capsys.readouterr().out
@@ -726,3 +741,231 @@ def test_run_advance_warns_and_keeps_the_exit_code_when_publication_fails(
 
     assert code == EXIT_OK  # the advance succeeded; the publication is best-effort
     assert "was not published" in capsys.readouterr().err
+
+
+# --- implementation contract (T-016, ADR-018 p.3) ---------------------------
+
+
+def _contract_file(tmp_path: Path, contract: ImplementationContract) -> Path:
+    path = tmp_path / "contract.json"
+    path.write_text(contract.model_dump_json(), encoding="utf-8")
+    return path
+
+
+def test_run_advance_attaches_the_contract_to_an_existing_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    contract = make_contract()
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=None,
+            run_id=RUN_ID,
+            json_output=False,
+            contract_json=str(_contract_file(tmp_path, contract)),
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_WAITING
+    assert _last_store().attached == [(RUN_ID, contract)]
+
+
+def test_run_advance_attaches_the_contract_to_a_fresh_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    contract = make_contract()
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=CHANGE_ID,
+            run_id=None,
+            json_output=False,
+            contract_json=str(_contract_file(tmp_path, contract)),
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_WAITING
+    store = _last_store()
+    assert store.created[0]["implementation_contract"] == contract
+    assert store.attached == [(RUN_ID, contract)]
+
+
+def test_run_advance_approves_the_contract_before_attaching_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    contract = make_contract().model_copy(update={"approval": None})
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=None,
+            run_id=RUN_ID,
+            json_output=False,
+            contract_json=str(_contract_file(tmp_path, contract)),
+            approve_contract=True,
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+        now=NOW,
+    )
+
+    assert code == EXIT_WAITING
+    run_id, attached = _last_store().attached[0]
+    assert run_id == RUN_ID
+    assert attached.approval == ContractApproval(approved_by=Role.PRODUCT, decided_at=NOW)
+
+
+def test_run_advance_reads_the_contract_from_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    contract = make_contract()
+    monkeypatch.setattr("sys.stdin", io.StringIO(contract.model_dump_json()))
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=None, run_id=RUN_ID, json_output=False, contract_json="-"),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_WAITING
+    assert _last_store().attached == [(RUN_ID, contract)]
+
+
+def test_run_advance_refuses_to_approve_an_already_approved_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    # The refusal must happen before the advance touches the store.
+    instantiations: list[StubSession] = []
+
+    class _RecordingStore(StubStore):
+        def __init__(self, session: StubSession) -> None:
+            instantiations.append(session)
+            super().__init__(session)
+
+    monkeypatch.setattr(runner_module, "RunStore", _RecordingStore)
+    contract = make_contract()  # carries an approval already
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=None,
+            run_id=RUN_ID,
+            json_output=False,
+            contract_json=str(_contract_file(tmp_path, contract)),
+            approve_contract=True,
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "--approve-contract is ambiguous" in capsys.readouterr().err
+    assert instantiations == []
+
+
+def test_run_advance_refuses_approve_without_a_contract(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=None, run_id=RUN_ID, json_output=False, approve_contract=True),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "--approve-contract requires --contract-json" in capsys.readouterr().err
+
+
+def test_run_advance_rejects_a_missing_contract_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=None,
+            run_id=RUN_ID,
+            json_output=False,
+            contract_json=str(tmp_path / "missing.json"),
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "cannot read the contract file" in capsys.readouterr().err
+
+
+def test_run_advance_rejects_broken_contract_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    path = tmp_path / "contract.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=None, run_id=RUN_ID, json_output=False, contract_json=str(path)),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_run_advance_rejects_a_contract_off_the_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps({"id": "ict-1"}), encoding="utf-8")
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=None, run_id=RUN_ID, json_output=False, contract_json=str(path)),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "violates the schema" in capsys.readouterr().err
+
+
+def test_run_advance_refuses_to_swap_the_contract_of_a_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The store refuses a different contract for a run that already carries one
+    # (T-016); the command maps the refusal to invalid input and names the run.
+    def _conflicting(
+        self: StubStore, execution_id: str, contract: ImplementationContract
+    ) -> ChangeRun:
+        self.attached.append((execution_id, contract))
+        raise ContractConflictError(
+            f"run {execution_id!r} already carries a different implementation contract"
+        )
+
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    monkeypatch.setattr(StubStore, "attach_contract", _conflicting)
+    other = make_contract().model_copy(update={"id": "ict-other"})
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(
+            change_id=None,
+            run_id=RUN_ID,
+            json_output=False,
+            contract_json=str(_contract_file(tmp_path, other)),
+        ),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "different implementation contract" in capsys.readouterr().err

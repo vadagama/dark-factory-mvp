@@ -13,6 +13,7 @@ factory stage run    --change <path|ref> --stage <stage> [--route quick|standard
 factory stage resume --run-id <id> --next-action <wa|ci|input> [--json]
 factory run status   --run-id <id> [--json]
 factory run advance  --change-id <id> | --run-id <id> [--json]  # одна стадия запуска (T-092)
+                     [--contract-json <path|->] [--approve-contract]  # контракт (T-016)
                      [--expected-digest <digest> | --digest-json <path>]  # релиз (T-092 S4)
                      [--observed-digest <d>] [--argo-sync <s>] [--argo-health <h>]
                      [--smoke-url <url>] [--smoke-digest-url <url>] [--smoke-digest-header <h>]
@@ -78,6 +79,11 @@ factory doctor       [--json]           # проверка окружения и
 - `--smoke-url`, `--smoke-digest-url`, `--smoke-digest-header` — smoke-пробы (FR-013); запускаются только когда проверки digest/Argo прошли (FR-011: неверный digest не стреляет пробами); без smoke-опций — `smoke was not run`, релиз не проходит.
 - `--application` — `namespace/name` Argo Application, попадает в release evidence.
 - `--runs-root` (или `DARK_FACTORY_RUNS_ROOT`) — после терминального advance (`completed`/`failed`) run-запись публикуется в checkout `dark-factory-runs` идемпотентно и best-effort: сбой — предупреждение на stderr, код выхода не меняется; корень не задан — публикация пропускается.
+
+**Contract-опции (T-016, ADR-018 p.3)** — все необязательны, без них поведение прежнее:
+
+- `--contract-json <path|->` — Implementation Contract запуска (T-016): читается (`-` — stdin), валидируется pydantic-схемой и прикрепляется к резолвнутому запуску **в той же транзакции**, что и решение стадии. Идемпотентно и без подмены: запуск без контракта записывает переданный; идентичный — no-op; **другой** контракт — отказ store (`ContractConflictError`) → exit 2, ничего не записано (утверждённая граница работающего изменения не подменяется, ADR-018 p.3). Битый файл/JSON/схема — exit 2 до обращения к store.
+- `--approve-contract` — проставляет human-утверждение (`approved_by=Role.PRODUCT`, `decided_at=now(UTC)`) на загруженный контракт (решение оператора, ADR-011); флаг без `--contract-json` — exit 2; контракт, уже несущий approval, вместе с флагом — двусмысленность, exit 2. Утверждённый контракт снимает блокировку входа в construction (T-016); неутверждённый прикрепляется и честно блокирует вход (`blocked`).
 
 ## Поведение и инварианты
 

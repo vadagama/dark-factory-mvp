@@ -56,6 +56,7 @@ from dark_factory.orchestration.state.models import (
 from dark_factory.orchestration.state.models import Stage as StageRow
 from dark_factory.orchestration.state.models import StageResult as StageResultRow
 from dark_factory.orchestration.state.repositories import (
+    ContractConflictError,
     ExecutionRepository,
     LeaseLostError,
     StateError,
@@ -66,7 +67,7 @@ from dark_factory.orchestration.state.run_store import (
     RunStore,
 )
 from dark_factory.ports.events import EventType
-from tests.changes_factories import make_change
+from tests.changes_factories import make_change, make_contract
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
@@ -598,3 +599,84 @@ def test_the_cli_created_run_keys_its_first_stage_by_the_resolver_revision(
 
 def _execution_columns(engine: Engine) -> set[str]:
     return {column["name"] for column in inspect(engine).get_columns("execution")}
+
+
+# --- implementation contract (T-016, ADR-018 p.3) ---------------------------
+
+
+def test_attach_contract_is_idempotent_and_swap_free(
+    session_factory: sessionmaker[Session],
+) -> None:
+    change = make_change()
+    _seed_change(session_factory, change)
+    contract = make_contract()
+    other = make_contract().model_copy(update={"id": "ict-other"})
+    run_id = ""
+
+    with session_scope(session_factory) as session:
+        store = RunStore(session)
+        run = store.create_run(
+            change_id=change.id,
+            route=Route.STANDARD,
+            provider=change.product.provider,
+            budget=BudgetSnapshot(),
+            input_revision="rev-1",
+        )
+        assert run.implementation_contract is None
+        run_id = run.id
+
+        # A run without a contract records the given one; the identical contract
+        # is a no-op; a different one is refused and the stored boundary survives.
+        assert store.attach_contract(run.id, contract).implementation_contract == contract
+        assert store.attach_contract(run.id, contract).implementation_contract == contract
+        with pytest.raises(ContractConflictError):
+            store.attach_contract(run.id, other)
+        reloaded = store.load(run.id)
+        assert reloaded is not None and reloaded.implementation_contract == contract
+
+    # The attachment is durable: a fresh session reads the contract back.
+    with session_scope(session_factory) as session:
+        persisted = RunStore(session).load(run_id)
+        assert persisted is not None and persisted.implementation_contract == contract
+
+
+def test_the_cli_attaches_an_approved_contract_to_an_existing_run(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    # The pilot situation: the runs were created without a contract (the CLI had
+    # no way to pass one), so the advance that carries --contract-json attaches
+    # it inside the same transaction and the run reads it back.
+    monkeypatch.setenv("DATABASE_URL", os.environ[TEST_DATABASE_URL_ENV])
+    change = make_change()
+    _seed_change(session_factory, change)
+    with session_scope(session_factory) as session:
+        run_id = (
+            RunStore(session)
+            .create_run(
+                change_id=change.id,
+                route=Route.STANDARD,
+                provider=change.product.provider,
+                budget=BudgetSnapshot(),
+                input_revision="rev-1",
+            )
+            .id
+        )
+    contract = make_contract()
+    path = tmp_path / "contract.json"
+    path.write_text(contract.model_dump_json(), encoding="utf-8")
+
+    code = run_advance_command(
+        RunAdvanceArgs(change_id=None, run_id=run_id, json_output=True, contract_json=str(path)),
+        session_factory=session_factory,
+        owner_id="test-owner",
+    )
+    assert code == EXIT_WAITING
+    capsys.readouterr()
+
+    # ``run status`` reads the attached contract back from the store.
+    assert main(["run", "status", "--run-id", run_id, "--json"]) == EXIT_OK
+    record = json.loads(capsys.readouterr().out)
+    assert record["implementation_contract"] == json.loads(contract.model_dump_json())

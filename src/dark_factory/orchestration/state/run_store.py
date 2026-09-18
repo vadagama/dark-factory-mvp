@@ -77,6 +77,7 @@ from dark_factory.orchestration.flow import FlowDecision
 from dark_factory.orchestration.state.models import Attempt
 from dark_factory.orchestration.state.models import Stage as StageRow
 from dark_factory.orchestration.state.repositories import (
+    ContractConflictError,
     ExecutionRepository,
     LeaseRepository,
     OutboxRepository,
@@ -365,6 +366,37 @@ class RunStore:
         run = self.load(execution_id)
         if run is None:  # pragma: no cover - defensive, the row was just created
             raise StateError(f"execution {execution_id!r} was not created")
+        return run
+
+    def attach_contract(self, execution_id: str, contract: ImplementationContract) -> ChangeRun:
+        """Attach the implementation contract to an existing run (T-016, ADR-018 p.3).
+
+        The command-side path of ``run advance --contract-json``: a run that was
+        created without a contract gets its approved boundary attached inside the
+        caller's transaction, so the same advance's construction entry gate sees
+        it. Idempotent and swap-free: a run without a contract records the given
+        one, the identical contract is a no-op, and a different contract raises
+        :class:`ContractConflictError` — the approved boundary of a running
+        change is never swapped under it. The ``create_run`` idempotency stays
+        untouched: this is the only way a contract reaches an existing run.
+        """
+        execution = self._executions.get(execution_id)
+        if execution is None:
+            raise StateError(f"unknown execution {execution_id!r}")
+        existing = (
+            ImplementationContract.model_validate(execution.implementation_contract)
+            if execution.implementation_contract is not None
+            else None
+        )
+        if existing is not None and existing != contract:
+            raise ContractConflictError(
+                f"run {execution_id!r} already carries a different implementation contract"
+            )
+        if existing is None:
+            execution.implementation_contract = contract.model_dump(mode="json")
+        run = self.load(execution_id)
+        if run is None:  # pragma: no cover - defensive, the row exists
+            raise StateError(f"execution {execution_id!r} disappeared")
         return run
 
     # --- leases ------------------------------------------------------------

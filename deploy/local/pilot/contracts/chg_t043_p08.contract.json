@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p08",
+  "scope": {
+    "in_scope": [
+      "backend/src/app/models.py",
+      "backend/migrations/versions/",
+      "backend/tests/"
+    ],
+    "out_of_scope": [
+      "frontend/**",
+      "infrastructure/**",
+      "backend/src/app/health.py"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "The notes table gains a nullable text column 'body' through the next Alembic migration (expand-only, no data backfill)"
+    },
+    {
+      "id": "ac-2",
+      "description": "Both upgrade and downgrade of the migration work"
+    },
+    {
+      "id": "ac-3",
+      "description": "A unit or integration test asserts the new column persists"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision",
+    "Expand-only migration: no destructive operations; the chart runs migrations post-deploy, so the change must stay backward-compatible with the running deployment"
+  ],
+  "risk_class": "R2",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [
+    "data_schema"
+  ],
+  "approval": null
+}

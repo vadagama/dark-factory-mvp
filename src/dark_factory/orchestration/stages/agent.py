@@ -53,7 +53,7 @@ from dark_factory.agents.profiles.manifest import AgentProfile
 from dark_factory.agents.profiles.registry import get_profile
 from dark_factory.agents.skills.manifest import SkillManifest
 from dark_factory.agents.skills.registry import get_skill
-from dark_factory.changes.enums import Role, Stage, StageStatus, StopOutcome
+from dark_factory.changes.enums import ChangeRequestStatus, Role, Stage, StageStatus, StopOutcome
 from dark_factory.changes.keys import effect_key, operation_key
 from dark_factory.changes.next_action import (
     StopAction,
@@ -310,6 +310,14 @@ class AgentStageExecutor:
             commit_sha=commit_sha,
         )
         change_request = await self._merge_requests.find_existing(repository, context.change.id)
+        if change_request is not None and change_request.status is not ChangeRequestStatus.OPEN:
+            # A merged or closed request cannot carry the attempt's commit: no
+            # open request stays on the branch, so CI never runs on the final
+            # SHA and the parked stage can never resolve (found in T-043
+            # increment 1, where the operator's merge of the specification
+            # request is the human decision per ADR-011). The attempt opens a
+            # fresh request instead; ``open`` is idempotent by head branch.
+            change_request = None
         if change_request is None:
             change_request = await self._merge_requests.open(
                 OpenChangeRequest(

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p09",
+  "scope": {
+    "in_scope": [
+      "backend/src/app/",
+      "backend/tests/integration/",
+      "frontend/src/api/client.ts",
+      "frontend/src/pages/NotesPage.tsx",
+      "frontend/src/pages/NotesPage.test.tsx",
+      "frontend/src/App.tsx"
+    ],
+    "out_of_scope": [
+      "backend/migrations/**",
+      "infrastructure/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "GET /api/notes returns {'notes': [{id, title, created_at}]} ordered by created_at desc with an integration test in backend/tests/integration/"
+    },
+    {
+      "id": "ac-2",
+      "description": "NotesPage fetches the list through a new fetchNotes of frontend/src/api/client.ts and renders titles, using the EmptyState pattern from @small/ui when the list is empty"
+    },
+    {
+      "id": "ac-3",
+      "description": "App.tsx links to the new page and a component test follows HealthPage.test.tsx patterns"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision",
+    "Depends only on the current schema: do not wait for or touch the body column"
+  ],
+  "risk_class": "R2",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [
+    "public_api"
+  ],
+  "approval": null
+}

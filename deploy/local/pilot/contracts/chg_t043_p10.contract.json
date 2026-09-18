@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p10",
+  "scope": {
+    "in_scope": [
+      "backend/src/app/deps.py",
+      "backend/src/app/health.py",
+      "backend/tests/"
+    ],
+    "out_of_scope": [
+      "frontend/**",
+      "backend/migrations/**",
+      "infrastructure/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "The get_session dependency lives in backend/src/app/deps.py and is imported from there"
+    },
+    {
+      "id": "ac-2",
+      "description": "The response models, paths and status codes of GET / and GET /api/healthz stay byte-identical"
+    },
+    {
+      "id": "ac-3",
+      "description": "All existing backend tests pass unmodified, except import paths of direct get_session imports"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing patterns and test style of the touched modules",
+    "No new dependencies without an explicit operator decision",
+    "Pure refactor: no new features"
+  ],
+  "risk_class": "R2",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [],
+  "approval": null
+}
