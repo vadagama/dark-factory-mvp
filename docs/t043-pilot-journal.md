@@ -33,6 +33,71 @@
 
 ## 2026-09-18 — Инкремент 1: прикрепление Implementation Contract через `run advance --contract-json` (вариант 1, закрыт)
 
+- **Решение оператора (два пункта).** (1) находку с ревью — чинить; (2) человек должен
+  подтверждать **спецификацию, UI и архитектуру на фазе проектирования** — то есть человеческие
+  гейты не резолвятся пайплайном, а подтверждение дизайна происходит до реализации.
+- **ADR-029** (`docs/adr/ADR-029-human-gates-at-design-phase.md`, принято): `ui` переносится с
+  construction на стадию `specification` и входит в базовый человеческий набор
+  (`HUMAN_GATES = {specification, ui, review}`); пайплайн маппит только машинные гейты
+  (`required_gates − required_human_gates(route, stage, risk)`); стадия с неудовлетворёнными
+  человеческими гейтами не резолвится вердиктом CI; `_resolve_human_gated` записывает **все**
+  человеческие гейты стадии; `review_verification` завершается без публикации кода — ревьюер
+  проверяет уже открытый CR (артефакт construction) и стадия резолвится человеческим merge'ом.
+- **Живая матрица после ADR-029** (`standard`): specification — `specification`+`ui`, оба
+  человеческие (решение на дизайн-фазе, резолв — version-bound approval или merge дизайн-CR);
+  planning — машинный `planning` для R1 / человеческий для R2; construction — только машинный
+  `code` (CI по итоговому SHA); review — `review` (человеческий merge) + машинный
+  `verification`; release — машинный.
+- **Реализация**: `rules/gates.py` (перенос `ui`, базовый человеческий набор),
+  `stages/gates.py` (риск-зависимые `_human_gates`/`_machine_gate_results`/`gate_resolved`,
+  все человеческие гейты в резолюции), `stages/context.py` (`StageContext.human_gates` +
+  эффективный класс), `stages/agent.py` (ревью без публикации; ожидание по машинному набору),
+  `orchestration/runner.py` (эффективный класс в обоих call-site'ах), `policy/risk.py`
+  (`ux` → `(specification, ui)`), `console/src/generated/meta.json` (регенерация).
+- **Валидация**: полный набор **1853 passed / 51 skipped** на PostgreSQL 16 (интеграционные
+  выполнены), ruff/mypy чисто; новые тесты: риск-зависимый машинный набор (`wait_for_input`
+  для полностью человеческой стадии), пайплайн не проходит `ui`, specification требует оба
+  человеческих гейта, ревью паркуется с CR ревьюируемого изменения и блокируется без него.
+- **Открытые темы после ADR-029 (не блокируют пилот)**: (а) для R3/R4 полностью человеческие
+  стадии (в т.ч. construction) паркуются на `wait_for_input` — таблица переходов flow для
+  такого ожидания не проверялась; (б) вердикты ревью (`REVIEW_REPORT`/`ACCEPTANCE_VERDICT`)
+  по-прежнему не сохраняются артефактами — публикуется только `change_request`.
+- **Живой статус p02**: stays `blocked` на `review_verification` (попытка 1 израсходована до
+  фикса); следующий advance — retry стадии (новый прогон агента роли quality, ~300k токенов),
+  который по ADR-029 должен запарковаться в `waiting` на человеческий merge дизайн/констракт-CR.
+
+
+- **Живой прогон p02 после одобрения оператора (контракт attach+approve → advance).** Контракт
+  прикреплён и утверждён (БД: `implementation_contract` не NULL, `approval.approved_by=product`);
+  повторная передача того же файла с `--approve` честно отказана
+  (`already carries a different implementation contract` — `decided_at` отличается), дальше
+  продвижение идёт обычным `advance` без флага.
+- **Маршрут p02**: planning attempt 3 (ReadTimeout на attempt 2 — разовый сбой LLM) → PR
+  `product-1#12` (коммит `f61f247a`, CI зелёный) → гейты `code`+`ui` passed → **construction
+  attempt 1**: агент изменил ровно in-scope файлы контракта (`frontend/src/pages/HealthPage.tsx`
+  +3/-1, `HealthPage.test.tsx` +64/-3), PR #12, revision `f61f247a`, usage 313,722 токена →
+  стадия `waiting` (CI) → CI зелёный → construction `succeeded`, run → `review_verification`.
+- **Блокер дальнейшего e2e (новый, честная находка)**: `review_verification` attempt 1 —
+  `blocked`, reason «the attempt produced no changes to publish» (агент роли quality отработал,
+  298,529 токенов). Причина в коде: `stages/agent.py::_publish` возвращает `None`, когда
+  `collect_changes(workspace)` пуст, а `checks.py` (`_STAGES_REQUIRING_CHANGE_REQUEST`)
+  требует change request для review-стадии (её завершение — через `merge`, ADR-005 p.2,
+  ADR-011). Ревью уже сделанного изменения файловых изменений не порождает → у стадии нет
+  пути опубликовать вердикт. Все 10 ранов упрутся в это место. Нужно решение: привязывать
+  change request стадии к PR, который ревьюится (артефакт предыдущей стадии), или считать
+  вердикт артефактом без публикации commit'а.
+- **Находка (политика гейтов)**: у смешанной стадии construction (`code` machine + `ui` human,
+  R1+standard) **оба** гейта прошли по `pipeline success at f61f247a…` — machine-путь
+  (`stages/gates.py::_resolve_machine_gated`) резолвит и human-гейт стадии. Human-вердикт
+  по UI на пилоте фактически не требуется; подтвердить как решение или разделить резолюцию
+  (purely-human → только version-bound approval, mixed → human-часть отдельно).
+- **Находка (метрики, FR-024)**: при резолюции waiting-чекпоинта `stage_result` той же попытки
+  **перезаписывается** (`supersede`, ADR-006 p.8), и usage ожидавшего результата теряется:
+  construction attempt 1 после резолюции несёт `usage = NULL` (313,722 токена не учтены в
+  store; сумма по p02 = 343,515 вместо ~657k). Кандидат фикса — переносить usage/артефакты
+  чекпоинта в superseding-результат.
+
+
 - **Реализация выбранного оператором варианта 1** — CLI-путь прикрепления контракта:
   - `RunStore.attach_contract(run_id, contract)` (state/run_store.py): запуск без
     контракта записывает переданный; идентичный — no-op; **другой** — отказ

@@ -202,7 +202,7 @@ def test_control_point_bindings_cover_every_point() -> None:
     [
         (ControlPoint.PROBLEM, Stage.SPECIFICATION, Gate.SPECIFICATION),
         (ControlPoint.SOLUTION, Stage.PLANNING, Gate.PLANNING),
-        (ControlPoint.UX, Stage.CONSTRUCTION, Gate.UI),
+        (ControlPoint.UX, Stage.SPECIFICATION, Gate.UI),
         (ControlPoint.DISCOVERY_RELEASE, Stage.REVIEW_VERIFICATION, Gate.REVIEW),
     ],
 )
@@ -218,8 +218,19 @@ def test_control_point_is_bound_to_an_existing_gate(
 @pytest.mark.parametrize(
     ("route", "stage", "risk_class", "expected"),
     [
-        (Route.STANDARD, Stage.SPECIFICATION, RiskClass.R0, {ControlPoint.PROBLEM}),
-        (Route.STANDARD, Stage.SPECIFICATION, RiskClass.R4, {ControlPoint.PROBLEM}),
+        (
+            Route.STANDARD,
+            Stage.SPECIFICATION,
+            RiskClass.R0,
+            {ControlPoint.PROBLEM, ControlPoint.UX},
+        ),
+        (
+            Route.STANDARD,
+            Stage.SPECIFICATION,
+            RiskClass.R4,
+            {ControlPoint.PROBLEM, ControlPoint.UX},
+        ),
+        (Route.QUICK, Stage.SPECIFICATION, RiskClass.R0, {ControlPoint.PROBLEM}),
         (
             Route.STANDARD,
             Stage.REVIEW_VERIFICATION,
@@ -235,7 +246,7 @@ def test_control_point_is_bound_to_an_existing_gate(
         (Route.STANDARD, Stage.PLANNING, RiskClass.R1, set()),
         (Route.STANDARD, Stage.PLANNING, RiskClass.R2, {ControlPoint.SOLUTION}),
         (Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R0, set()),
-        (Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R1, {ControlPoint.UX}),
+        (Route.STANDARD, Stage.CONSTRUCTION, RiskClass.R1, set()),
         (Route.QUICK, Stage.CONSTRUCTION, RiskClass.R1, set()),
         (Route.QUICK, Stage.PLANNING, RiskClass.R2, {ControlPoint.SOLUTION}),
         (Route.STANDARD, Stage.RELEASE, RiskClass.R4, set()),

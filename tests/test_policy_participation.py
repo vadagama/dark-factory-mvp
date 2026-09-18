@@ -44,7 +44,8 @@ def test_stage_projection_semantics() -> None:
 
 
 def test_human_gates_are_route_independent() -> None:
-    assert frozenset({Gate.SPECIFICATION, Gate.REVIEW}) == HUMAN_GATES
+    # ``ui`` joined the base set when it moved to the design stage (ADR-029 p.2).
+    assert frozenset({Gate.SPECIFICATION, Gate.UI, Gate.REVIEW}) == HUMAN_GATES
     for route in Route:
         assert route_profile(route).human_gates == HUMAN_GATES
 
@@ -52,12 +53,13 @@ def test_human_gates_are_route_independent() -> None:
 def test_human_gates_sit_on_in_the_loop_stages() -> None:
     # The flow-level human gates cover the stages whose projected mode is
     # in-the-loop: specification approval covers discovery (requirements, UX,
-    # architecture), review carries the merge. Planning stays in-the-loop via
-    # escalation conditions (e.g. a new ADR proposal), not via a flow gate.
+    # architecture) and carries the UI gate, review carries the merge. Planning
+    # stays in-the-loop via escalation conditions (e.g. a new ADR proposal), not
+    # via a flow gate.
     in_the_loop = {
         stage
         for stage, mode in STAGE_PARTICIPATION.items()
         if mode is HumanParticipation.IN_THE_LOOP
     }
     assert in_the_loop == {Stage.SPECIFICATION, Stage.PLANNING, Stage.REVIEW_VERIFICATION}
-    assert frozenset({Gate.SPECIFICATION, Gate.REVIEW}) == HUMAN_GATES
+    assert frozenset({Gate.SPECIFICATION, Gate.UI, Gate.REVIEW}) == HUMAN_GATES

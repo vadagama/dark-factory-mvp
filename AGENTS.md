@@ -6,7 +6,7 @@
 
 **Software Dark Factory** — MVP «тёмной фабрики» разработки ПО: конвейер, в котором специализированные агенты-роли (product, design, architect, infrastructure, security, develop, quality, CI/CD, operation) превращают задачу в работающий, протестированный и задокументированный код с минимальным участием человека.
 
-- Статус: pre-MVP, MVP-ядро реализовано (US1–US6: CLI-стадии, SDD, гейты/merge-политика, GitOps-релиз, API/Console; durable-раннер — ADR-024/025); впереди e2e-пилот (T043) и финальная приёмка (T056). Архитектурные решения приняты (ADR-001…ADR-028).
+- Статус: pre-MVP, MVP-ядро реализовано (US1–US6: CLI-стадии, SDD, гейты/merge-политика, GitOps-релиз, API/Console; durable-раннер — ADR-024/025); впереди e2e-пилот (T043) и финальная приёмка (T056). Архитектурные решения приняты (ADR-001…ADR-029).
 - Стек: Python (модульный монолит), PydanticAI за `HarnessPort`, pydantic-graph внутри стадии, FastAPI, PostgreSQL как state store, React + Radix/shadcn для Console, локальный Kubernetes + Helm + Argo CD — см. ADR-002, ADR-004, ADR-005, ADR-010, ADR-014. Изменение стека — только новым ADR.
 - Язык: документация и общение с пользователем — русский; код, идентификаторы, коммиты — английский.
 

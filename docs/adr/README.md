@@ -58,3 +58,4 @@
 | [ADR-026](ADR-026-parameterizable-ci-stages.md) | Параметризуемые этапы CI: выключатели `CI_SKIP_<JOB>` через repository variables, opt-out и fail-safe | принято |
 | [ADR-027](ADR-027-console-ci-stage-toggles.md) | Управление этапами CI из консоли: репозиторные переменные за API (`ci:write` + operator, fail-closed) | принято |
 | [ADR-028](ADR-028-console-reactivity-polling.md) | Console reactivity: background polling (WebSockets rejected in MVP; SSE as a future option) | принято |
+| [ADR-029](ADR-029-human-gates-at-design-phase.md) | Human gates at the design phase and machine-only pipeline resolution (уточняет ADR-018 п.1 и ADR-023 п.1/3/4/6) | принято |
