@@ -25,7 +25,9 @@ What one attempt does, in order:
    under its deterministic idempotency key (FR-017, per-effect ledger of ADR-006 p.3);
 6. an attempt whose workspace holds no changes stops in ``blocked`` before any
    external effect: "no changes" is a stage decision, never a silent empty
-   change request;
+   change request; the review/verification stage is the one exception - it
+   judges the open change request the change already has (ADR-005 p.2) and
+   writes no file by design, so it publishes that request and parks on it;
 7. on failure: stop the stage in ``blocked`` with a human-readable reason — a
    retryable attempt (ADR-006 p.7), not a papered-over success.
 
@@ -78,7 +80,6 @@ from dark_factory.ports import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
-from dark_factory.rules.gates import HUMAN_GATES, required_gates
 
 STAGE_ROLE: Final[Mapping[Stage, Role]] = {
     Stage.SPECIFICATION: Role.PRODUCT,
@@ -279,7 +280,9 @@ class AgentStageExecutor:
         order matters for the "no changes" decision: the file set is collected
         first, so an attempt with nothing to publish stops before the branch,
         the commit or the change request exists. ``None`` is that decision; the
-        caller turns it into a retryable ``blocked`` attempt.
+        caller turns it into a retryable ``blocked`` attempt - except for the
+        review/verification stage, which writes nothing by design and falls back
+        to the request under review (:meth:`_published_under_review`).
         """
         repository = context.change.product
         branch = branch_name(context.change.id, prefix=self._branch_prefix)
@@ -288,7 +291,7 @@ class AgentStageExecutor:
             idempotency_key=effect_key(identity, _EFFECT_COLLECT_CHANGES, context.change.id),
         )
         if not changes:
-            return None
+            return await self._published_under_review(context)
         await self._repository.ensure_branch(
             repository,
             branch,
@@ -341,6 +344,38 @@ class AgentStageExecutor:
         ]
         return artifacts, change_request
 
+    async def _published_under_review(
+        self, context: StageContext
+    ) -> tuple[list[ArtifactRef], ChangeRequestRef] | None:
+        """The request a review stage judges when its agent changed nothing.
+
+        Review/verification completes through ``merge`` (ADR-005 p.2) and so
+        carries a change request (ADR-011), but it reviews the request the change
+        already has and legitimately writes no file: the "no changes" decision
+        must not block it. That open request is the published target; the
+        artifact names the pinned input revision - the revision the reviewed
+        request's CI ran on - because ``ChangeRequestRef`` carries no head SHA
+        of its own. A merged or closed request is nothing under review, and a
+        stage other than review/verification never takes this path: both stay an
+        honest ``None`` for the caller to turn into a retryable ``blocked``
+        attempt.
+        """
+        if context.stage is not Stage.REVIEW_VERIFICATION:
+            return None
+        repository = context.change.product
+        change_request = await self._merge_requests.find_existing(repository, context.change.id)
+        if change_request is None or change_request.status is not ChangeRequestStatus.OPEN:
+            return None
+        artifacts = [
+            ArtifactRef(
+                artifact_type=ArtifactKind.CHANGE_REQUEST.value,
+                uri=change_request.url or f"{repository.slug}#{change_request.number}",
+                revision=context.input_revision,
+                producer=STAGE_ROLE[context.stage].value,
+            )
+        ]
+        return artifacts, change_request
+
     # --- results -----------------------------------------------------------
 
     def _instruction(self, context: StageContext, skill: SkillManifest) -> str:
@@ -379,13 +414,17 @@ class AgentStageExecutor:
         """The stage produced its work and parks on its external wait (FR-009, SC-004).
 
         The wait follows the stage's gate character (``rules.gates``): a stage
-        whose required gates are all human — specification on the base gate
+        whose required gates are all human — the design stage on the base gate
         set — parks for the human decision, a stage with machine gates waits
-        for CI on the final SHA. The flow transition table owns which waits a
-        stage may take; producing an action outside it would crash the
-        advance instead of parking the attempt (found in T-043 increment 1).
+        for CI on the final SHA. The machine set is the risk-aware one
+        (``context.required_gates - context.human_gates``, ADR-028 p.3): a
+        risk-widened human gate (``planning`` at R2) must park for the human,
+        or the stage would wait for a pipeline verdict that can never resolve
+        it. The flow transition table owns which waits a stage may take;
+        producing an action outside it would crash the advance instead of
+        parking the attempt (found in T-043 increment 1).
         """
-        machine_gates = required_gates(context.route, context.stage) - HUMAN_GATES
+        machine_gates = context.required_gates - context.human_gates
         produced = (
             f"stage {context.stage.value} produced {change_request.repository.slug}"
             f"#{change_request.number} at {self._branch(context)}"

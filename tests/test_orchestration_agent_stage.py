@@ -20,9 +20,16 @@ from dark_factory.adapters.fakes import (
     FakeTelemetry,
 )
 from dark_factory.agents.profiles.manifest import AgentProfile
-from dark_factory.agents.profiles.registry import DEVELOP_PROFILE, PRODUCT_PROFILE
-from dark_factory.changes.enums import ChangeRequestStatus, GateStatus, Route, Stage, StageStatus
-from dark_factory.changes.next_action import StopAction, WaitForCIAction
+from dark_factory.agents.profiles.registry import DEVELOP_PROFILE, PRODUCT_PROFILE, QUALITY_PROFILE
+from dark_factory.changes.enums import (
+    ChangeRequestStatus,
+    GateStatus,
+    RiskClass,
+    Route,
+    Stage,
+    StageStatus,
+)
+from dark_factory.changes.next_action import StopAction, WaitForCIAction, WaitForInputAction
 from dark_factory.changes.refs import RepositoryRef
 from dark_factory.changes.usage import BudgetSnapshot, Usage
 from dark_factory.orchestration.stages.agent import (
@@ -177,6 +184,7 @@ def _context(
     input_revision: str | None = REVISION,
     attempt: int = 1,
     description: str | None = None,
+    risk_class: RiskClass | None = None,
 ) -> StageContext:
     return build_context(
         change=make_change().model_copy(update={"description": description}),
@@ -186,6 +194,7 @@ def _context(
         input_revision=input_revision,
         budget=BudgetSnapshot(),
         attempt_number=attempt,
+        risk_class=risk_class,
     )
 
 
@@ -214,6 +223,18 @@ def _executor(
 
 
 # --- the successful attempt ------------------------------------------------
+
+
+def test_a_risk_widened_human_gate_parks_for_the_human_not_for_ci() -> None:
+    # At R3 every required gate of the stage is a human decision (ADR-023 p.3),
+    # so the machine set is empty and the attempt must park for the human input
+    # instead of a pipeline verdict that could never resolve it (ADR-028 p.3).
+    executor, _recorder, _repo, _changes = _executor()
+
+    result = executor(_context(risk_class=RiskClass.R3))
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForInputAction)
 
 
 def test_successful_stage_waits_for_ci_with_a_change_request() -> None:
@@ -429,6 +450,92 @@ def test_an_attempt_without_changes_blocks_before_any_external_effect() -> None:
     assert asyncio.run(changes.find_existing(make_change().product, "chg-001")) is None
     with pytest.raises(KeyError):
         asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001")))
+
+
+def test_review_stage_reuses_the_open_request_when_the_agent_changed_nothing() -> None:
+    """The review stage judges the request under review and writes nothing (T-043).
+
+    The live pilot blocked here: the quality agent reviewed the construction
+    request and legitimately changed no file, so the attempt must publish the
+    request already under review and park on it instead of stopping with
+    "no changes". The quality profile has no write tool, so the default fake
+    harness leaves the workspace empty, exactly like the real review.
+    """
+    changes = RecordingMergeRequests()
+    executor, recorder, repo, _ = _executor(merge_requests=changes)
+    repository = make_change().product
+    opened = asyncio.run(
+        changes.open(
+            OpenChangeRequest(
+                repository=repository,
+                change_id="chg-001",
+                source_branch=branch_name("chg-001"),
+                target_branch="main",
+                title="construction",
+                description="construction body",
+                head_sha=REVISION,
+            ),
+            idempotency_key="construction-open",
+        )
+    )
+
+    result = executor(_context(stage=Stage.REVIEW_VERIFICATION))
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForCIAction)
+    assert result.next_action.change_request == opened
+    assert [artifact.artifact_type for artifact in result.artifacts] == ["change_request"]
+    assert result.artifacts[0].producer == "quality"
+    # The reviewed reference carries no head SHA, so the artifact names the
+    # pinned input revision - the revision the reviewed request's CI ran on.
+    assert result.artifacts[0].revision == REVISION
+    # The review published no external effect of its own: no second request and
+    # no branch or commit.
+    assert len(changes.opened) == 1
+    assert recorder.calls == [("quality", QUALITY_PROFILE.tools)]
+    assert repo.commits_of(repository, branch_name("chg-001")) == ()
+    with pytest.raises(KeyError):
+        asyncio.run(repo.get_revision(repository, branch_name("chg-001")))
+
+
+def test_review_stage_blocks_without_an_open_request_to_review() -> None:
+    """Nothing under review: the no-changes decision stays a blocked attempt."""
+    executor, _, repo, changes = _executor()
+    result = executor(_context(stage=Stage.REVIEW_VERIFICATION))
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "no changes" in result.next_action.reason
+    assert asyncio.run(changes.find_existing(make_change().product, "chg-001")) is None
+    with pytest.raises(KeyError):
+        asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001")))
+
+
+def test_review_stage_blocks_when_the_request_under_review_is_already_merged() -> None:
+    """A merged request is nothing under review: the honest block stays."""
+    executor, _, _, changes = _executor()
+    repository = make_change().product
+    merged = asyncio.run(
+        changes.open(
+            OpenChangeRequest(
+                repository=repository,
+                change_id="chg-001",
+                source_branch=branch_name("chg-001"),
+                target_branch="main",
+                title="construction",
+                description="construction body",
+                head_sha=REVISION,
+            ),
+            idempotency_key="construction-open",
+        )
+    )
+    asyncio.run(changes.merge(merged, expected_sha=REVISION, idempotency_key="construction-merge"))
+
+    result = executor(_context(stage=Stage.REVIEW_VERIFICATION))
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "no changes" in result.next_action.reason
 
 
 def test_a_publish_failure_blocks_without_leaking_provider_text() -> None:
