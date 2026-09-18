@@ -5,7 +5,7 @@
 schema: dark-factory.dev/pack/v1
 id: pack:web-app
 name: web-app
-version: 0.2.0
+version: 0.2.1
 description: >-
   Engineering pack for web-app products: React frontend with the real Small
   UIKit (@small/ui workspace package from packs/ui), FastAPI + PostgreSQL

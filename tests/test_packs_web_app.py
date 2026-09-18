@@ -207,7 +207,8 @@ def test_backend_pyproject_is_strict_and_complete() -> None:
     assert project["name"] == "example-product-backend"
     assert SEMVER.match(project["version"])
     assert project["requires-python"] == ">=3.12"
-    runtime = {re.split(r"[<>=~]", dep)[0].strip() for dep in project["dependencies"]}
+    # Extras count as the same dependency: "psycopg[binary]" -> "psycopg".
+    runtime = {re.split(r"[<>=~\[]", dep)[0].strip() for dep in project["dependencies"]}
     assert {
         "fastapi",
         "uvicorn",
