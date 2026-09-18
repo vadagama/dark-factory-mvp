@@ -22,6 +22,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source-path=SCRIPTDIR
+# common.sh lives next to this script; without shellcheck -x the source is
+# not followed (SC1091), and plain shellcheck is what the test pins.
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/scripts/common.sh"
 
 require_cmds kubectl jq
@@ -29,7 +32,7 @@ require_cmds kubectl jq
 KEEP_PROBE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --context) KUBECTL_CTX="${2:-}"; shift 2 ;;
+    --context) export KUBECTL_CTX="${2:-}"; shift 2 ;;
     --keep-probe) KEEP_PROBE=true; shift ;;
     -h|--help) grep '^# ' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
