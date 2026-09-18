@@ -3,6 +3,40 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — T043: B8 — planning p07 не порождает изменений (`blocked`, воспроизводимо)
+
+- **Наблюдение.** `advance chg_t043_p07` (после успешной specification и зелёного гейта) →
+  `blocked`, attempt 1, reason «stage planning: the attempt produced no changes to publish»;
+  повторный `advance` → `blocked`, attempt 2, тот же reason. Воспроизводимость 2/2.
+- **Механика (по коду).** `stages/agent.py::_attempt` блокирует попытку, когда `_publish` вернул
+  `None`, а `_publish` возвращает `None` при пустом `collect_changes(workspace)` — тот же контракт,
+  что описан в ADR-029 для `review_verification`. Worktree стадии
+  (`df-workspaces/run_78f1f336…-planning-552e107…`) чист, включая untracked; в зеркале
+  `df-mirrors` и в `df-workspaces` новых файлов нет — агент роли product не записал ничего.
+- **Возможные причины** (не подтверждены — нужен транскрипт/usage попытки): детерминированный
+  no-op модели (одинаковый контекст → тот же результат, поэтому слепой retry не помогает); либо
+  артефакт записан за пределами workspace стадии. `.factory/factory.yaml` путей артефактов не
+  задаёт — путь выбирает агент.
+- **Не общее правило стадии:** `p06` (тот же маршрут и класс, то же время) опубликовал
+  `specs/version-endpoint/plan.md` и пошёл дальше.
+- **Следствие.** `p07` выпадает из набора D3; третий standard нужно заменить (кандидат — `p10`,
+  рефакторинг без изменения контрактов) — решение оператора (**D7**). Живой `blocked`-ран остаётся
+  в журнале как отклонение; LLM-расход — 2 planning-попытки.
+
+## 2026-09-18 — T043: D6 — p04 и p05 пере-intake'нуты как p04b/p05b
+
+- **Основание:** решение оператора D6 (p04/p05 заклинены — B6).
+- **Что сделано** (ветка `chore/t-043-p04-p05-reintake`, MR #106): в `deploy/local/pilot/tasks.json`
+  добавлены `chg_t043_p04b` (`t043-pilot-04b`) и `chg_t043_p05b` (`t043-pilot-05b`); подготовлены
+  `contracts/chg_t043_p04b.contract.json` и `contracts/chg_t043_p05b.contract.json` (R1,
+  `approval: null`), scope/AC как у p04/p05. Заклиненные раны не тронуты.
+- **Живая проверка:** `intake` — 2 created (p04b, p05b), 11 replayed, 0 failed; первые `advance` —
+  specification опубликовала CR и запарковалась на human-гейте (exit 10): `product-1#19` (p04b),
+  `product-1#20` (p05b).
+- **Живое состояние фазы 3 (на момент записи):** p01b — spec-CR #17 `waiting`; p04b — #19 `waiting`;
+  p05b — #20 `waiting`; p06 — planning `waiting`, plan-CR #18 (CI 9/9, ждёт контракт + решение
+  `solution`); p07 — `blocked` (B8); p01/p02/p04/p05 — отклонения.
+
 ## 2026-09-18 — T043: фаза 3 — p06 standard доведён до plan-CR
 
 - **Что сделано** (`dark-factory`, после merge фикса B1): `advance chg_t043_p06` — planning
