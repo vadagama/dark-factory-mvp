@@ -159,6 +159,53 @@ def test_an_observed_human_approval_resolves_the_human_gated_stage() -> None:
     assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is True
 
 
+def test_an_observed_merge_resolves_the_human_gated_stage() -> None:
+    """The merge of the stage's change request is the human decision on the stage."""
+    observation = GateObservation(head_sha=HEAD, merged=True, pipeline_status="success")
+
+    assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is True
+
+
+def test_human_gated_resolution_builds_the_success_result_from_an_approval() -> None:
+    """The resolved human gate passes version-bound to the approved SHA (ADR-009 p.7)."""
+    approval = make_merge_approval(sha=HEAD).model_copy(update={"gate": Gate.SPECIFICATION})
+    resolution = _build(
+        Stage.SPECIFICATION,
+        GateObservation(
+            head_sha=HEAD, merged=False, pipeline_status="success", approvals=(approval,)
+        ),
+    )
+
+    result = resolution.result
+    assert result.status is StageStatus.SUCCEEDED
+    assert result.status is expected_result_status(result.next_action)
+    assert isinstance(result.next_action, ExecuteStageAction)
+    assert result.next_action.next_stage is route_profile(Route.STANDARD).next_stage(
+        Stage.SPECIFICATION
+    )
+    assert resolution.merge_context is None
+    assert [(item.gate, item.status, item.sha) for item in result.gate_results] == [
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+    ]
+    assert result.attempt_number == 1
+    assert result.input_revision == REVISION
+
+
+def test_human_gated_resolution_builds_the_success_result_from_a_merge() -> None:
+    """The observed merge of the spec request completes the human gate at its head."""
+    resolution = _build(
+        Stage.SPECIFICATION,
+        GateObservation(head_sha=HEAD, merged=True, pipeline_status="success"),
+    )
+
+    result = resolution.result
+    assert result.status is StageStatus.SUCCEEDED
+    assert isinstance(result.next_action, ExecuteStageAction)
+    assert [(item.gate, item.status, item.sha) for item in result.gate_results] == [
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD)
+    ]
+
+
 def test_construction_resolution_passes_the_machine_gates_at_the_head_sha() -> None:
     """A green pipeline at the head SHA passes every machine gate of the stage (FR-009)."""
     resolution = _build(

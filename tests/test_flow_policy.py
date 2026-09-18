@@ -300,7 +300,7 @@ def test_the_same_risk_class_advances_on_the_standard_route() -> None:
     _advance_to(
         run,
         Stage.CONSTRUCTION,
-        decisions=(_approval(Gate.SPECIFICATION), _approval(Gate.PLANNING)),
+        decisions=(_approval(Gate.SPECIFICATION, sha=SHA), _approval(Gate.PLANNING, sha=SHA)),
     )
     assert run.stages[-1].stage is Stage.CONSTRUCTION
     assert run.status is RunStatus.RUNNING
@@ -386,7 +386,31 @@ def test_r2_obligations_stop_the_advance_with_the_rule_and_the_missing_point() -
 def test_r2_obligations_are_met_by_a_human_approval_of_the_point() -> None:
     run = _run_with_risk(Route.STANDARD, RiskClass.R2)
     result = _result(Stage.SPECIFICATION, ExecuteStageAction(next_stage=Stage.PLANNING), run.route)
-    decision = apply_result(run, result, human_decisions=(_approval(Gate.SPECIFICATION),))
+    decision = apply_result(run, result, human_decisions=(_approval(Gate.SPECIFICATION, sha=SHA),))
+    assert not isinstance(decision.action, StopAction)
+    assert run.stages[-1].stage is Stage.PLANNING
+
+
+def test_a_human_gate_passed_on_a_resolved_wait_binds_the_points_to_its_sha() -> None:
+    """The point closes on the approval of the revision the human gate passed at (T-043).
+
+    The wait resolution passes the human gate at the observed head of the
+    stage's change request — a revision the stage's input revision never is
+    (the gate passed on the agent's commit). The control points of the stage
+    being left bind to that SHA, so the observed approval closes them.
+    """
+    run = _run_with_risk(Route.STANDARD, RiskClass.R2)
+    head = "spec-cr-head"
+    result = StageResult(
+        stage=Stage.SPECIFICATION,
+        run_id=run.id,
+        change_id=run.change_id,
+        input_revision="base1234",
+        status=expected_result_status(ExecuteStageAction(next_stage=Stage.PLANNING)),
+        next_action=ExecuteStageAction(next_stage=Stage.PLANNING),
+        gate_results=[GateResult(gate=Gate.SPECIFICATION, status=GateStatus.PASSED, sha=head)],
+    )
+    decision = apply_result(run, result, human_decisions=(_approval(Gate.SPECIFICATION, sha=head),))
     assert not isinstance(decision.action, StopAction)
     assert run.stages[-1].stage is Stage.PLANNING
 
@@ -483,7 +507,7 @@ def test_the_route_floor_raises_a_low_declared_class(route: Route) -> None:
 def test_the_route_floor_raises_instead_of_refusing_the_change() -> None:
     """The raised class is satisfiable: with the approval the same advance goes through."""
     run = _run_with_risk(Route.FOUNDATION, RiskClass.R1)
-    _advance_to(run, Stage.PLANNING, decisions=(_approval(Gate.SPECIFICATION),))
+    _advance_to(run, Stage.PLANNING, decisions=(_approval(Gate.SPECIFICATION, sha=SHA),))
     assert run.stages[-1].stage is Stage.PLANNING
     assert run.status is RunStatus.RUNNING
 
@@ -494,7 +518,11 @@ def test_a_low_declared_class_on_foundation_reaches_release() -> None:
     _advance_to(
         run,
         Stage.REVIEW_VERIFICATION,
-        decisions=(_approval(Gate.SPECIFICATION), _approval(Gate.PLANNING), _approval(Gate.UI)),
+        decisions=(
+            _approval(Gate.SPECIFICATION, sha=SHA),
+            _approval(Gate.PLANNING, sha=SHA),
+            _approval(Gate.UI, sha=SHA),
+        ),
     )
     result = _result(
         Stage.REVIEW_VERIFICATION, MergeAction(change_request=_change_request()), run.route
