@@ -101,8 +101,13 @@ FLOW_TRANSITIONS: Final[dict[Stage, frozenset[NextActionType]]] = {
         {"execute_stage", "wait_for_input", "rework", "request_approval", "stop"}
     ),
     Stage.PLANNING: frozenset(
-        {"execute_stage", "wait_for_input", "rework", "request_approval", "stop"}
+        {"execute_stage", "wait_for_input", "wait_for_ci", "rework", "request_approval", "stop"}
     ),
+    # Construction and planning publish their work as one commit + change
+    # request (T-092 S2): their machine gates run on the final SHA in CI
+    # (FR-009), so both stages park on ``wait_for_ci`` after a produced
+    # attempt. Specification has no machine gate on the base set — it parks
+    # for the human decision instead.
     Stage.CONSTRUCTION: frozenset(
         {"execute_stage", "wait_for_input", "wait_for_ci", "rework", "request_approval", "stop"}
     ),

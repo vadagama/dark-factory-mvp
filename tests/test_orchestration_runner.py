@@ -290,6 +290,15 @@ HEAD = "9f2c7ab1"
 """Head SHA the fake provider reports; the facts of a resolution are bound to it."""
 
 
+def _run_at_planning_waiting() -> ChangeRun:
+    """A run whose specification succeeded and whose planning stage waits for CI."""
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.SUCCEEDED))
+    run.stages.append(_stage_run(run, Stage.PLANNING, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    return run
+
+
 def _run_at_construction_waiting() -> ChangeRun:
     """A run whose first two stages succeeded and whose construction stage waits for CI."""
     run = make_run()
@@ -1080,6 +1089,76 @@ def test_advance_run_resolves_a_waiting_construction_stage_on_pipeline_success()
     assert run.status is RunStatus.RUNNING
     assert run.stages[2].status is StageStatus.SUCCEEDED
     assert run.stages[3].status is StageStatus.PENDING
+
+
+def test_advance_run_parks_a_planning_attempt_on_wait_for_ci() -> None:
+    """A produced planning attempt parks on its machine gate in CI (T-043 regression).
+
+    The live pilot crashed here: the planning executor returned ``wait_for_ci``,
+    but the transition table refused the pair.
+    """
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.SUCCEEDED))
+    run.stages.append(_stage_run(run, Stage.PLANNING, StageStatus.PENDING))
+    run.status = RunStatus.RUNNING
+    store = FakeStore(run=run)
+
+    advance = _advance(
+        store,
+        executor=_executor(
+            status=StageStatus.WAITING,
+            next_action=WaitForCIAction(
+                reason="waiting for the pipeline", change_request=make_change_request()
+            ),
+        ),
+    )
+
+    assert advance.outcome is RunAdvanceOutcome.WAITING
+    assert advance.stage is Stage.PLANNING
+    assert advance.decision is not None
+    assert advance.decision.run_status is RunStatus.WAITING
+    assert run.status is RunStatus.WAITING
+    assert run.stages[1].status is StageStatus.WAITING
+    assert len(store.decisions) == 1
+    assert store.released == [1]
+
+
+def test_advance_run_resolves_a_waiting_planning_stage_on_pipeline_success() -> None:
+    """A green pipeline at the head SHA resumes the planning attempt into construction."""
+    run = _run_at_planning_waiting()
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.PLANNING))
+    facts = FakeFacts(GateObservation(head_sha=HEAD, merged=False, pipeline_status="success"))
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return f"scm-{stage.value}"
+
+    advance = _advance(
+        store, executor=_waiting(), change=change, gate_facts=facts, revision_of=revision_of
+    )
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.CONSTRUCTION
+    assert advance.result.attempt_number == 1
+    assert advance.result.input_revision == REVISION
+    assert [attempt.attempt_number for attempt in store.attempts] == [1]
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert isinstance(advance.result.next_action, ExecuteStageAction)
+    assert [(item.gate, item.status, item.sha) for item in advance.result.gate_results] == [
+        (Gate.PLANNING, GateStatus.PASSED, HEAD)
+    ]
+    assert facts.calls == [Stage.PLANNING, Stage.PLANNING]
+    assert store.created_stages == [
+        StagePlacement(stage=Stage.CONSTRUCTION, input_revision="scm-construction")
+    ]
+    assert run.stages[2].input_revision == "scm-construction"
+    assert store.history == [advance.result]
+    assert store.released == [1]
+    assert run.status is RunStatus.RUNNING
+    assert run.stages[1].status is StageStatus.SUCCEEDED
+    assert run.stages[2].status is StageStatus.PENDING
 
 
 def test_advance_run_resolves_a_pipeline_failure_into_a_rework_round() -> None:

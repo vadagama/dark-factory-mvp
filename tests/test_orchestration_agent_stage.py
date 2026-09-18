@@ -238,6 +238,29 @@ def test_successful_stage_waits_for_ci_with_a_change_request() -> None:
     assert recorder.calls == [("develop", DEVELOP_PROFILE.tools)]
 
 
+def test_successful_planning_stage_waits_for_ci_with_a_change_request() -> None:
+    """Planning publishes its request like construction and parks on CI (T-043)."""
+    executor, recorder, repo, _changes = _executor()
+    result = executor(_context(stage=Stage.PLANNING))
+    repository = make_change().product
+    branch = branch_name("chg-001")
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForCIAction)
+    assert result.next_action.change_request is not None
+    assert result.next_action.change_request.number == 1
+    assert result.attempt_number == 1
+    assert result.input_revision == REVISION
+    assert [artifact.artifact_type for artifact in result.artifacts] == ["change_request"]
+    assert result.artifacts[0].producer == "product"
+    # The change request carries the commit the stage published, not the
+    # pinned input revision (TD-024).
+    head = asyncio.run(repo.get_revision(repository, branch))
+    assert result.artifacts[0].revision == head
+    assert repo.commits_of(repository, branch) == (head,)
+    assert recorder.calls == [("product", PRODUCT_PROFILE.tools)]
+
+
 def test_change_request_description_is_rendered_from_the_template() -> None:
     changes = RecordingMergeRequests()
     executor, _, _, _ = _executor(merge_requests=changes)

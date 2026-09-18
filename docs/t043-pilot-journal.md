@@ -3,6 +3,17 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: планирование паркуется на CI (фикс planning → wait_for_ci)
+
+- **Живой дефект: advance p02 из planning падал `InvalidFlowTransition: Flow transition planning -> wait_for_ci is not allowed` (exit 1).** LLM-вызов успевал пройти, commit + change request публиковались идемпотентно *до* крэша, но решение не персистилось — валидация перехода в `apply_result` стоит раньше записи. Каждый повторный advance перезапускал LLM и падал снова (выгорание бюджета при нулевом прогрессе). До мерджа фикса planning-стадии не advance'ить.
+- **Причина**: `AgentStageExecutor._waiting` выбирает wait-действие по характеру гейтов стадии (`required_gates − HUMAN_GATES`); для planning `{planning}` — machine-гейт → `WaitForCIAction`, но `FLOW_TRANSITIONS[Stage.PLANNING]` не содержал `wait_for_ci` (таблица росла от construction; specification не спотыкается, т.к. её гейты чисто human). Тот же класс дефекта, что помечен в коде как «found in T-043 increment 1».
+- **Фикс** (ветка `fix/t-043-planning-wait-for-ci`): `wait_for_ci` в `FLOW_TRANSITIONS[Stage.PLANNING]` + комментарий-инвариант таблицы (planning/construction публикуют работу одним коммитом + CR — machine-гейты гоняются в CI по финальному SHA, FR-009; specification чисто human). Тесты: executor planning → `WaitForCIAction` с CR и producer `product`; runner-регрессия парковки свежей planning-попытки на `wait_for_ci`; runner-резолв ожидающего planning зелёным пайплайном → SUCCESS, `execute_stage` → construction, `[(Gate.PLANNING, PASSED, head_sha)]`; exhaustive-траверсал пар таблицы подхватывает новую пару автоматически.
+- **Проверки**: pytest 1802 passed/72 skipped (HEAD до фикса — 1799/72, +3 новых), ruff check+format чисто, mypy чисто (176 файлов).
+- **Открытые темы (наблюдения пилота, фикс отдельно):**
+  - **R2-раны (p06–p10): контрольная точка `solution` не закрывается наблюдаемым review'ем.** После зелёного CI на plan-CR выход из planning требует human-аппрува точки `solution` (PLANNING-гейт), но `ScmFactsProvider._approvals` мапит review'и planning-стадии на `Gate.REVIEW` (фолбэк: у planning нет базового human-гейта) — точка не может закрыться через наблюдение. Нужен путь operator-decision для planning-гейта или правка маппинга провайдера.
+  - **Эффективный риск-класс до approved-контракта — R0/фолбэк классификатора.** Поэтому R2-раны прошли specification без контрольной точки `problem` (обязательства R2+ считаются от эффективного класса, а он ещё не поднят контрактом).
+- **Инфра-замечание (повтор)**: инструменты правки сессии дважды за сессию отдали/записали устаревшее состояние файла (перезапись буфера редактора поверх `git checkout`; агрессивный fuzzy-match правок, портящий соседние блоки). Рабочий паттерн подтверждён: восстановление из HEAD + python-патчер с якорем «ровно одно вхождение» + сверка `git diff` (только добавления) до коммита.
+
 ## 2026-09-18 — Инкремент 1: резолюция human-гейтов (PR #88), оператор смержил спеки
 
 - **Оператор выразил решения мержем всех 9 спек-CR (product-1#1–#9, без формальных review).** На момент проверки все PR `MERGED`, CI зелёный. Механизм такое решение не съедал — три дефекта доводки (PR #88, ветка `fix/t-043-human-gate-resolution`):
