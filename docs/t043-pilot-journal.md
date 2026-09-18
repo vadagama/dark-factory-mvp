@@ -3,6 +3,13 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: доводка драйвера (PR #85/#86), матрица на гейтах
+
+- **Tool-ошибки роняли попытку агента (fixed, PR #86).** Модель читала ещё не созданный файл → `read_file` → `collect_evidence` поднимал `KeyError` → harness-адаптер переводил исключение в `ok=False` → попытка целиком `blocked` («harness did not produce a result»). p04 пережила 2 такие попытки (3–4), p08/p09 — застряли на attempt 1. → `_model_facing`-декоратор в `WorkspaceTools`: модель-корректируемые сбои (`KeyError`, `UnsafeWorkspacePath`, пустые argv/pattern) возвращаются модели текстом `error: ...` — по собственной политике модуля; неожиданные исключения продолжают пробрасываться. `resolve_path` не изменён — изоляция workspace прежняя. Evidence: p08/p09 после фикса с первой попытки опубликовали спеки (product-1#8, product-1#9).
+- **`aclose` на чужом event loop (fixed, PR #86).** Sync-швы драйвера живут по одному `asyncio.run`; entry point закрывает runtime в новом loop'е — `GitHubClient.aclose` делал await пула, привязанного к уже закрытому loop'у → `RuntimeError` → exit 1 после успешно сделанной работы (p04: попытка опубликовала product-1#7 и процесс упал на aclose). → Клиент чужого loop'а выбрасывается на GC, зеркально `_client_for_loop`.
+- **`chg_t043_p01` приколот к битой ревизии — до пере-intake.** Ран создан до фикса ключа первой стадии (PR #85): первая стадия приколота к snapshot-digest `d507b6f…`, которого нет в git → `WorkspaceError` на каждом advance (attempt 3). Дефект данных старого рана, не кода; снимается пере-intake p01 после решения оператора по гейту p02 (план).
+- **Матрица на human-гейтах `specification` (9/10).** Спеки опубликованы: p02→product-1#1, p03→#2, p05→#3, p06→#4, p07→#5, p10→#6, p04→#7, p08→#8, p09→#9; все `waiting` на human-гейте (ADR-018: спека — человеческое решение). Решения оператора — следующий шаг инкремента; агенты гейты не подают (ADR-011).
+
 ## 2026-09-18 — Инкремент 0: bootstrap пилотного продукта
 
 - **CI run 1 (35299665450, `940b3ae`) — Backend pytest + mypy упали.**
@@ -105,98 +112,3 @@
   (новый claim) — reinstall релиза теряет данные БД; с инкремента 1 релиз
   обновлять только upgrade'ом (или откатом revert-коммита в gitops, TD-020),
   за PVC следить при каждом вмешательстве.
-
-## 2026-09-18 — Инкремент 1: прогон до human-гейта (инкремент в работе)
-
-Состояние: окружение инкремента 1 поднято (pg-forward 55432, intake 10
-изменений `chg_t043_p01…p10`), e2e-цикл агентной стадии пройден живым
-прогоном `chg_t043_p02` — от intake до waiting на human-гейте, с
-опубликованным коммитом и открытым change request. Ниже — найденные и
-закрытые дефекты (все вскрыты только живым прогоном; юнит-контур их не
-видел).
-
-- **run-creation keying (критический, закрыт).** `factory run advance
-  --change-id` создавал run с `input_revision` = digest снапшота change'а
-  (S1), и первая stage-строка наследовала его — резолвер `ScmRevision`
-  (ADR-006 p.4) не вызывался вовсе, поэтому `_mint` пытался сминтить
-  worktree на SHA, которого не существует в git → WorkspaceError на каждой
-  попытке. Юнит-тест резолвера выставлял `stages[0].input_revision = None`
-  вручную и не покрывал путь создания run'а CLI. Фикс:
-  `RunStore.create_run(..., initial_stage_revision=...)` — run-id остаётся
-  от digest (контракт cli.md «one run per snapshot»), первая stage-строка
-  ключится SCM-ревизией (`cli.runner._resolve_run` вызывает резолвер);
-  e2e-регрессионный тест — `tests/integration/test_runner_advance.py`.
-
-- **GitHub 422 для несуществующего ref (закрыт).** Контракт
-  `RepositoryPort` — «missing ref = KeyError» (404), но GitHub отвечает
-  **422** на `GET /commits/{ref}` для ref'а, который не резолвится
-  (несуществующая тасковая ветка — нормальное состояние до первой стадии).
-  Адаптеры (`repository.get_revision`, `repository._head`, `ci._resolve_ref`)
-  теперь мапят 422 как absent; контрактный эмулятор воспроизводит 422,
-  добавлен контрактный тест `test_get_revision_of_a_missing_ref_is_a_keyerror`.
-
-- **httpx2-клиент GitHub переживает смену event loop (закрыт).** Sync-швы
-  драйвера (`ScmRevision`, `ScmFactsProvider`, executor) работают через
-  `asyncio.run` — по одному короткому loop'у на вызов; keep-alive пул
-  httpx2 привязан к loop'у и падал на следующем вызове
-  (`RuntimeError: Event loop is closed` — хаотично: то KeyError, то
-  обрыв LLM-вызова на полпути). `GitHubClient` держит клиент **per loop**:
-  запрос на новом loop'е пересоздаёт клиент, пул мёртвого loop'а
-  сбрасывается (ADR-025-совместимо, binding-слой).
-
-- **product-профиль без write_file (закрыт).** Скилл `spec-authoring`
-  требует записать спеку в layout репо, а `PRODUCT_PROFILE.tools` не
-  содержал `write_file` — агент писал спеку в чат, `_publish` видел пустую
-  дельту. Добавлен `write_file` (version 1.0.0 → 1.0.1), meta-снапшот
-  консоли перегенерирован.
-
-- **wait-действие агентной стадии (закрыт).** `AgentStageExecutor._waiting`
-  всегда возвращал `WaitForCIAction`, но `FLOW_TRANSITIONS` разрешает
-  `wait_for_ci` только construction/review/release — спецификация с
-  публикацией падала `InvalidFlowTransition` (exit 1). Теперь действие
-  выбирается по характеру гейтов стадии (`rules.gates`): только human-гейты
-  → `wait_for_input` (парковка на человека), есть machine-гейты →
-  `wait_for_ci`.
-
-- **human-гейт не резолвился пайплайном (закрыт).** `gate_resolved`
-  считал зелёный пайплайн резолюцией для любой не-review стадии — спека
-  «продет» без человека, а `_resolve_machine_gated` честно блокировался
-  («cannot be attributed to a head SHA»). Новая семантика: стадия с
-  чисто-human-гейтами резолвится **только** version-bound human approval
-  (наблюдаемым review'ем change request'а); пайплайн решает только стадии
-  с machine-гейтами. `ScmFactsProvider` теперь привязывает approvals к
-  human-гейту стадии (specification → Gate.SPECIFICATION, review → REVIEW).
-  `gate_resolved(observation, stage, route)` — route передают оба call-site
-  драйвера.
-
-- **Наблюдаемость харнесса (закрыт).** Падение `agent.run` глушилось в
-  «harness did not produce a result» без указания типа — отладка вслепую.
-  `PydanticAIHarness` пишет тип исключения в лог процесса (не в reason —
-  контракт ADR-009 сохранён), плюс диагностический
-  `DARK_FACTORY_HARNESS_TRACEBACK=1` (локальный stderr, по умолчанию выкл).
-
-- **psycopg pin (закрыт, из bring-up).** `psycopg[binary]>=3.2,<3.3` —
-  3.3.x без libpq не работает локально на macOS.
-
-Живой статус прогона: `chg_t043_p02` — waiting (human-гейт specification,
-change request `vadagama/dark-factory-product-1#1`, CI на PR зелёный,
-head `3b56f569`). Решение — оператора (ADR-011). `chg_t043_p01` — run
-создан до фикса keying'а, операционно приколот к digest-ревизии (retry
-сохраняет операционную идентичность, ADR-006 p.7); будет пере-intake под
-новым id после закрытия human-гейта p02. Остальные 8 изменений — не
-запускались, ждут разблокировки контура гейтов.
-
-Известные открытые темы (не блокируют дальнейший прогон, фиксируются):
-- **aclose после закрытого loop'а** — `Runtime.entrypoint` зовёт
-  `asyncio.run(runtime.aclose())` в finally; если ресурсы родились на
-  закрытом `asyncio.run`-loop'е швов, aclose падает с шумным traceback
-  (после основного результата; exit-код в CLI-ветке не искажает — но
-  traceback грязнит stderr). Кандидат: общий loop для швов в ADR-025.
-- **API-approvals не видны драйверу** — operator-approve через
-  `POST /changes/{id}/approvals` пишет Decision в store, но драйвер читает
-  human-факты только из observation (GitHub reviews). Для пилота путь
-  аппрува — review на change request'е; склейку decision-store ↔ драйвер
-  делать отдельным куском (reconciler-территория, ADR-006).
-- **advance-all паттерн ERROR(1)** — при прогоне p02 через advance-all
-  retry-циклы агента (blocked → attempt N) выгорают попытки LLM; перед
-  следующим advance-all прогнать аккуратно с паузами и наблюдением.
