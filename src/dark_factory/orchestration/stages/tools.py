@@ -15,15 +15,17 @@ anything outside it. Workspace-relative paths are validated here (``resolve_path
 so a tool call can never escape the workspace through ``..`` or an absolute path
 — the same path-safety rule ``execution.runs.layout`` applies to run records.
 
-Failure policy: a command that fails is reported *to the model* as a rendered
-result (exit code, stdout, stderr), never raised. An agent must see a failing
-test or a rejected patch to react to it; raising would abort the whole stage on
-the first non-zero exit, which is the opposite of what a coding agent needs.
+Failure policy: a tool failure the model can act on is reported *to the model*
+as a rendered result (exit code, stdout, stderr, ``error: ...``), never raised.
+An agent must see a failing test, a rejected patch or a missing file to react
+to it; raising would abort the whole stage on the first non-zero exit or the
+first misspelled path, which is the opposite of what a coding agent needs.
 """
 
+import functools
 import hashlib
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Final
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from typing import Any, Final
 
 from dark_factory.agents.profiles.manifest import AgentProfile
 from dark_factory.ports import (
@@ -110,6 +112,33 @@ def _render(result: ExecutionResult) -> str:
     return "\n".join(parts)
 
 
+def _model_facing[**P](
+    tool: Callable[P, Coroutine[Any, Any, str]],
+) -> Callable[P, Coroutine[Any, Any, str]]:
+    """Translate tool-call failures into the model-facing text (the failure policy).
+
+    A tool failure the model can act on - a missing file, a path outside the
+    workspace, an absent workspace - is reported as an ``error: ...`` result,
+    never raised: an exception escapes into the harness boundary and aborts the
+    whole stage attempt, while the model could have corrected its next call
+    (found in T-043 increment 1 - one read of a not-yet-created file blocked
+    the attempt). Unexpected exceptions still propagate: they are defects, not
+    model feedback.
+    """
+
+    @functools.wraps(tool)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
+        try:
+            return await tool(*args, **kwargs)
+        except UnsafeWorkspacePath as exc:
+            return f"error: {exc}"
+        except KeyError as exc:
+            detail = exc.args[0] if exc.args else exc
+            return f"error: {detail}"
+
+    return wrapper
+
+
 class WorkspaceTools:
     """The bound role tools of one isolated workspace (T-092 S2).
 
@@ -147,6 +176,7 @@ class WorkspaceTools:
 
     # --- tools -------------------------------------------------------------
 
+    @_model_facing
     async def read_file(self, path: str) -> str:
         """Read a workspace file as text (the read half of ``collect_evidence``)."""
         target = resolve_path(path)
@@ -155,6 +185,7 @@ class WorkspaceTools:
         )
         return evidence.content.decode("utf-8", errors="replace")
 
+    @_model_facing
     async def write_file(self, path: str, content: str) -> str:
         """Write text to a workspace file, creating parent directories as needed."""
         target = resolve_path(path)
@@ -171,6 +202,7 @@ class WorkspaceTools:
         )
         return f"wrote {target} ({len(payload)} bytes)"
 
+    @_model_facing
     async def apply_patch(self, patch: str) -> str:
         """Apply a unified diff inside the workspace through ``git apply``.
 
@@ -193,10 +225,11 @@ class WorkspaceTools:
         )
         return _render(result)
 
+    @_model_facing
     async def run_command(self, argv: list[str]) -> str:
         """Run a command inside the workspace; a failure is reported, not raised."""
         if not argv:
-            raise ValueError("run_command requires a non-empty argv")
+            return "error: run_command requires a non-empty argv"
         result = await self._execution.run_command(
             self._workspace,
             tuple(argv),
@@ -204,6 +237,7 @@ class WorkspaceTools:
         )
         return _render(result)
 
+    @_model_facing
     async def run_tests(self) -> str:
         """Run the repository check command inside the workspace."""
         result = await self._execution.run_command(
@@ -213,10 +247,11 @@ class WorkspaceTools:
         )
         return _render(result)
 
+    @_model_facing
     async def search_repo(self, pattern: str) -> str:
         """Search the workspace for ``pattern`` (a plain, literal grep)."""
         if not pattern.strip():
-            raise ValueError("search_repo requires a non-empty pattern")
+            return "error: search_repo requires a non-empty pattern"
         result = await self._execution.run_command(
             self._workspace,
             ("grep", "-rn", "-F", "--", pattern, "."),

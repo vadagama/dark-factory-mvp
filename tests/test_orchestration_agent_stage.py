@@ -36,7 +36,6 @@ from dark_factory.orchestration.stages.tools import (
     TOOL_NAMES,
     ToolFunction,
     UnknownToolError,
-    UnsafeWorkspacePath,
     WorkspaceTools,
     resolve_path,
     tools_for,
@@ -319,17 +318,14 @@ def test_telemetry_records_one_span_per_attempt() -> None:
 # --- the honest stops -------------------------------------------------------
 
 
-def test_release_stage_without_a_mapped_skill_is_blocked() -> None:
-    # Release is not agent work (ADR-024 §7 S4): the stage's role ci_cd has a
-    # profile now, but no skill is mapped to the stage, so the attempt stops
-    # honestly instead of running an agent.
+def test_stage_without_a_core_profile_is_blocked() -> None:
+    # The release stage is owned by ci_cd, which has no core profile yet (ADR-007 p.4).
     executor, recorder, _, _ = _executor()
     result = executor(_context(stage=Stage.RELEASE))
 
     assert result.status is StageStatus.BLOCKED
     assert isinstance(result.next_action, StopAction)
-    assert "no skill is mapped to this stage" in result.next_action.reason
-    assert "'ci_cd'" in result.next_action.reason
+    assert "ci_cd" in result.next_action.reason
     assert recorder.calls == []
 
 
@@ -462,12 +458,24 @@ def test_write_file_key_addresses_the_path_too() -> None:
 @pytest.mark.parametrize("path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", "src/../../x"])
 def test_tools_refuse_paths_outside_the_workspace(path: str) -> None:
     tools, _ = _tools()
-    with pytest.raises(UnsafeWorkspacePath):
-        asyncio.run(tools.read_file(path))
+    # Rejected to the model as an error result, not raised: an exception would
+    # abort the whole attempt, while the model can correct its next call. The
+    # path is still never read - the isolation itself lives in resolve_path.
+    rendered = asyncio.run(tools.read_file(path))
+    assert rendered.startswith("error:")
+    assert "workspace" in rendered
 
 
 def test_resolve_path_normalizes_safe_relative_paths() -> None:
     assert resolve_path("./src//app.py") == "src/app.py"
+
+
+@pytest.mark.parametrize("path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", "src/../../x"])
+def test_resolve_path_still_rejects_unsafe_paths(path: str) -> None:
+    # The isolation boundary itself: resolve_path keeps raising - only the
+    # model-facing tools translate the rejection into an error result.
+    with pytest.raises(ValueError):
+        resolve_path(path)
 
 
 def test_failing_test_command_is_reported_not_raised() -> None:
@@ -484,10 +492,24 @@ def test_search_repo_reports_no_matches_instead_of_a_failure() -> None:
     assert asyncio.run(tools.search_repo("nothing")) == "no matches"
 
 
+def test_read_of_a_missing_file_is_reported_not_raised() -> None:
+    # The port's absent convention is a KeyError; surfacing it to the model as
+    # text keeps the attempt alive (T-043 increment 1: one read of a file the
+    # agent had not written yet blocked the whole stage attempt).
+    tools, _ = _tools()
+    rendered = asyncio.run(tools.read_file("src/missing.py"))
+    assert rendered.startswith("error:")
+    assert "no evidence file" in rendered
+
+
+def test_search_repo_requires_a_pattern() -> None:
+    tools, _ = _tools()
+    assert asyncio.run(tools.search_repo("  ")).startswith("error:")
+
+
 def test_run_command_requires_an_argv() -> None:
     tools, _ = _tools()
-    with pytest.raises(ValueError, match="non-empty argv"):
-        asyncio.run(tools.run_command([]))
+    assert asyncio.run(tools.run_command([])).startswith("error:")
 
 
 def test_apply_patch_writes_the_patch_and_runs_git_apply() -> None:
