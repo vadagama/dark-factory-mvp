@@ -1,6 +1,7 @@
 # План T043 — E2E-пилот фабрики
 
-Статус: в работе. Трекер: `specs/001-dark-factory-mvp/tasks.md` T043.
+Статус: в работе; инкремент 0 закрыт 2026-09-18. Трекер:
+`specs/001-dark-factory-mvp/tasks.md` T043.
 Цель: 10 реальных задач (5 quick, 5 standard) через сквозной сценарий
 `intake → SDD → реализация → MR → CI/review → merge → image → GitOps → dev → smoke`,
 сбор метрик vision §7 и FR-024, журнал отклонений, отчёт по SC-001…SC-008.
@@ -45,12 +46,15 @@
    секрет `dark-factory-product-1-db` (DATABASE_URL + POSTGRES_PASSWORD)
    создан в `apps-dev` вне git. Argo создал Application `product-1-dev`;
    старый `pilot-dev` Application удалён вместе с ресурсами fixture.
-5. **Блокер инкремента (ожидает оператора)**: ghcr-пакеты продукта приватные —
-   kubelet получает `unauthorized` (ErrImagePull на миграционном хуке). API для
-   смены видимости пакета не существует, gh-токен без `read:packages`.
-   Решение — сделать оба пакета публичными в GitHub UI (toy digest-pinned
-   образы; решение зафиксировано в журнале) — после этого Argo докатит деплой,
-   далее smoke: `GET /api/healthz` → `{"status":"ok","database":"ok"}`, `GET /`.
+5. **Инкремент закрыт (2026-09-18)**: пакеты
+   `dark-factory-product-1-{backend,frontend}` сделаны публичными в GitHub UI
+   (оператор; TD-029 закрыт) — kubelet тянет анонимно; миграционный хук
+   дофикшен канонично в паке (только post-фазы: Argo мапит pre-* в PreSync —
+   first-install deadlock; wait-for-database retry 30×5s — коммиты `2ab3709`,
+   `03d30da`). Argo `product-1-dev` Synced/Healthy, миграции прошли, smoke:
+   `GET /api/healthz` → `{"status":"ok","database":"ok"}`, `GET /` → HTTP 200.
+   DoD T-070 подтверждён живым деплоем, TD-010 закрыт; журнал —
+   `docs/t043-pilot-journal.md`.
 
 ## Инкремент 1 — прогон 10 задач через фабрику
 

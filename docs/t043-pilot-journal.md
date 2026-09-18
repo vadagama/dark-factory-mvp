@@ -71,3 +71,37 @@
 
 - Наблюдение: проброс PostgreSQL для CLI (`127.0.0.1:5432`) не настроен —
   нужен для инкремента 1 (intake/advance из CLI); делать внутри скрипта.
+
+## 2026-09-18 — Инкремент 0: докат деплоя и smoke (инкремент закрыт)
+
+- **Миграционный хук: first-install deadlock на pre-фазах.** Хук шёл в
+  `pre-install,pre-upgrade` → Argo CD мапит pre-* хуки в фазу PreSync, которая
+  выполняется ДО применения ресурсов чарта — на первой установке хук не может
+  разрешить `<release>-postgres` (DNS: `Name or service not known`, 26+
+  попыток). → Каноничный фикс в паке (web-app 0.2.1, коммиты `2ab3709`,
+  `03d30da`): хук — только post-фазы (`post-install,post-upgrade`), обёртка
+  wait-for-database (30×5s внутри `activeDeadlineSeconds: 300`),
+  `hook-delete-policy: before-hook-creation,hook-succeeded`. Следствие
+  зафиксировано в шаблоне: на апгрейдах миграции идут ПОСЛЕ деплоя нового
+  backend — schema-изменения обязаны быть backward-compatible
+  (expand/contract). Упавший install/PostSync ресурсы сохраняет — следующий
+  прогон Argo/helm сходится (хук добивает миграции на живой БД).
+
+- **Блокер ErrImagePull снят оператором**: пакеты
+  `dark-factory-product-1-{backend,frontend}` сделаны публичными в GitHub UI
+  (решение из предыдущей записи, TD-029). Argo докатил деплой: поды backend/
+  frontend/postgres Running, миграционный хук отработал (retry поглотил и
+  окно инициализации initdb, и окно применения ресурсов), job убран по
+  hook-delete-policy, Application `product-1-dev` — Synced/Healthy
+  (gitops-ревизия `b7da87f`).
+
+- **Smoke инкремента 0 зелёный**: `GET /api/healthz` →
+  `{"status":"ok","database":"ok"}`, `GET /` → HTTP 200 (frontend HTML,
+  заголовок `dark-factory-product-1`). DoD T-070 «blueprint разворачивается
+  в apps-dev» подтверждён живым деплоем; TD-010 и TD-029 закрыты. Живой цикл
+  «образы CI → GitOps-MR с digest → Argo → apps-dev → smoke» пройден целиком.
+
+- Наблюдение на будущее: в ходе цикла подведения PVC postgres пересоздавался
+  (новый claim) — reinstall релиза теряет данные БД; с инкремента 1 релиз
+  обновлять только upgrade'ом (или откатом revert-коммита в gitops, TD-020),
+  за PVC следить при каждом вмешательстве.
