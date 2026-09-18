@@ -7,7 +7,8 @@ only (``DARK_FACTORY_API_TOKENS``) and are never printed, logged or written.
 
 Subcommands:
     intake TASKS_JSON        POST every task of the matrix (dedup-safe).
-    status [CHANGE_ID]       Compact view of changes / one change with runs.
+    status [CHANGE_ID]       Compact view of changes / one change with its runs,
+                             stage statuses and gate results (gate + bound SHA).
     approve --change-id ID --gate G --outcome approved|rejected
              --subject-revision R [--comment T] [--expected-state-revision N]
 
@@ -156,10 +157,28 @@ def _compact_change(change: dict[str, Any]) -> str:
 
 
 def _compact_run(run: dict[str, Any]) -> str:
-    return (
-        f"run {run.get('id')}  {run.get('status')}  route={run.get('route')}"
-        f"  state_revision={run.get('state_revision')}"
-    )
+    return f"run {run.get('run_id')}  {run.get('status')}"
+
+
+def _run_stages(run_id: str) -> list[dict[str, Any]]:
+    """Stages of one run (``GET /runs/{run_id}``); an unreachable run prints nothing."""
+    status, payload = _request("GET", f"/api/v1/runs/{run_id}")
+    if status != 200 or not isinstance(payload, dict):
+        return []
+    stages = payload.get("stages", [])
+    return stages if isinstance(stages, list) else []
+
+
+def _run_gates(run_id: str) -> list[dict[str, Any]]:
+    """Gate results of one run (``GET /runs/{run_id}/gates``).
+
+    The gate name and its ``sha`` are exactly the ``--gate``/``--subject-revision``
+    pair an operator files with ``approve`` (version-bound decision, ADR-009 p.7).
+    """
+    status, payload = _request("GET", f"/api/v1/runs/{run_id}/gates")
+    if status != 200 or not isinstance(payload, list):
+        return []
+    return payload
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -172,11 +191,16 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(_compact_change(card.get("change", card)))
         for run in card.get("runs", []):
             print(f"  {_compact_run(run)}")
-            for stage in run.get("stages", []):
+            run_id = run.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                continue
+            for stage in _run_stages(run_id):
                 print(
                     f"    {stage.get('stage')}: {stage.get('status')}"
-                    f" (attempt={stage.get('attempt_number')})"
+                    f" (attempts={stage.get('attempt_count')})"
                 )
+            for gate in _run_gates(run_id):
+                print(f"    gate {gate.get('gate')}: {gate.get('status')} sha={gate.get('sha')}")
         return 0
     status, payload = _request("GET", "/api/v1/changes?limit=200")
     if status != 200:
