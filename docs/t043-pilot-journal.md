@@ -3,6 +3,21 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — T043: D7 — p07 заменён на p10; B8 не воспроизвёлся
+
+- **Решение оператора D7** (p07 выпал из набора D3 — B8): третьим standard взят `p10`
+  («Extract shared FastAPI dependencies without changing endpoint contracts», рефакторинг без
+  изменения контрактов).
+- **Живая проверка:** `advance chg_t043_p10` — planning attempt 1 (роль product) **успешен**,
+  стадия опубликовала plan-CR `vadagama/dark-factory-product-1#21` и запарковалась на
+  `wait_for_ci`; CI 9/9 зелёный. Значит, B8 — не общий дефект стадии planning и не следствие
+  «плоского» пути spec-артефакта (`p10` — тоже flat `specs/extract-shared-fastapi-dependencies.md`),
+  а специфичен для `p07` (её ран остаётся `blocked` как отклонение).
+- **Состояние:** `chg_t043_p10` — `planning: waiting (attempts=1)`; план-CR #21 (R2) ждёт контракт
+  по рецепту §7.2: `advance-contract --approve` → approving review на plan-CR → `advance`.
+- **Риск (плана §9):** `p06` и `p10` оба могут трогать `backend/src/app/health.py` — изменения
+  сериализовать (p06 мержится раньше, p10 позже).
+
 ## 2026-09-18 — T043: B8 — planning p07 не порождает изменений (`blocked`, воспроизводимо)
 
 - **Наблюдение.** `advance chg_t043_p07` (после успешной specification и зелёного гейта) →
