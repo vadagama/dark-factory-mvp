@@ -3,6 +3,88 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: `release` вынесен из объёма (решение оператора, вариант C)
+
+- **Решение (человек, ADR-011):** объём инкремента 1 покрывает путь `intake → SDD →
+  реализация → MR → CI/review → merge`; промоушен/`release` (`image → GitOps → dev → smoke`)
+  **вынесен** из объёма пилота. Выбран вариант C из трёх (A — один digest, B — единица релиза
+  = набор digest'ов через ADR); мотив — модель промоушена не описывает продукт, а живой прогон
+  требует ещё и конфигурации, которой в окружении нет (см. предыдущую запись).
+- **Что решило вопрос** (проверено по репозиториям, детали — предыдущая запись): промоушен
+  фабрики пинит **один** digest в новый файл `releases/<run_id>/digest`, а Argo читает
+  desired state `envs/dev/dark-factory-product-1/values.yaml` с **двумя** релизными digest'ами;
+  потребителя `releases/*` в gitops-репо нет (промоушен инертен); сид документирует релиз как
+  MR, правящий digest в overlay (`examples/gitops-mr-digest-change.md`, откат revert);
+  продуктовый CI публикует только из `main`, поэтому digest не атрибутируется одному изменению
+  (`p03`+`p04` в `38a52ad0`).
+- **Следствия:**
+  - `chg_t043_p03` остаётся `blocked` на `release` attempt 1 — снять run нечем (TD-030); для
+    метрик он считается покрытым **до merge**: все гейты, кроме `release`, `passed`
+    (`code`/`review`/`verification`/`specification`/`planning`).
+  - Живой прогон `release` не заявляется; стадия остаётся подтверждённой юнит/статическими
+    тестами (T-092 S4). Ограничение и открытая модель промоушена зафиксированы как **TD-031**
+    (кандидат — ADR: единица релиза = набор digest'ов, промоушен правит desired-state overlay).
+  - DoD инкремента 1 сужен явной записью в `docs/plan-t043-e2e-pilot.md` и трекере (T043).
+- **Что остаётся в объёме инкремента 1**: довести изменения до merge (`review_verification`) —
+  `p04` (контракт → construction), `p05`–`p10` (planning; `p06`–`p10` упираются в R2-блокер
+  `solution`), `p01` — пере-intake; собрать метрики (стоимость с учётом попыток, first-pass,
+  раунды rework, время до принятого MR, ручные вмешательства) и отчёт по SC-001…SC-008 в
+  границах суженного объёма.
+
+## 2026-09-18 — Инкремент 1: p03 дошёл до release и встал (нет GitOps-контура); p04 — контракт-гейт перезапустил планирование (открыт)
+
+- **p03 закрыт до `release` решением оператора.** Оператор заапрувил и смержил review-гейт:
+  approving review (`vadagama`) на `db6c9f6` (18:02:29Z) → merge `product-1#13` (18:02:37Z).
+  `advance chg_t043_p03` наблюдаемым merge + approval резолвнул `review_verification`
+  (`result_status=succeeded`, `next_stage=release`), следующий advance перевёл ран в `release`.
+  Гейты на финальной ревизии: `code`/`review`/`verification` — `passed sha=db6c9f6`,
+  `gate release` — `pending` (не промоутился).
+- **release attempt 1 — `blocked`: `stage release: no skill is mapped to this stage (role 'ci_cd')`.**
+  Это честный pre-S4-путь: `Runtime.release_stage_executor()` отдаёт `None`, когда блок
+  `DARK_FACTORY_GITOPS_*` не задан (`runtime/entrypoint.py`), и стадия `release` уходит в
+  агентный исполнитель, у которого нет скилла на эту стадию (`stages/agent.py`).
+- **Два независимых гейта на пути промоушена (оба не открыты).**
+  1. **Конфигурация промоушена отсутствует.** Нужен блок из четырёх обязательных переменных
+     (`DARK_FACTORY_GITOPS_APP_ID`/`_APP_PRIVATE_KEY`/`_INSTALLATION_ID`/`_REPOSITORY_SLUG`) —
+     отдельная GitHub App-идентичность для записи в `dark-factory-gitops` (ADR-024 §7 S4),
+     all-or-nothing: задание любой переменной без остальных — fail-closed `ValueError`.
+  2. **Digest неоткуда взять в прогоне.** `ReleaseStageExecutor` промоутит
+     `--expected-digest`/`--digest-json` (XOR; без digest — честный `blocked`),
+     а `increment-1.sh advance` этих опций не передаёт: нужен шаг драйвера с release-опциями
+     и наблюдением (`--observed-digest`/`--argo-sync`/`--argo-health`/`--smoke-*`).
+- **Открытый вопрос модели промоушена (решение оператора/архитектуры).** Промоушен пинит **один**
+  digest (`releases/<run_id>/digest`), а пилотный продукт отдаёт **две** картинки (backend и
+  frontend, обе в чарте GitOps). Как единая величина релиза для двух образов определяется — не
+  решено; в живом контуре не промоутился ни один digest. Данные для промоушена уже есть:
+  push-CI `main` после merge (#13/#14) собирает и публикует образы `sha-<sha>` с digests
+  (run `35377857579`, head `38a52ad0`, на момент записи in_progress).
+- **p04: контракт-гейт перезапустил уже сделанную работу (LLM-расход).**
+  `advance chg_t043_p04` при `planning` в состоянии `blocked` (гейт входа в construction:
+  контракт не прикреплён) запустил **planning attempt 2** (роль product, ~62 с,
+  18:03:55Z → 18:04:58Z), опубликовал свежую ревизию и открыл **новый CR `product-1#15`**
+  (прежний `#14` уже смержен — публикация открыла продолжение; фикс cr-after-merge отработал
+  как задумано). Гейт `planning` вернулся в `pending` на новой ревизии — прогон ждёт CI `#15`.
+- **Корень (механика, проверено по коду).** Гейт входа — `contract_entry_violation`
+  (`orchestration/policy/escalation.py`), вызывается из `flow._escalation_reason` при переходе
+  в `construction`; при нарушении `flow._handle_action` вызывает `_stop(stage_run, run, reason)`,
+  который ставит `BLOCKED` **исходящей** стадии (planning), а не входной (construction).
+  Раннер retry-протоколом исполняет `blocked`-стадию заново (`runner.py`: «a stage whose attempt
+  ended failed/blocked is retried … next attempt number», ADR-006 p.7) — то есть работа уже
+  успешной стадии переделывается (LLM + лишний CR). Класс затрогивает все 10 изменений: каждое
+  один раз проходит этот гейт.
+- **Обходное правило для пилота (без правок кода).** Прикреплять и утверждать контракт **до**
+  резолва перехода planning→construction — тогда гейт не срабатывает и стадия не переделывается.
+  Порядок для p04 (и далее): `advance-contract <file> --approve` (человек) → дождаться зелёного
+  CI continuation-CR → `advance` (planning успешен на утверждённом контракте → construction).
+  Кандидат фикса (решение оператора, вероятно ADR): атрибутировать гейт входа стадии
+  `construction` (blocked-попытка construction **до** внешних эффектов), чтобы retry не
+  переделывал работу исходящей стадии.
+- **Состояние на момент записи**: p03 — `release` attempt 1 `blocked`; p04 — `planning`
+  attempt 2 `waiting` (CI `#15`); p02 — `waiting` (невалидный, TD-030); p01 — `blocked`
+  (нужен пере-intake); p05 — `planning` pending; p06–p10 — R2-блокер `solution`.
+- **Метрики (FR-024)**: usage попыток по-прежнему не виден в отчёте advance (измерение
+  «сгоревшего» planning attempt 2 p04 невозможно — usage не публикуется).
+
 ## 2026-09-18 — Инкремент 1: планирование p04 → контракт-гейт; p03 на human review (открыт)
 
 - **Живое состояние на входе** (проверено `increment-1.sh status` перед работой).
