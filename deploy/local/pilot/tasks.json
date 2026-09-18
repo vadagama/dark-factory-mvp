@@ -41,8 +41,22 @@
       "description": "backend/tests/unit has no coverage for the liveness endpoint GET / (app/src/app/health.py, handler index returning AppInfo with app name and version). Add backend/tests/unit/test_index.py covering the happy path: status 200 and the JSON body carrying the configured app_name and version. Reuse the existing test style and fixtures of backend/tests/unit/test_health.py. Backend tests only; no production code changes."
     },
     {
+      "id": "chg_t043_p04b",
+      "external_ref": "t043-pilot-04b",
+      "risk_class": "R1",
+      "title": "Add a unit test for the GET / liveness endpoint",
+      "description": "backend/tests/unit has no coverage for the liveness endpoint GET / (app/src/app/health.py, handler index returning AppInfo with app name and version). Add backend/tests/unit/test_index.py covering the happy path: status 200 and the JSON body carrying the configured app_name and version. Reuse the existing test style and fixtures of backend/tests/unit/test_health.py. Backend tests only; no production code changes."
+    },
+    {
       "id": "chg_t043_p05",
       "external_ref": "t043-pilot-05",
+      "risk_class": "R1",
+      "title": "Document the database session lifecycle in backend/src/app/db.py",
+      "description": "Add a module docstring and function docstrings to backend/src/app/db.py explaining the engine/sessionmaker lifecycle: engine created from Settings.database_url, sessionmaker scoped to the FastAPI app state, sessions yielded per request by the get_session dependency in app/health.py. Documentation-only change to docstrings; no behavior changes."
+    },
+    {
+      "id": "chg_t043_p05b",
+      "external_ref": "t043-pilot-05b",
       "risk_class": "R1",
       "title": "Document the database session lifecycle in backend/src/app/db.py",
       "description": "Add a module docstring and function docstrings to backend/src/app/db.py explaining the engine/sessionmaker lifecycle: engine created from Settings.database_url, sessionmaker scoped to the FastAPI app state, sessions yielded per request by the get_session dependency in app/health.py. Documentation-only change to docstrings; no behavior changes."
