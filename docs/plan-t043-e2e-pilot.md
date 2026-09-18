@@ -142,3 +142,12 @@ version-bound approving review на итоговом SHA (`f61f247a`), а у #12
 найдено: `main` продукта не защищён (404 «Branch not protected»), фабрика не
 наблюдает настройки защиты (`protection_violations` — только в тестах).
 Формулировка ADR-029 п.5 уточнена. Детали — `docs/t043-pilot-journal.md`.
+
+Прогресс (2026-09-18, p04): p04 провёден по схеме «advance → CI → advance» — planning
+attempt 1 (роль product, ~51 с) → CR `product-1#14` (CI 9/9 зелёный) → planning
+резолвнута, `gate planning passed sha=d750066c`; ран остановлен гейтом входа в
+construction (нет Implementation Contract) — `blocked` (exit 20, LLM не потрачен).
+Дальше — оператор: `advance-contract chg_t043_p04 … --approve`, затем `advance`
+(construction). p03 — на human-гейте: CR `product-1#13` (CI 9/9) ждёт approving
+review + merge → advance → `release`. p05 — той же схемой; p06–p10 (R2) — упираются
+в блокер `solution`. Детали — `docs/t043-pilot-journal.md`.

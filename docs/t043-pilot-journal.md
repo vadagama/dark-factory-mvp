@@ -3,6 +3,40 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: планирование p04 → контракт-гейт; p03 на human review (открыт)
+
+- **Живое состояние на входе** (проверено `increment-1.sh status` перед работой).
+  `chg_t043_p03` — `review_verification` attempt 1 `waiting` (журнал выше фиксировал
+  `pending, attempts=0`): качественная попытка уже отработана и запаркована; CR
+  `product-1#13` — CI run `35375790641` 9/9 SUCCESS, `mergeable`, `reviewDecision=REVIEW_REQUIRED`.
+  Дальше — approving review + merge оператора (ADR-011, ADR-029 п.5), затем advance → `release`.
+  `chg_t043_p02` — `waiting` (`review_verification` attempts=2), гейты
+  `review`/`verification`/`ui` `passed` на `f61f247a`. `chg_t043_p01` — `blocked`
+  (битый snapshot-digest, нужен пере-intake). `chg_t043_p04`/`p05` — R1, `specification`
+  passed, `planning` pending. `chg_t043_p06…p10` — R2, `specification` passed, `planning`
+  pending (известный R2-блокер: контрольная точка `solution` без пути резолва — записи выше).
+- **p04, шаг «advance → CI».** `advance chg_t043_p04` — planning attempt 1 (роль product,
+  `factory.stage.agent`, 17:54:50Z → 17:55:41Z, ~51 с): агент опубликовал ревизию в ветку
+  `factory/chg_t043_p04`, CR `product-1#14` открыт автоматически; стадия `waiting`,
+  `next_action=wait_for_ci` (exit 10).
+- **CI p04 зелёный.** `product-1#14` — 9/9 чеков SUCCESS (Backend ruff/mypy/pytest/OCI,
+  Frontend ESLint/tsc/vitest/UI-kit gates/OCI), workflow run `35377210024`.
+- **p04, шаг «CI → advance».** `advance chg_t043_p04` — planning резолвнута зелёным CI:
+  `result_status=succeeded`, `gate planning: passed sha=d750066c…`; ран сразу упёрся в гейт
+  входа в construction: `no implementation contract attached to the run; implementation
+  must not start without one (ADR-018 p.3)` — `blocked` (exit 20, LLM не потрачен). Класс
+  ровно тот, что зафиксирован по p02; ожидаемое поведение политики, не дефект.
+- **Черновик контракта p04 на месте** (`deploy/local/pilot/contracts/chg_t043_p04.contract.json`,
+  `approval: null`). Прикрепление и утверждение — одно действие человека (ADR-018 п.3; флаг
+  `--approve-contract` агент не ставит никогда):
+  `deploy/local/pilot/increment-1.sh advance-contract chg_t043_p04 deploy/local/pilot/contracts/chg_t043_p04.contract.json --approve`,
+  затем `advance chg_t043_p04` (construction, LLM-расход).
+- **Метрики (FR-024)**: usage попытки planning p04 в отчёте advance не показан — прежняя
+  открытая тема (непоказ/потеря usage) остаётся; в этом прогоне не измерялась.
+- **Статус инкремента 1**: p01 — пере-intake; p02 — невалидный (оставлен `waiting`, TD-030);
+  p03 — human review+merge; p04 — контракт оператора; p05 — той же схемой (готов к advance);
+  p06–p10 — упираются в R2-блокер `solution`.
+
 ## 2026-09-18 — Инкремент 1: конфликт p03 снят merge-forward'ом, construction зелёная (закрыт)
 
 - **Выбран вариант 1** (ручное снятие конфликта в ветке изменения) — оператор
