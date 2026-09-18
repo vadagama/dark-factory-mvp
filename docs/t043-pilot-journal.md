@@ -3,6 +3,30 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — Инкремент 1: p02 `review_verification` запаркован в waiting (ждёт merge)
+
+- **Шаг после ADR-029**: `advance chg_t043_p02` — retry стадии `review_verification`
+  (attempt 2) на исправленном коде (commit `d1d9eb5`). Агент роли quality отработал
+  (`factory.stage.agent`, ~99 с), файловых изменений не породил — `_publish` вернул
+  `_published_under_review`, стадия взяла открытый CR ревьюируемого изменения
+  `vadagama/dark-factory-product-1#12` (ветка `factory/chg_t043_p02`, CI 9/9 зелёный,
+  mergeable) и **запарковалась в `waiting`** (exit 10). Блокер «the attempt produced no
+  changes to publish» больше не воспроизводится.
+- **Семантика резолюции (проверено по коду `stages/gates.py::gate_resolved`)**: стадия
+  `review_verification` резолвится **только наблюдаемым merge** — зелёный пайплайн при
+  непустом human-наборе (`review`) возвращает `False` (ADR-029 п.5). Поэтому action
+  `wait_for_ci` здесь лишь носитель машинного гейта `verification`; следующий advance
+  **после merge #12** построит merge-результат и завершит стадию, дальше — `release`.
+  Повторный advance без merge честно `replayed` (наблюдение не резолвит wait).
+- **Живой статус**: run `run_df80e146c9d0d2ec94816984833bce8c`, стадия `review_verification`
+  attempt 2 `waiting`, run `waiting`, `next_action=wait_for_ci`.
+- **Хендофф (человек)**: merge `vadagama/dark-factory-product-1#12` → `advance chg_t043_p02`
+  (стадия review завершится на observed merge) → стадия `release`. Решение — оператора
+  (ADR-011); агенты не мержат.
+- **Наблюдение по метрикам (FR-024)**: usage попытки-чекпоинта не попадает в отчёт advance;
+  ранее найденная потеря usage при `supersede` (см. запись про пилотный прогон) остаётся
+  открытой темой и здесь не измеряется.
+
 ## 2026-09-18 — Инкремент 1: гейт входа в construction — нет пути прикрепления Implementation Contract (открыт)
 
 - **Живой факт: advance p02 после резолва planning (зелёный CI на continuation-PR product-1#10,
