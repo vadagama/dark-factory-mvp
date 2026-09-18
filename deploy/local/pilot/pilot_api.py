@@ -52,7 +52,7 @@ def _tokens() -> tuple[dict[str, Any], dict[str, Any]]:
         # keys, unquoted scalar values, unquoted scope lists. Normalize in
         # three steps - array elements first, then object keys, then bare
         # scalar values - so the key pass cannot mangle array entries.
-        def _quote_array(match: "re.Match[str]") -> str:
+        def _quote_array(match: re.Match[str]) -> str:
             elements = [part.strip() for part in match.group(1).split(",")]
             return "[" + ", ".join(json.dumps(part) for part in elements if part) + "]"
 
@@ -101,7 +101,7 @@ def _request(
     except urllib.error.HTTPError as exc:
         try:
             payload = json.loads(exc.read().decode("utf-8"))
-        except Exception:  # noqa: BLE001 - error bodies are diagnostics only
+        except Exception:  # error bodies are diagnostics only
             payload = None
         return exc.code, payload
 
