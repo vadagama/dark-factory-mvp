@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { createApiClient, ApiError } from "../api/client";
-import { useAsync } from "../api/hooks";
+import { POLL_MS, useAsync } from "../api/hooks";
 import { getToken } from "../api/token";
 import { EmptyState, ErrorState, LoadingState, Notice, Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
@@ -103,7 +103,7 @@ export function GatesPage() {
       decisionsCount: card.decisions_count,
       changeTitle: card.title,
     };
-  }, [changeId, reloadNonce]);
+  }, [changeId, reloadNonce], { pollMs: POLL_MS });
 
   return (
     <>

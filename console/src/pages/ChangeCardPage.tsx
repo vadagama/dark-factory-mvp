@@ -1,10 +1,10 @@
 import { useMemo } from "react";
 import { Link, useParams } from "react-router";
 import { createApiClient } from "../api/client";
-import { useAsync } from "../api/hooks";
+import { POLL_MS, useAsync } from "../api/hooks";
 import { EmptyState, ErrorState, LoadingState, Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
-import { formatCost, formatDateTime, formatNumber, formatProduct, formatStage } from "../lib/format";
+import { formatCost, formatDateTime, formatNumber, formatProduct, formatStage, formatTime } from "../lib/format";
 import { statusTone } from "../lib/statusTone";
 import type { Evidence, Finding, RunCard } from "../api/types";
 
@@ -82,11 +82,16 @@ export function ChangeCardPage() {
         })),
       })),
     };
-  }, [changeId]);
+  }, [changeId], { pollMs: POLL_MS });
 
   return (
     <>
       <Section title="Изменение">
+        {state.updatedAt !== null ? (
+          <p className="muted" data-testid="updated-at">
+            обновлено {formatTime(state.updatedAt)}
+          </p>
+        ) : null}
         {state.loading ? <LoadingState /> : null}
         {state.error ? <ErrorState message={state.error.detail} /> : null}
         {state.data ? (

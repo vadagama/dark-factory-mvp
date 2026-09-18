@@ -65,6 +65,7 @@
 | [ADR-025](adr/ADR-025-process-entry-point-and-lazy-composition.md) | Точка входа процесса и ленивая композиция | принято | §5, §6 |
 | [ADR-026](adr/ADR-026-parameterizable-ci-stages.md) | Параметризуемые этапы CI: выключатели `CI_SKIP_<JOB>` (opt-out, fail-safe) | принято | §13 |
 | [ADR-027](adr/ADR-027-console-ci-stage-toggles.md) | Управление этапами CI из консоли: репозиторные переменные за API (`ci:write` + operator, fail-closed) | принято | §5, §13 |
+| [ADR-028](adr/ADR-028-console-reactivity-polling.md) | Реактивность консоли: фоновый поллинг в `useAsync` (единый интервал 10 с, пауза в скрытой вкладке); WebSockets отклонены, SSE — будущая опция | принято | §5, §6 |
 
 Шаблон новых решений — [`adr/ADR-000-template.md`](adr/ADR-000-template.md); правила процесса — [`adr/README.md`](adr/README.md).
 
