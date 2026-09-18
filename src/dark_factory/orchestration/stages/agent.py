@@ -19,8 +19,10 @@ What one attempt does, in order:
 5. on success: read the changed file set back from the workspace
    (``collect_changes``), ensure the task branch at the pinned revision and
    publish the file set as one commit+push effect (``publish_commit``), then
-   open the change request with the commit as its head — every effect under its
-   deterministic idempotency key (FR-017, per-effect ledger of ADR-006 p.3);
+   open the change request with the commit as its head — its description is
+   Markdown rendered from the packaged template
+   (``templates/pr-description.md``), not the raw tracker text; every effect
+   under its deterministic idempotency key (FR-017, per-effect ledger of ADR-006 p.3);
 6. an attempt whose workspace holds no changes stops in ``blocked`` before any
    external effect: "no changes" is a stage decision, never a silent empty
    change request;
@@ -62,6 +64,7 @@ from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryR
 from dark_factory.changes.run import Change, StageResult
 from dark_factory.orchestration.stages.checks import pending_gate_results
 from dark_factory.orchestration.stages.context import StageContext
+from dark_factory.orchestration.stages.pr_description import PrDescriptionRenderer
 from dark_factory.orchestration.stages.tools import ToolFunction, WorkspaceTools
 from dark_factory.ports import (
     ExecutionPort,
@@ -147,7 +150,9 @@ class AgentStageExecutor:
     All port dependencies are injected (ADR-015 p.3): the executor knows the
     contracts, never an SDK. ``profile_of`` and ``skill_of`` are seams for tests
     and for the profile expansion of T-046/T-047; by default they are the
-    built-in registries.
+    built-in registries. ``descriptions`` is the renderer that shapes the
+    published change-request body; by default the packaged template
+    (``templates/pr-description.md``).
     """
 
     def __init__(
@@ -158,6 +163,7 @@ class AgentStageExecutor:
         merge_requests: MergeRequestPort,
         execution: ExecutionPort,
         telemetry: TelemetryPort | None = None,
+        descriptions: PrDescriptionRenderer | None = None,
         target_branch: str = DEFAULT_TARGET_BRANCH,
         branch_prefix: str = DEFAULT_BRANCH_PREFIX,
         profile_of: Callable[[Role], AgentProfile] = get_profile,
@@ -168,6 +174,9 @@ class AgentStageExecutor:
         self._merge_requests = merge_requests
         self._execution = execution
         self._telemetry = telemetry
+        self._descriptions = (
+            descriptions if descriptions is not None else PrDescriptionRenderer.default()
+        )
         self._target_branch = target_branch
         self._branch_prefix = branch_prefix
         self._profile_of = profile_of
@@ -293,6 +302,13 @@ class AgentStageExecutor:
             message=f"factory: {context.change.id} ({context.stage.value})",
             idempotency_key=effect_key(identity, _EFFECT_COMMIT, branch),
         )
+        description = self._descriptions.render(
+            context,
+            role=STAGE_ROLE[context.stage],
+            source_branch=branch,
+            target_branch=self._target_branch,
+            commit_sha=commit_sha,
+        )
         change_request = await self._merge_requests.find_existing(repository, context.change.id)
         if change_request is None:
             change_request = await self._merge_requests.open(
@@ -302,7 +318,7 @@ class AgentStageExecutor:
                     source_branch=branch,
                     target_branch=self._target_branch,
                     title=context.change.title,
-                    description=context.change.description,
+                    description=description,
                     head_sha=commit_sha,
                 ),
                 idempotency_key=effect_key(identity, _EFFECT_CHANGE_REQUEST, branch),
