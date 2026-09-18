@@ -7,8 +7,17 @@ callers that distinguish statuses (404-as-absent lookups); ``expect`` and
 ``get_json`` map unexpected statuses onto ``GitHubAPIError``. The transport is
 injectable — the contract suite serves the API through ``httpx2.MockTransport``
 (no network, deterministic).
+
+The sync seam of the durable driver (``ScmRevision``, ADR-025) runs one
+``asyncio.run`` per call, so the adapter sees several short-lived event loops
+in one process. Connection pools bind to the loop that opened them, so the
+client is kept **per loop**: a request on a new loop rebuilds the client, and
+a pool bound to a closed loop is never reused (found in T-043 increment 1 —
+a second ``asyncio.run`` after the resolver's crashed on keep-alive sockets
+of the first, closed, loop).
 """
 
+import asyncio
 from typing import Any, Final
 
 import httpx2
@@ -34,15 +43,30 @@ class GitHubClient:
         transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         self._auth = auth
-        self._client = httpx2.AsyncClient(
-            base_url=base_url,
-            transport=transport,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": _API_VERSION,
-                "User-Agent": "dark-factory",
-            },
-        )
+        self._base_url = base_url
+        self._transport = transport
+        self._headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": _API_VERSION,
+            "User-Agent": "dark-factory",
+        }
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._client: httpx2.AsyncClient | None = None
+
+    def _client_for_loop(self) -> httpx2.AsyncClient:
+        """The client bound to the running loop; a new loop gets a new client."""
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._loop is not loop:
+            # A client (and its pool) binds to the loop that opened it; a pool
+            # left over from a closed loop is dropped for the garbage collector
+            # — an awaited aclose would schedule back onto that dead loop.
+            self._client = httpx2.AsyncClient(
+                base_url=self._base_url,
+                transport=self._transport,
+                headers=self._headers,
+            )
+            self._loop = loop
+        return self._client
 
     async def request(
         self,
@@ -86,8 +110,11 @@ class GitHubClient:
         return response
 
     async def aclose(self) -> None:
-        """Release the underlying connection pool."""
-        await self._client.aclose()
+        """Release the underlying connection pool (of the running loop)."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+            self._loop = None
 
     async def _send(
         self,
@@ -99,7 +126,7 @@ class GitHubClient:
         params: dict[str, str] | None = None,
     ) -> httpx2.Response:
         token = await self._auth.token()
-        return await self._client.request(
+        return await self._client_for_loop().request(
             method,
             path,
             json=json,

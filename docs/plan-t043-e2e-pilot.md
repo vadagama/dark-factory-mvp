@@ -58,11 +58,11 @@
 
 ## Инкремент 1 — прогон 10 задач через фабрику
 
-Подготовка окружения:
+Подготовка окружения (выполнено, `deploy/local/pilot/increment-1.sh`):
 
-- PostgreSQL фабрики доступна CLI через проброс
-  `kubectl -n factory port-forward svc/factory-postgres 5432:5432` (внутри
-  скрипта; `DATABASE_URL` из `.env` переписывается на `127.0.0.1:5432`);
+- PostgreSQL фабрики доступна CLI через проброс; на этой машине порт
+  55432 (5432 занят слушателем Docker Desktop) — `DATABASE_URL` из `.env`
+  переписывается на `127.0.0.1:55432` внутри скрипта;
 - workspace env: `DARK_FACTORY_WORKSPACE_ROOT=/Users/olegkrasnov/Documents/GitHub/df-workspaces`,
   `DARK_FACTORY_WORKSPACE_MIRROR_ROOT=/Users/olegkrasnov/Documents/GitHub/df-mirrors`;
 - продукт зарегистрирован в фабрике intake'ом `POST /api/v1/changes`;
@@ -91,3 +91,12 @@
 DoD пилота: ≥7/10 e2e без ручных правок артефактов агента; отчёт по
 SC-001…SC-008 (SC-004…SC-006 — CLI/Console/roll back — покрываются прогоном);
 журнал отклонений — `docs/t043-pilot-journal.md`.
+
+Прогресс (2026-09-18): окружение готово, intake 10 изменений выполнен.
+Живой e2e `chg_t043_p02`: intake → specification (агент опубликовал спеку,
+открыт CR `product-1#1`, CI зелёный) → waiting на human-гейте. По пути
+закрыты 6 дефектов доводки (ключение ревизии run'а, GitHub 422, httpx2
+через смену event loop, `write_file` у product-профиля, wait-действие по
+характеру гейтов, human-резолюция waiting) — детали и открытые темы в
+`docs/t043-pilot-journal.md`. Гейт — решение оператора; `chg_t043_p01`
+пере-intake после закрытия гейта p02 (run до фикса приколот к digest).

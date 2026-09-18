@@ -9,9 +9,8 @@ branch plus a change request for CI to judge (TD-024).
 
 What one attempt does, in order:
 
-1. resolve the role of the stage and its profile (ADR-007; every stage role
-   has a profile now, and the release stage — not agent work per ADR-024 §7
-   S4 — maps to no skill and stops honestly instead of inventing one);
+1. resolve the role of the stage and its profile (ADR-007; the release stage has
+   no core profile yet, so it stops honestly instead of inventing one);
 2. prepare the isolated workspace of the pinned input revision through
    ``ExecutionPort`` (FR-001: the revision is fixed before any work starts);
 3. bind the profile's tools to that workspace (``WorkspaceTools``): only the
@@ -54,7 +53,11 @@ from dark_factory.agents.skills.manifest import SkillManifest
 from dark_factory.agents.skills.registry import get_skill
 from dark_factory.changes.enums import Role, Stage, StageStatus, StopOutcome
 from dark_factory.changes.keys import effect_key, operation_key
-from dark_factory.changes.next_action import StopAction, WaitForCIAction
+from dark_factory.changes.next_action import (
+    StopAction,
+    WaitForCIAction,
+    WaitForInputAction,
+)
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change, StageResult
 from dark_factory.orchestration.stages.checks import pending_gate_results
@@ -72,6 +75,7 @@ from dark_factory.ports import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
+from dark_factory.rules.gates import HUMAN_GATES, required_gates
 
 STAGE_ROLE: Final[Mapping[Stage, Role]] = {
     Stage.SPECIFICATION: Role.PRODUCT,
@@ -84,10 +88,9 @@ STAGE_ROLE: Final[Mapping[Stage, Role]] = {
 
 Specification and planning are product work (requirements and the proposed
 change), construction is development, review/verification is quality, and
-release is delivery. Release itself is not agent work (ADR-024 §7 S4): the
-stage's ``ci_cd`` profile exists, but the stage maps to no skill in
-:data:`STAGE_SKILL`, so an agent attempt of it stops in ``blocked`` — the
-honest outcome, not a fabricated agent.
+release is delivery. ``ci_cd`` has no core profile yet, so the release stage
+stops in ``blocked`` until its profile lands — the honest outcome, not a
+fabricated agent.
 """
 
 STAGE_SKILL: Final[Mapping[Stage, str]] = {
@@ -349,18 +352,34 @@ class AgentStageExecutor:
         change_request: ChangeRequestRef,
         usage: Usage | None = None,
     ) -> StageResult:
-        """The stage produced its work and waits for CI gates (FR-009, SC-004)."""
+        """The stage produced its work and parks on its external wait (FR-009, SC-004).
+
+        The wait follows the stage's gate character (``rules.gates``): a stage
+        whose required gates are all human — specification on the base gate
+        set — parks for the human decision, a stage with machine gates waits
+        for CI on the final SHA. The flow transition table owns which waits a
+        stage may take; producing an action outside it would crash the
+        advance instead of parking the attempt (found in T-043 increment 1).
+        """
+        machine_gates = required_gates(context.route, context.stage) - HUMAN_GATES
+        produced = (
+            f"stage {context.stage.value} produced {change_request.repository.slug}"
+            f"#{change_request.number} at {self._branch(context)}"
+        )
+        action: WaitForCIAction | WaitForInputAction
+        if machine_gates:
+            action = WaitForCIAction(
+                reason=f"{produced}; machine gates run on the final SHA in CI (FR-009)",
+                change_request=change_request,
+            )
+        else:
+            action = WaitForInputAction(
+                reason=f"{produced}; the stage's gates are human decisions (ADR-018)"
+            )
         return self._result(
             context,
             status=StageStatus.WAITING,
-            next_action=WaitForCIAction(
-                reason=(
-                    f"stage {context.stage.value} produced {change_request.repository.slug}"
-                    f"#{change_request.number} at {self._branch(context)};"
-                    " machine gates run on the final SHA in CI (FR-009)"
-                ),
-                change_request=change_request,
-            ),
+            next_action=action,
             artifacts=list(artifacts),
             usage=usage,
         )
@@ -386,7 +405,7 @@ class AgentStageExecutor:
         context: StageContext,
         *,
         status: StageStatus,
-        next_action: StopAction | WaitForCIAction,
+        next_action: StopAction | WaitForCIAction | WaitForInputAction,
         artifacts: Sequence[ArtifactRef] = (),
         usage: Usage | None = None,
     ) -> StageResult:

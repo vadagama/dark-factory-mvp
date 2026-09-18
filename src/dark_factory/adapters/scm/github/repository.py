@@ -37,7 +37,10 @@ class GitHubRepository(RepositoryPort):
 
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str:
         response = await self._client.request("GET", f"/repos/{repository.slug}/commits/{ref}")
-        if response.status_code == 404:
+        if response.status_code in (404, 422):
+            # GitHub answers 404 for an unknown repository and 422 for a ref
+            # that does not resolve (a missing branch or sha) — both are
+            # "absent" for the port contract (a missing branch is a KeyError).
             raise KeyError(f"no revision recorded for {repository.slug!r}@{ref!r}")
         return str(self._client.expect(response, 200).json()["sha"])
 
@@ -128,7 +131,9 @@ class GitHubRepository(RepositoryPort):
     async def _head(self, repository: RepositoryRef, branch: str) -> dict[str, str]:
         """Head SHA and tree SHA of ``branch``; a missing branch is a ``KeyError``."""
         response = await self._client.request("GET", f"/repos/{repository.slug}/commits/{branch}")
-        if response.status_code == 404:
+        if response.status_code in (404, 422):
+            # 422, not 404, is what GitHub answers for a ref that does not
+            # resolve; both mean the branch is absent (see ``get_revision``).
             raise KeyError(f"no revision recorded for {repository.slug!r}@{branch!r}")
         data: dict[str, Any] = self._client.expect(response, 200).json()
         info: dict[str, Any] = data.get("commit") or {}

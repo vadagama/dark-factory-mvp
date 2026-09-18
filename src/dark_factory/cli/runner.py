@@ -103,6 +103,7 @@ from dark_factory.cli.release import (
 from dark_factory.cli.release_facts import CliReleaseFactsProvider
 from dark_factory.cli.run_records import RunRecordError, collect_run_manifest
 from dark_factory.execution.runs.store import RunRecordStore
+from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.runner import (
     FactsProvider,
     ReleaseFactsProvider,
@@ -450,7 +451,7 @@ def _advance_in_session(
 ) -> RunAdvance:
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
-    run_id, change = _resolve_run(session, store, args)
+    run_id, change = _resolve_run(session, store, args, revision_of=revision_of)
     return advance_run(
         store=store,
         change=change,
@@ -464,19 +465,39 @@ def _advance_in_session(
     )
 
 
-def _resolve_run(session: Session, store: RunStore, args: RunAdvanceArgs) -> tuple[str, Change]:
-    """Run id and change snapshot of the command; raises :class:`InvalidRunnerInput`."""
+def _resolve_run(
+    session: Session,
+    store: RunStore,
+    args: RunAdvanceArgs,
+    *,
+    revision_of: RevisionResolver | None = None,
+) -> tuple[str, Change]:
+    """Run id and change snapshot of the command; raises :class:`InvalidRunnerInput`.
+
+    The run id is derived from the change snapshot (``generated_run_id``), so a
+    repeated call for the same snapshot advances the same run. The first stage
+    row, though, is keyed by the SCM-derived revision when the composition root
+    supplied a resolver (ADR-006 p.4): the agent executor mints its workspace at
+    that revision, and a snapshot digest — not a git object — would block the
+    stage at the workspace boundary on every attempt.
+    """
     changes = ChangeRepository(session)
     if args.change_id is not None:
         change = changes.get(args.change_id)
         if change is None:
             raise InvalidRunnerInput(f"unknown change {args.change_id!r}")
+        initial_stage_revision = (
+            revision_of(change, route_profile(DEFAULT_RUN_ROUTE).initial_stage)
+            if revision_of is not None
+            else None
+        )
         created = store.create_run(
             change_id=change.id,
             route=DEFAULT_RUN_ROUTE,
             provider=change.product.provider,
             budget=BudgetSnapshot(),
             input_revision=store.stage_input_revision(change),
+            initial_stage_revision=initial_stage_revision,
         )
         return created.id, change
     if args.run_id is None:

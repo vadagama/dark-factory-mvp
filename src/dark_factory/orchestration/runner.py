@@ -408,7 +408,7 @@ def advance_run(
             and stage is not Stage.RELEASE
             else None
         )
-        if observation is not None and gate_resolved(observation, stage=stage):
+        if observation is not None and gate_resolved(observation, stage=stage, route=run.route):
             return _resume_waiting(
                 store=store,
                 run=run,
@@ -600,7 +600,9 @@ def _external_wait_resolved(
         return False
     if stage is Stage.RELEASE:
         return release_facts is not None and release_resolved(release_facts(run, stage, change))
-    return gate_facts is not None and gate_resolved(gate_facts(run, stage, change), stage=stage)
+    return gate_facts is not None and gate_resolved(
+        gate_facts(run, stage, change), stage=stage, route=run.route
+    )
 
 
 def _resume_release_waiting(

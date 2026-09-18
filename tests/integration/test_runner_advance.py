@@ -33,7 +33,8 @@ from dark_factory.changes.keys import operation_key
 from dark_factory.changes.next_action import ExecuteStageAction, StopAction
 from dark_factory.changes.run import Change, InvalidStatusTransition, StageResult
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.cli.main import EXIT_OK, EXIT_WAITING, main
+from dark_factory.cli.main import EXIT_OK, EXIT_WAITING, RunAdvanceArgs, main
+from dark_factory.cli.runner import run_advance_command
 from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.runner import (
     RunAdvance,
@@ -553,6 +554,46 @@ def test_factory_run_advance_and_status_read_the_persisted_run(
         )
         assert [run.id for run in runs] == [run_id]
         assert runs[0].state_revision == 3
+
+
+def test_the_cli_created_run_keys_its_first_stage_by_the_resolver_revision(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # T-043: with a composition-root resolver the run created from --change-id
+    # keys its first stage by the SCM revision (ADR-006 p.4), not by the change
+    # snapshot's digest — a digest is not a git object and blocked the agent
+    # executor at the workspace boundary on every attempt.
+    monkeypatch.setenv("DATABASE_URL", os.environ[TEST_DATABASE_URL_ENV])
+    change = make_change()
+    _seed_change(session_factory, change)
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return "scm-rev-1"
+
+    assert (
+        run_advance_command(
+            RunAdvanceArgs(change_id=change.id, run_id=None, json_output=True),
+            session_factory=session_factory,
+            owner_id="test-owner",
+            revision_of=revision_of,
+        )
+        == EXIT_WAITING
+    )
+    run_id = json.loads(capsys.readouterr().out)["run_id"]
+
+    # The stage operation — its row, its attempt and its committed result — is
+    # keyed by the SCM revision; the run id itself stays snapshot-derived.
+    key = operation_key(run_id, Stage.SPECIFICATION, "scm-rev-1")
+    with session_scope(session_factory) as session:
+        stage_row = session.get(StageRow, key)
+        assert stage_row is not None
+        assert stage_row.input_revision == "scm-rev-1"
+        assert session.get(Attempt, f"{key}:1") is not None
+        result = session.get(StageResultRow, f"{key}:1")
+        assert result is not None
+        assert result.input_revision == "scm-rev-1"
 
 
 def _execution_columns(engine: Engine) -> set[str]:

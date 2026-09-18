@@ -33,6 +33,7 @@ from typing import Final
 
 from dark_factory.changes.enums import (
     ChangeRequestStatus,
+    DecisionOutcome,
     FindingOrigin,
     FindingSeverity,
     FindingStatus,
@@ -102,15 +103,18 @@ class GateResolution:
     merge_context: MergeRequestContext | None
 
 
-def gate_resolved(observation: GateObservation | None, *, stage: Stage) -> bool:
+def gate_resolved(observation: GateObservation | None, *, stage: Stage, route: Route) -> bool:
     """Whether the observation resolves the external wait of ``stage`` (T-092 S3).
 
-    Construction-style stages resolve on a terminal pipeline verdict; the
-    review/verification stage resolves only on an observed merge — it
-    completes through the merge (``flow.FLOW_TRANSITIONS``), so a green
-    pipeline there is not a resolution: waking the attempt would build a merge
-    result the policy can only park again. ``None`` (nothing observed) is
-    never a resolution.
+    A stage whose required gates are all human resolves on an observed
+    version-bound human approval — its machine gate set (``rules.gates``) is
+    empty, and a green pipeline must never complete the human decision for
+    the flow (found in T-043 increment 1). Construction-style stages resolve
+    on a terminal pipeline verdict; the review/verification stage resolves
+    only on an observed merge — it completes through the merge
+    (``flow.FLOW_TRANSITIONS``), so a green pipeline there is not a
+    resolution: waking the attempt would build a merge result the policy can
+    only park again. ``None`` (nothing observed) is never a resolution.
     """
     if observation is None:
         return False
@@ -119,6 +123,13 @@ def gate_resolved(observation: GateObservation | None, *, stage: Stage) -> bool:
         return False
     if observation.merged:
         return stage is Stage.REVIEW_VERIFICATION
+    human_gates = required_gates(route, stage) & HUMAN_GATES
+    if human_gates and not (required_gates(route, stage) - HUMAN_GATES):
+        # A purely human-gated stage: only a human decision resolves it.
+        return any(
+            decision.outcome is DecisionOutcome.APPROVED and decision.gate in human_gates
+            for decision in observation.approvals
+        )
     if observation.pipeline_status == _PIPELINE_SUCCESS:
         return stage is not Stage.REVIEW_VERIFICATION
     return observation.pipeline_status in _PIPELINE_FAILURES
@@ -158,7 +169,7 @@ def build_gate_resolution(
     observation names no change request (neither the checkpoint's
     ``wait_for_ci`` action nor the change snapshot carries one).
     """
-    if not gate_resolved(observation, stage=stage):
+    if not gate_resolved(observation, stage=stage, route=run.route):
         raise ValueError(
             f"observation of stage {stage.value} does not resolve its external wait; "
             "the driver replays the waiting checkpoint instead"

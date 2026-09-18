@@ -29,6 +29,7 @@ from dark_factory.changes.enums import (
     DecisionOutcome,
     DecisionSource,
     Gate,
+    Route,
     Stage,
 )
 from dark_factory.changes.findings import Decision
@@ -40,6 +41,7 @@ from dark_factory.ports import (
     PipelineStatus,
     ReviewObservation,
 )
+from dark_factory.rules.gates import HUMAN_GATES, required_gates
 
 _APPROVAL_OUTCOMES: Final[Mapping[str, DecisionOutcome]] = {
     "approved": DecisionOutcome.APPROVED,
@@ -79,9 +81,9 @@ class ScmFactsProvider:
         are part of the driver's protocol and are not consulted: the facts
         depend on the change's request and its pipeline alone.
         """
-        return asyncio.run(self._observe(change))
+        return asyncio.run(self._observe(change, stage))
 
-    async def _observe(self, change: Change) -> GateObservation | None:
+    async def _observe(self, change: Change, stage: Stage) -> GateObservation | None:
         ref = change.change_request
         if ref is None:
             ref = await self._merge_requests.find_existing(change.product, change.id)
@@ -95,21 +97,27 @@ class ScmFactsProvider:
             head_sha=observed.head_sha,
             merged=observed.status is ChangeRequestStatus.MERGED,
             pipeline_status=None if pipeline is None else pipeline.status,
-            approvals=self._approvals(observed.reviews),
+            approvals=self._approvals(observed.reviews, stage),
         )
 
     @staticmethod
-    def _approvals(reviews: Sequence[ReviewObservation]) -> tuple[Decision, ...]:
+    def _approvals(reviews: Sequence[ReviewObservation], stage: Stage) -> tuple[Decision, ...]:
         """The reviews that are human decisions, version-bound to their SHA.
 
-        ``approved`` and ``changes_requested`` both decide the review gate;
-        the merge policy weighs the latest version-bound one (ADR-009 p.7), so
-        both are carried and the policy — not this seam — decides. A review
+        ``approved`` and ``changes_requested`` decide the stage's human gate
+        (``rules.gates``): a review of the stage's change request is the human
+        decision on that stage — the specification review decides the
+        specification gate, the review/verification review decides the review
+        gate (the base human set has exactly these two). The merge policy
+        weighs the latest version-bound decision (ADR-009 p.7), so every
+        outcome is carried and the policy — not this seam — decides. A review
         without a SHA or a submission instant binds to nothing and authorizes
         nothing: it is dropped rather than guessed. The decision id is
         namespaced by the provider review id, so re-observing the same review
         yields the same decision (replay-dedup in the decision store).
         """
+        human = HUMAN_GATES & required_gates(Route.STANDARD, stage)
+        gate = sorted(human, key=lambda item: item.value)[0] if human else Gate.REVIEW
         decisions: list[Decision] = []
         for review in reviews:
             outcome = _APPROVAL_OUTCOMES.get(review.state)
@@ -118,7 +126,7 @@ class ScmFactsProvider:
             decisions.append(
                 Decision(
                     id=f"review:{review.review_id}",
-                    gate=Gate.REVIEW,
+                    gate=gate,
                     outcome=outcome,
                     decided_by=DecisionSource.HUMAN,
                     decided_at=review.submitted_at,

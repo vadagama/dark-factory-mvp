@@ -261,9 +261,10 @@
       ],
       "tools": [
         "read_file",
-        "search_repo"
+        "search_repo",
+        "write_file"
       ],
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "constraints": [

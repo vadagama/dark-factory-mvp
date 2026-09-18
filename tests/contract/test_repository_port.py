@@ -19,6 +19,16 @@ def test_adapter_satisfies_protocol(
     assert not isinstance(object(), RepositoryPort)
 
 
+def test_get_revision_of_a_missing_ref_is_a_keyerror(
+    repository_port: RepositoryPort, repository: RepositoryRef
+) -> None:
+    # The real GitHub answers 422 for a ref that does not resolve on
+    # /commits/{ref} and 404 for an unknown repository; both are "absent" for
+    # the port contract (ScmRevision falls back to the base ref on it).
+    with pytest.raises(KeyError):
+        asyncio.run(repository_port.get_revision(repository, "factory/missing-branch"))
+
+
 def test_ensure_branch_creates_branch_at_from_revision(
     repository_port: RepositoryPort, repository: RepositoryRef
 ) -> None:

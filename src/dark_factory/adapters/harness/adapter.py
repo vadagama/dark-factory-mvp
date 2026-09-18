@@ -29,6 +29,9 @@ mode keeps thinking enabled, stays provider-neutral (no vendor profile flags)
 and uses the endpoint's JSON output mode; the trade-offs are recorded as TD-015.
 """
 
+import logging
+import os
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TypeVar
 from urllib.parse import urlparse
@@ -48,6 +51,8 @@ from dark_factory.adapters.harness.config import (
     HarnessConfig,
 )
 from dark_factory.ports import AgentResult, HarnessPort, HealthStatus, Role, TaskEnvelope, Usage
+
+logger = logging.getLogger(__name__)
 
 type ToolFunction = Callable[..., Any]
 """Tool accepted by ``Agent(tools=...)``: a plain callable (a typed ``Tool`` fits too)."""
@@ -114,6 +119,11 @@ class PydanticAIHarness(HarnessPort):
             # Boundary translation: no exception may escape into the
             # deterministic Flow (US1 scenario 3). Only the type name is
             # surfaced — exception texts can embed URLs or credentials (ADR-009).
+            # DARK_FACTORY_HARNESS_TRACEBACK=1 adds the local traceback to the
+            # process log for diagnosis; it never reaches a reason or evidence.
+            logger.warning("harness call failed: %s", type(exc).__name__)
+            if (os.environ.get("DARK_FACTORY_HARNESS_TRACEBACK") or "").strip() == "1":
+                traceback.print_exc()
             return AgentResult(ok=False, output=f"harness call failed: {type(exc).__name__}")
         return AgentResult(
             ok=True,

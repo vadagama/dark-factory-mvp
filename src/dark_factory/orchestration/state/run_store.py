@@ -322,6 +322,7 @@ class RunStore:
         budget: BudgetSnapshot,
         input_revision: str,
         implementation_contract: ImplementationContract | None = None,
+        initial_stage_revision: str | None = None,
     ) -> ChangeRun:
         """Create the run of a change snapshot and its first stage, or return the existing one.
 
@@ -332,6 +333,14 @@ class RunStore:
         never be reset by a repeat. ``input_revision`` is required because the
         run pins the revision of the work it executes: the first stage row is
         keyed by it and every later stage of the same run reuses it.
+
+        ``initial_stage_revision`` re-keys the *first stage row* (ADR-006 p.4):
+        the run stays identified by the change snapshot's digest — the id a
+        repeat resolves — while its first stage, entered for the first time, is
+        keyed by the SCM-derived revision the composition root's resolver
+        supplies. Without the override the run id and the stage operation would
+        disagree with the SCM resolver: the executor would mint its workspace at
+        a digest that is not a git object (found in T-043 increment 1).
         """
         execution_id = generated_run_id(change_id, input_revision)
         existing = self.load(execution_id)
@@ -349,7 +358,9 @@ class RunStore:
         self._executions.get_or_create_stage(
             execution_id=execution_id,
             stage=route_profile(route).initial_stage,
-            input_revision=input_revision,
+            input_revision=(
+                initial_stage_revision if initial_stage_revision is not None else input_revision
+            ),
         )
         run = self.load(execution_id)
         if run is None:  # pragma: no cover - defensive, the row was just created

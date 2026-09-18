@@ -248,9 +248,34 @@ def test_run_advance_creates_the_run_from_the_change_snapshot(
             "provider": Provider.GITHUB,
             "budget": BudgetSnapshot(),
             "input_revision": REVISION,
+            "initial_stage_revision": None,
         }
     ]
     assert "run run-001: waiting" in capsys.readouterr().out
+
+
+def test_run_advance_keys_the_created_run_stage_by_the_resolver_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With the composition root's resolver the run is still identified by the
+    # change snapshot, but its first stage is keyed by the SCM revision the
+    # executor will mint its workspace at (ADR-006 p.4).
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return "scm-rev-1"
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+        revision_of=revision_of,
+    )
+
+    assert code == EXIT_WAITING
+    created = _last_store().created[0]
+    assert created["input_revision"] == REVISION
+    assert created["initial_stage_revision"] == "scm-rev-1"
 
 
 def test_run_advance_rejects_an_unknown_change(
