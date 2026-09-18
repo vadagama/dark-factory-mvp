@@ -355,13 +355,30 @@ def test_failed_gate_blocks_advance() -> None:
             Stage.CONSTRUCTION,
             ExecuteStageAction(next_stage=Stage.REVIEW_VERIFICATION),
             gates=_passing_gates(
-                Stage.CONSTRUCTION, Route.STANDARD, **{Gate.UI.value: GateStatus.FAILED}
+                Stage.CONSTRUCTION, Route.STANDARD, **{Gate.CODE.value: GateStatus.FAILED}
+            ),
+        ),
+    )
+    assert decision.action.type == "stop"
+    assert "code" in decision.action.reason
+    assert decision.run_status == RunStatus.BLOCKED
+
+
+def test_failed_ui_gate_on_the_design_stage_blocks_advance() -> None:
+    """``ui`` sits on specification since ADR-029 p.1 — a failure there blocks the design phase."""
+    run = make_run(route=Route.STANDARD)
+    decision = apply_result(
+        run,
+        _result(
+            Stage.SPECIFICATION,
+            ExecuteStageAction(next_stage=Stage.PLANNING),
+            gates=_passing_gates(
+                Stage.SPECIFICATION, Route.STANDARD, **{Gate.UI.value: GateStatus.FAILED}
             ),
         ),
     )
     assert decision.action.type == "stop"
     assert "ui" in decision.action.reason
-    assert decision.run_status == RunStatus.BLOCKED
 
 
 def test_missing_gate_result_blocks_advance() -> None:
@@ -369,10 +386,10 @@ def test_missing_gate_result_blocks_advance() -> None:
     decision = apply_result(
         run,
         _result(
-            Stage.CONSTRUCTION,
-            ExecuteStageAction(next_stage=Stage.REVIEW_VERIFICATION),
+            Stage.SPECIFICATION,
+            ExecuteStageAction(next_stage=Stage.PLANNING),
             gates=[
-                GateResult(gate=Gate.CODE, status=GateStatus.PASSED, sha="731ac91")
+                GateResult(gate=Gate.SPECIFICATION, status=GateStatus.PASSED, sha="731ac91")
             ],  # ui result absent
         ),
     )
@@ -384,10 +401,10 @@ def test_skipped_gate_satisfies_requirement() -> None:
     decision = apply_result(
         run,
         _result(
-            Stage.CONSTRUCTION,
-            ExecuteStageAction(next_stage=Stage.REVIEW_VERIFICATION),
+            Stage.SPECIFICATION,
+            ExecuteStageAction(next_stage=Stage.PLANNING),
             gates=_passing_gates(
-                Stage.CONSTRUCTION, Route.STANDARD, **{Gate.UI.value: GateStatus.SKIPPED}
+                Stage.SPECIFICATION, Route.STANDARD, **{Gate.UI.value: GateStatus.SKIPPED}
             ),
         ),
     )
@@ -405,6 +422,17 @@ def test_quick_route_does_not_require_ui_gate() -> None:
         ),
     )
     assert decision.action.type == "execute_stage"
+
+    design_run = make_run(route=Route.QUICK)
+    design = apply_result(
+        design_run,
+        _result(
+            Stage.SPECIFICATION,
+            ExecuteStageAction(next_stage=Stage.PLANNING),
+            gates=[GateResult(gate=Gate.SPECIFICATION, status=GateStatus.PASSED, sha="731ac91")],
+        ),
+    )
+    assert design.action.type == "execute_stage"
 
 
 def test_merge_advances_to_release_stage() -> None:

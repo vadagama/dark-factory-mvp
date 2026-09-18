@@ -51,7 +51,7 @@ describe("SettingsPage", () => {
     expect(mode).toHaveTextContent("С согласованиями");
     // Each <li> renders the label and the derived value; empty lists wrap
     // their placeholder in a <span>, non-empty lists join into the text node.
-    expect(screen.getByText("Human-гейты: specification, review")).toBeInTheDocument();
+    expect(screen.getByText("Human-гейты: specification, ui, review")).toBeInTheDocument();
     expect(screen.getByText("Auto-merge риск-классы:")).toBeInTheDocument();
     expect(screen.getByText("нет (merge — только человек, ADR-011)")).toBeInTheDocument();
   });

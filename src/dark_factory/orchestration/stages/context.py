@@ -11,10 +11,10 @@ the persisted snapshot and calls no harness/LLM (ADR-003).
 
 from dataclasses import dataclass
 
-from dark_factory.changes.enums import Gate, Route, Stage
+from dark_factory.changes.enums import Gate, RiskClass, Route, Stage
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.rules.gates import required_gates
+from dark_factory.rules.gates import required_gates, required_human_gates
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +25,13 @@ class StageContext:
     stage: the gates the flow requires before the stage may advance. A risk
     class never adds a gate to it (ADR-023 p.3): the risk-driven human gates and
     control points are computed by the policy where they are consumed.
+
+    ``human_gates`` is the risk-aware human subset of that slice (ADR-029 p.3):
+    the gates only a human decision may satisfy. The machine gates are
+    ``required_gates - human_gates``, and the stage's wait follows that set — a
+    stage with machine gates parks for CI, a purely human-gated one for the
+    human (ADR-029; found in T-043 increment 1, where the risk-widened ``ui``
+    gate leaked into the pipeline verdict).
     """
 
     change: Change
@@ -33,6 +40,7 @@ class StageContext:
     run_id: str
     input_revision: str | None
     required_gates: frozenset[Gate]
+    human_gates: frozenset[Gate]
     budget: BudgetSnapshot
     attempt_number: int = 1
     """Physical attempt this context belongs to (ADR-006 p.7).
@@ -53,15 +61,22 @@ def build_context(
     input_revision: str | None,
     budget: BudgetSnapshot,
     attempt_number: int = 1,
+    risk_class: RiskClass | None = None,
 ) -> StageContext:
     """Assemble the stage context from the validated snapshot and the flow tables.
 
-    The machine gate set comes from ``rules.gates`` — the single source of gate
-    policy (ADR-005): on the standard route construction additionally carries the
-    UI gate, the quick route skips it. ``attempt_number`` is the physical attempt
-    of the operation (ADR-006 p.7); it defaults to the first attempt for callers
-    that do not track retries.
+    Both gate sets come from ``rules.gates`` — the single source of gate policy
+    (ADR-005, ADR-029): ``required_gates`` is the full set of the stage (on the
+    standard route the design stage additionally carries the UI gate, the quick
+    route skips it) and ``human_gates`` is its risk-aware human subset.
+    ``risk_class`` is the run's effective class (declared, derived facts and the
+    route floor, ADR-023 p.2) — a caller that holds a run passes the policy's
+    derivation so the context weighs the same set the flow checks; without it
+    the snapshot's declared class is used. ``attempt_number`` is the physical
+    attempt of the operation (ADR-006 p.7); it defaults to the first attempt for
+    callers that do not track retries.
     """
+    effective_class = risk_class if risk_class is not None else change.risk_class
     return StageContext(
         change=change,
         stage=stage,
@@ -69,6 +84,7 @@ def build_context(
         run_id=run_id,
         input_revision=input_revision,
         required_gates=required_gates(route, stage),
+        human_gates=required_human_gates(route, stage, effective_class),
         budget=budget,
         attempt_number=attempt_number,
     )

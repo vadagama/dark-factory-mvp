@@ -3,6 +3,7 @@
     "auto_merge_risk_classes": [],
     "human_gates": [
       "specification",
+      "ui",
       "review"
     ],
     "merge_authorization_gate": "review",
