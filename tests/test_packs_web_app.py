@@ -207,7 +207,8 @@ def test_backend_pyproject_is_strict_and_complete() -> None:
     assert project["name"] == "example-product-backend"
     assert SEMVER.match(project["version"])
     assert project["requires-python"] == ">=3.12"
-    runtime = {re.split(r"[<>=~]", dep)[0].strip() for dep in project["dependencies"]}
+    # Extras count as the same dependency: "psycopg[binary]" -> "psycopg".
+    runtime = {re.split(r"[<>=~\[]", dep)[0].strip() for dep in project["dependencies"]}
     assert {
         "fastapi",
         "uvicorn",
@@ -460,11 +461,21 @@ class TestChartRenders:
     def test_migrations_job_is_a_hook(self, default_docs: list[dict[str, Any]]) -> None:
         job = _workload(default_docs, "Job", "migrations")
         annotations = job["metadata"]["annotations"]
-        assert annotations["helm.sh/hook"] == "pre-install,pre-upgrade"
+        # POST phases only (not pre-*): Argo CD maps pre-install/pre-upgrade
+        # helm hooks to its PreSync phase, which runs BEFORE the chart's own
+        # PostgreSQL resources exist and deadlocks the first release on an
+        # empty cluster; the retry loop absorbs first-boot initdb latency.
+        assert annotations["helm.sh/hook"] == "post-install,post-upgrade"
         assert job["spec"]["backoffLimit"] == 0
         assert job["spec"]["activeDeadlineSeconds"] == 300
         container = job["spec"]["template"]["spec"]["containers"][0]
-        assert container["command"] == ["alembic", "upgrade", "head"]
+        command = container["command"]
+        assert command[0] == "sh"
+        assert command[1] == "-c"
+        assert "until" in command[2]
+        # values.migrations.command follows the sh $0 placeholder verbatim.
+        assert command[3] == "migrations-wrapper"
+        assert command[4:] == ["alembic", "upgrade", "head"]
         assert container["image"].endswith("@sha256:__BACKEND_IMAGE_DIGEST__")
 
     def test_postgres_statefulset_contract(self, default_docs: list[dict[str, Any]]) -> None:

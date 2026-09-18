@@ -2,6 +2,45 @@
 
 Формат — Keep a Changelog; версии — SemVer, синхронно с `pack.yaml.version`.
 
+## [0.2.1] - 2026-09-18
+
+### Fixed
+
+- Backend импортируется без `DATABASE_URL`: модульная сборка `app = create_app()`
+  убрана (она валидировала настройки при импорте и роняла CI и любые
+  hermetic-импорты модуля); uvicorn запускает фабрику —
+  `uvicorn app.main:create_app --factory`.
+- Hermetic-тесты `Settings` изолируются fixture'ой на уровне `model_config`
+  (per-call `_env_file=None` несовместим со strict-mypy поверх
+  pydantic `dataclass_transform`); no-arg `Settings()` подавляет `call-arg`,
+  т.к. обязательный `database_url` приходит из окружения.
+- В runtime-зависимости добавлен extra `psycopg[binary]` с верхним пином
+  `<3.3`: без колеса `psycopg-binary` резолв pq падает в окружениях без
+  системного libpq (CI, hermetic unit-тесты), но колёса 3.3.x вшивают
+  auditwheel-SBOM (`dist-info/sboms/auditwheel.cdx.json`) со списком
+  старых bundled-библиотек build-окружения (например `pcre2
+  10.32-3.el8_6` на arm64, 6 CVE) — fail-closed trivy-гейт читает этот
+  SBOM и отвергает каждую сборку образа. Пин снимается, когда psycopg
+  обновит bundled-библиотеки или trivy перестанет миксовать wheel-SBOM
+  с OS-сканом.
+- Runtime-стадия `Dockerfile.backend` поднимает все OS-пакеты до текущего
+  пропатченного состояния (`apt-get upgrade -y`, паттерн фабричного образа):
+  дайджест-пин базы `python:3.12-slim-bookworm` пересобирается upstream
+  периодически, а `libpcre2-8-0 10.42-1` из базы несёт 3 HIGH CVE —
+  fail-closed trivy-гейт отвергал каждую сборку образа.
+- Миграционный hook Job переведён на post-фазы `post-install,post-upgrade`
+  (было `pre-install,pre-upgrade`) с retry-циклом до готовности БД.
+  Причина: Argo CD маппит helm-хуки `pre-install`/`pre-upgrade` на фазу
+  PreSync, выполняемую ДО применения ресурсов чарта — первый релиз на
+  пустом кластере дедлочился, Job не резолвил ещё не созданный in-chart
+  Service PostgreSQL (найдено живым деплоем пилота T043). Post-фазы
+  выполняются после Sync (postgres поднят), retry (`sh`-обёртка,
+  30 попыток x 5s) поглощает время первого initdb; неудачный
+  install/PostSync сохраняет ресурсы, повторная попытка Argo идёт на
+  живой базе (конвергентно). Следствие: при апгрейдах миграции идут
+  после деплоя новой версии — схема должна быть обратно-совместимой
+  (expand/contract).
+
 ## [0.2.0] - 2026-09-16
 
 ### Changed
