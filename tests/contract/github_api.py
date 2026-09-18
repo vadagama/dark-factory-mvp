@@ -273,7 +273,10 @@ class GitHubApiEmulator:
     def _commit_route(self, ref: str) -> httpx2.Response:
         sha = self._resolve_ref(ref)
         if sha is None:
-            return _json_response(404, {"message": "No commit found for SHA: " + ref})
+            # The real GitHub answers 422 (not 404) for a ref that does not
+            # resolve on this endpoint; the adapter maps it to KeyError like
+            # the 404 of an unknown repository.
+            return _json_response(422, {"message": "No commit found for SHA: " + ref})
         commit = self.commits.get(sha)
         if commit is not None:
             return _json_response(200, self._commit_json(commit))

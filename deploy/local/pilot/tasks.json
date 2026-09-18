@@ -1,0 +1,79 @@
+{
+  "product": {
+    "provider": "github",
+    "slug": "vadagama/dark-factory-product-1"
+  },
+  "source": "api",
+  "tasks": [
+    {
+      "id": "chg_t043_p01",
+      "external_ref": "t043-pilot-01",
+      "risk_class": "R1",
+      "title": "Document the product API in README",
+      "description": "Add an 'API' section to the product README.md describing the two backend endpoints that exist today: GET / (liveness, returns app name and version, never touches the database) and GET /api/healthz (readiness, pings PostgreSQL, returns 503 while the database is down). For each endpoint give its purpose and response codes. Documentation-only change: no code, no tests required beyond the existing suite staying green."
+    },
+    {
+      "id": "chg_t043_p02",
+      "external_ref": "t043-pilot-02",
+      "risk_class": "R1",
+      "title": "Fix misleading frontend error message when readiness returns 503",
+      "description": "Bug: when the backend is reachable but /api/healthz answers 503 (database down), frontend/src/pages/HealthPage.tsx renders 'Backend unavailable: ... (status 503)'. The backend is available; the database is not. Fix the message logic in HealthPage.tsx so an ApiError with status 503 renders 'Database unavailable' (keep the underlying error detail visible), while other statuses keep the current 'Backend unavailable' wording. Update frontend/src/pages/HealthPage.test.tsx to cover both cases. Frontend-only change."
+    },
+    {
+      "id": "chg_t043_p03",
+      "external_ref": "t043-pilot-03",
+      "risk_class": "R1",
+      "title": "Replace the repository-name heading on the Health page with a human title",
+      "description": "The HealthPage (frontend/src/pages/HealthPage.tsx) renders the literal repository name 'dark-factory-product-1' as its h1 in both the ready and error states. Replace that heading text with 'Service Status' in both states. Keep everything else unchanged. Update the existing frontend/src/pages/HealthPage.test.tsx expectations accordingly."
+    },
+    {
+      "id": "chg_t043_p04",
+      "external_ref": "t043-pilot-04",
+      "risk_class": "R1",
+      "title": "Add a unit test for the GET / liveness endpoint",
+      "description": "backend/tests/unit has no coverage for the liveness endpoint GET / (app/src/app/health.py, handler index returning AppInfo with app name and version). Add backend/tests/unit/test_index.py covering the happy path: status 200 and the JSON body carrying the configured app_name and version. Reuse the existing test style and fixtures of backend/tests/unit/test_health.py. Backend tests only; no production code changes."
+    },
+    {
+      "id": "chg_t043_p05",
+      "external_ref": "t043-pilot-05",
+      "risk_class": "R1",
+      "title": "Document the database session lifecycle in backend/src/app/db.py",
+      "description": "Add a module docstring and function docstrings to backend/src/app/db.py explaining the engine/sessionmaker lifecycle: engine created from Settings.database_url, sessionmaker scoped to the FastAPI app state, sessions yielded per request by the get_session dependency in app/health.py. Documentation-only change to docstrings; no behavior changes."
+    },
+    {
+      "id": "chg_t043_p06",
+      "external_ref": "t043-pilot-06",
+      "risk_class": "R2",
+      "title": "New GET /api/version endpoint with an integration test",
+      "description": "Add GET /api/version to the backend (app/src/app/health.py or a new router module) returning {\"app\": <app_name>, \"version\": <app.__version__>} without touching the database. Add an integration test backend/tests/integration/test_version.py following the existing pattern of backend/tests/integration/test_health_database.py. The endpoint must not require authentication or database connectivity."
+    },
+    {
+      "id": "chg_t043_p07",
+      "external_ref": "t043-pilot-07",
+      "risk_class": "R2",
+      "title": "New frontend About page using Small UIKit components",
+      "description": "Add a new frontend page frontend/src/pages/AboutPage.tsx that renders a static 'About' section using at least the Card component and the StatusBadge pattern from @small/ui (imports only from the package root, per the UI policy gates). The page is static (no API calls). Register it in frontend/src/App.tsx behind a simple in-page tab or link alongside HealthPage, and add a component test in frontend/src/pages/AboutPage.test.tsx following HealthPage.test.tsx patterns. Frontend-only change."
+    },
+    {
+      "id": "chg_t043_p08",
+      "external_ref": "t043-pilot-08",
+      "risk_class": "R2",
+      "title": "Add body column to notes with an Alembic migration",
+      "description": "Extend the product schema: add a nullable text column 'body' to the notes table. Update the Note model in backend/src/app/models.py, generate the next Alembic migration in backend/migrations/versions (expand-only: nullable column, no data backfill, no destructive operations - upgrades and downgrades must both work), and add a unit or integration test asserting the new column persists. The migration must be backward-compatible with the running deployment (the chart runs migrations post-deploy)."
+    },
+    {
+      "id": "chg_t043_p09",
+      "external_ref": "t043-pilot-09",
+      "risk_class": "R2",
+      "title": "Notes list: GET /api/notes endpoint and a frontend Notes page",
+      "description": "Full-stack feature on top of the existing Note model: (1) backend - GET /api/notes returning the list of notes ordered by created_at desc as {\"notes\": [{id, title, created_at}]} with an integration test in backend/tests/integration/; (2) frontend - a new NotesPage that fetches the list via frontend/src/api/client.ts (extend it with fetchNotes) and renders titles with the EmptyState pattern from @small/ui when the list is empty, plus a link from App.tsx and a component test following HealthPage.test.tsx patterns. Depends on nothing beyond the current schema; do not wait for the body column."
+    },
+    {
+      "id": "chg_t043_p10",
+      "external_ref": "t043-pilot-10",
+      "risk_class": "R2",
+      "title": "Extract shared FastAPI dependencies without changing endpoint contracts",
+      "description": "Refactor: move the get_session dependency (currently defined in backend/src/app/health.py) into backend/src/app/deps.py and import it from there, keeping the response models, paths and status codes of GET / and GET /api/healthz byte-identical. All existing backend tests must pass unmodified except for import paths if tests import get_session directly. Add no new features."
+    }
+  ]
+}

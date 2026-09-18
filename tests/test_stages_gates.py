@@ -91,7 +91,7 @@ def _build(
 
 def test_nothing_observed_never_resolves_the_wait() -> None:
     for stage in (Stage.CONSTRUCTION, Stage.REVIEW_VERIFICATION):
-        assert gate_resolved(None, stage=stage) is False
+        assert gate_resolved(None, stage=stage, route=Route.STANDARD) is False
 
 
 @pytest.mark.parametrize(
@@ -114,8 +114,12 @@ def test_gate_resolved_truth_table(
 
     # A green pipeline completes a machine-gated stage; the review stage
     # completes only through the merge (flow.FLOW_TRANSITIONS).
-    assert gate_resolved(observation, stage=Stage.CONSTRUCTION) is construction
-    assert gate_resolved(observation, stage=Stage.REVIEW_VERIFICATION) is review
+    assert (
+        gate_resolved(observation, stage=Stage.CONSTRUCTION, route=Route.STANDARD) is construction
+    )
+    assert (
+        gate_resolved(observation, stage=Stage.REVIEW_VERIFICATION, route=Route.STANDARD) is review
+    )
 
 
 @pytest.mark.parametrize(
@@ -132,7 +136,27 @@ def test_the_release_wait_never_resolves_from_pipeline_observations(
     # Release resolves only through release facts, never pipeline observations.
     observation = GateObservation(head_sha=HEAD, merged=merged, pipeline_status=pipeline_status)
 
-    assert gate_resolved(observation, stage=Stage.RELEASE) is False
+    assert gate_resolved(observation, stage=Stage.RELEASE, route=Route.STANDARD) is False
+
+
+def test_a_purely_human_gated_stage_never_resolves_on_the_pipeline() -> None:
+    # Specification's only gate is the human one: a green pipeline must not
+    # complete the human decision for the flow (T-043 increment 1 finding).
+    observation = GateObservation(head_sha=HEAD, merged=False, pipeline_status="success")
+
+    assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is False
+
+
+def test_an_observed_human_approval_resolves_the_human_gated_stage() -> None:
+    approval = make_merge_approval(sha=HEAD).model_copy(update={"gate": Gate.SPECIFICATION})
+    observation = GateObservation(
+        head_sha=HEAD,
+        merged=False,
+        pipeline_status="success",
+        approvals=(approval,),
+    )
+
+    assert gate_resolved(observation, stage=Stage.SPECIFICATION, route=Route.STANDARD) is True
 
 
 def test_construction_resolution_passes_the_machine_gates_at_the_head_sha() -> None:

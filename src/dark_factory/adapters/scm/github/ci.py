@@ -109,7 +109,9 @@ class GitHubCI(CIPort):
 
     async def _resolve_ref(self, slug: str, ref: str) -> str:
         response = await self._client.request("GET", f"/repos/{slug}/commits/{ref}")
-        if response.status_code == 404:
+        if response.status_code in (404, 422):
+            # 422 is what GitHub answers for a ref that does not resolve; both
+            # statuses mean "absent" for the port contract (see get_revision).
             raise KeyError(f"no revision recorded for {slug!r}@{ref!r}")
         return str(self._client.expect(response, 200).json()["sha"])
 

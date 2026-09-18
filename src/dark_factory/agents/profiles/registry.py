@@ -18,14 +18,14 @@ from dark_factory.changes.enums import Role
 PRODUCT_PROFILE: Final[AgentProfile] = AgentProfile(
     role=Role.PRODUCT,
     name="Product",
-    version="1.0.0",
+    version="1.0.1",
     description=(
         "Turns an incoming task into refined requirements and a testable"
         " specification, and packages the change for review."
     ),
     inputs=(ArtifactKind.TASK, ArtifactKind.CONTEXT),
     outputs=(ArtifactKind.REQUIREMENTS, ArtifactKind.SPEC, ArtifactKind.CHANGE_REQUEST),
-    tools=("read_file", "search_repo"),
+    tools=("read_file", "search_repo", "write_file"),
     constraints=(
         "Scope the change to what the task requires; list everything else as out of scope.",
         "Every requirement carries at least one acceptance criterion.",
