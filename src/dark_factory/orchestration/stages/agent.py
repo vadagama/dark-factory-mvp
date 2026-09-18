@@ -417,7 +417,7 @@ class AgentStageExecutor:
         whose required gates are all human — the design stage on the base gate
         set — parks for the human decision, a stage with machine gates waits
         for CI on the final SHA. The machine set is the risk-aware one
-        (``context.required_gates - context.human_gates``, ADR-028 p.3): a
+        (``context.required_gates - context.human_gates``, ADR-029 p.3): a
         risk-widened human gate (``planning`` at R2) must park for the human,
         or the stage would wait for a pipeline verdict that can never resolve
         it. The flow transition table owns which waits a stage may take;

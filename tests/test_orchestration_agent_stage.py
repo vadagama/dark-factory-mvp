@@ -228,7 +228,7 @@ def _executor(
 def test_a_risk_widened_human_gate_parks_for_the_human_not_for_ci() -> None:
     # At R3 every required gate of the stage is a human decision (ADR-023 p.3),
     # so the machine set is empty and the attempt must park for the human input
-    # instead of a pipeline verdict that could never resolve it (ADR-028 p.3).
+    # instead of a pipeline verdict that could never resolve it (ADR-029 p.3).
     executor, _recorder, _repo, _changes = _executor()
 
     result = executor(_context(risk_class=RiskClass.R3))
