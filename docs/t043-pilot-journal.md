@@ -3,6 +3,43 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-18 — T043: W2 — p01 пере-intake'нут, B3 закрыт
+
+- **Причина:** `chg_t043_p01` был приколот к битой snapshot-ревизии (B3): спецификация не
+  публиковалась, `specification` держала 3 blocked-попытки. Лечение — новое изменение, старая
+  запись не трогается (решение D4a).
+- **Что сделано** (ветка `chore/t-043-p01-reintake`, MR #104): в `deploy/local/pilot/tasks.json`
+  добавлена `chg_t043_p01b` (`external_ref` `t043-pilot-01b`, title/description/risk_class = p01);
+  подготовлен черновик `contracts/chg_t043_p01b.contract.json` (R1, scope `README.md`,
+  `approval: null`).
+- **Живая проверка (AC W2):** `intake` — `1 created, 10 replayed, 0 failed` (старые не тронуты,
+  дедуп по id/external_ref); первый `advance` не упал `WorkspaceError` — specification
+  (роль product, attempt 1, ~2 мин) опубликовала `vadagama/dark-factory-product-1#17` на ветке
+  `factory/chg_t043_p01b` и запарковалась на human-гейте (ADR-018/ADR-029). Exit 10 = waiting —
+  норма.
+- **Состояние:** `chg_t043_p01b` — `waiting`, гейты `specification`/`ui` `pending`; CR #17 — OPEN,
+  `MERGEABLE`. Дальше — approving review + merge спека-CR оператором (ADR-011), затем
+  `advance-contract … --approve` по рецепту §7.1 (контракт до резолва перехода planning→
+  construction — решение D5a).
+- **Метрика:** ручных вмешательств в W2 нет; LLM-расход — одна specification-попытка.
+
+## 2026-09-18 — T043: W1 — фикс B1 (риск-осознанный маппинг гейтов) в ветке, MR #103
+
+- **Что сделано** (ветка `fix/t-043-risk-aware-gate-mapping`, MR #103): `ScmFactsProvider` теперь
+  считает эффективный риск-класс рана в `__call__` и читает гейт ревью из
+  `required_human_gates(route, stage, risk_class)`; фолбэк `Gate.REVIEW` сохранён для стадий без
+  человеческих гейтов. Это закрывает B1: ревью plan-CR на R2+ теперь несёт `Gate.PLANNING`,
+  wait резолвится, контрольная точка `solution` закрывается (было — всегда `Gate.REVIEW`, deadlock
+  на p06–p10).
+- **Проверки (фактически запущены):** `uv run pytest` — 1835 passed, 74 skipped;
+  `tests/test_runtime_facts.py` — 11 passed (7 прежних + 4 новых: R2-planning → `Gate.PLANNING` и
+  точка `solution` закрыта; R1-planning → фолбэк и wait не резолвится; `specification`/
+  `review_verification` без изменений; `merged` резолвит стадию независимо от маппинга);
+  `uv run mypy` — clean (294 файла); `ruff check .`/`ruff format --check .` — clean.
+- **Осталось:** живая валидация W1 — после merge MR #103 прогнать p06 по §7.2 (approving review на
+  plan-CR → `advance` резолвит planning и уводит ран в construction). До merge ветки пилот идёт на
+  старом коде, поэтому standard-задачи остаются заблокированными.
+
 ## 2026-09-18 — T043: решения D1–D5 по плану закрытия приняты (оператор)
 
 - **Основание:** `docs/plan-t043-closure.md` §4; оператор принял рекомендованные варианты
