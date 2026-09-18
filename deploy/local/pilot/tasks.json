@@ -13,6 +13,13 @@
       "description": "Add an 'API' section to the product README.md describing the two backend endpoints that exist today: GET / (liveness, returns app name and version, never touches the database) and GET /api/healthz (readiness, pings PostgreSQL, returns 503 while the database is down). For each endpoint give its purpose and response codes. Documentation-only change: no code, no tests required beyond the existing suite staying green."
     },
     {
+      "id": "chg_t043_p01b",
+      "external_ref": "t043-pilot-01b",
+      "risk_class": "R1",
+      "title": "Document the product API in README",
+      "description": "Add an 'API' section to the product README.md describing the two backend endpoints that exist today: GET / (liveness, returns app name and version, never touches the database) and GET /api/healthz (readiness, pings PostgreSQL, returns 503 while the database is down). For each endpoint give its purpose and response codes. Documentation-only change: no code, no tests required beyond the existing suite staying green."
+    },
+    {
       "id": "chg_t043_p02",
       "external_ref": "t043-pilot-02",
       "risk_class": "R1",

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "ict-chg_t043_p01b",
+  "scope": {
+    "in_scope": [
+      "README.md"
+    ],
+    "out_of_scope": [
+      "backend/**",
+      "frontend/**"
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "id": "ac-1",
+      "description": "README.md gains an 'API' section documenting the two existing backend endpoints GET / (liveness: app name and version, no database access) and GET /api/healthz (readiness: pings PostgreSQL, returns 503 while the database is down), each with its purpose and response codes"
+    },
+    {
+      "id": "ac-2",
+      "description": "Documentation only: no code changes, no new tests required beyond the existing suite staying green"
+    }
+  ],
+  "architectural_constraints": [
+    "Follow the existing documentation style of the repository",
+    "No new dependencies without an explicit operator decision"
+  ],
+  "risk_class": "R1",
+  "budget": {
+    "max_autonomous_iterations": 8
+  },
+  "allowed_boundaries": [],
+  "approval": null
+}
