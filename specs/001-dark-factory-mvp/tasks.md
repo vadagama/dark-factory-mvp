@@ -194,6 +194,21 @@ description: "Task list for Dark Factory MVP implementation"
 
 ---
 
+## Phase 11: ChangeSet workspace (путь к приёмке MVP)
+
+**Purpose**: довести фабрику до состояния, в котором MVP принимается: оператор ведёт изменение от идеи до работающего приложения из Console/CLI — без низкоуровневых команд и ручных правок артефактов агента. План — `docs/plan-changeset-workspace-mvp.md`; решения — [ADR-030](../../docs/adr/ADR-030-product-registry.md)…[ADR-037](../../docs/adr/ADR-037-console-changeset-workspace-ia.md).
+
+**Independent Test**: на новом чистом репозитории калькулятора пройти `продукт → требования → архитектура → UI → план → исполнение → демонстрация → доставка` из Console и CLI; на каждом шаге виден ровно один следующий шаг (CLI и Console совпадают).
+
+- [x] T061 План и ADR рабочего пространства ChangeSet: `docs/plan-changeset-workspace-mvp.md` (проблема, решения оператора, Phase-проекция, `Guidance`, помощник merge, workstreams W1–W9, milestones M1–M5, DoD приёмки, вне объёма) и ADR-030…ADR-037 (product registry; repository provisioning; phase projection; operator guidance; conversations/rework; document artifacts; merge assistant; console IA); реестр `docs/adr/README.md`, индекс `docs/README.md`, техдолг TD-030/TD-031 и уточнение ADR-011 обновлены. DoD: план зафиксирован, ADR зарегистрированы, задачи T062–T066 добавлены. — `docs/` (реализовано 2026-09-19: план + 8 ADR + реестр/индекс/техдолг/пометка ADR-011; проверки — номера ADR уникальны, внутренние ссылки разрешаются, битых символов нет; MR против `main`, merge — человек, ADR-011)
+- [ ] T062 M1 — Продукт, репозиторий и intake: агрегат `Product` и статусы готовности (`created → validating → ready | error`), `RepositoryProvisioningPort` (`validate`/`ensure_mirror`/`bootstrap_baseline`, пустой репозиторий → baseline из `packs/`) с адаптерами `LocalMirror`/`ProviderClone` на GitHub App installation-токене, API `/products` (CRUD + validate), CLI `factory product add|validate|list` и `factory change create --brief` (сценарий `specs-only | full`), Console: уровень «Продукты», страница продукта и intake, компонент «Следующий шаг»; `Guidance` в объёме продукта и задачи. DoD: на новом чистом репозитории из интерфейса создаётся продукт со статусом `ready` (evidence провижининга) и задача с выбранным сценарием; на каждом шаге виден один следующий шаг, CLI и Console не расходятся. Зависит от T061 — ADR-030, ADR-031, ADR-033, ADR-037; `src/dark_factory/changes/`, `src/dark_factory/ports/`, `src/dark_factory/adapters/`, `src/dark_factory/api/`, `src/dark_factory/cli/`, `console/`
+- [ ] T063 M2 — Спека: обсуждения и документы: домен `Question`/`Answer`/`Comment` (якорь `artifact + anchor_id + revision`)/`ReworkOrder`, staleness, «просмотрено» ≠ «согласовано», лимит 3 раунда с эскалацией; read-model дерева артефактов, ревизии/diff, YAML frontmatter-свойства, write-through в git через `RepositoryPort.publish_commit`, черновики автосейва; API и CLI (`change status|answer|artifacts`), Console: фаза «Требования» и markdown-редактор (Документ/Markdown/Чтение). DoD: цикл «вопрос → ответ → правка → сводка → согласовать/на доработку» проходится из CLI и Console; правка становится коммитом в ветку изменения; после правки прежние согласования и проверки помечаются неактуальными. Зависит от T062 — ADR-034, ADR-035
+- [ ] T064 M3 — Архитектура и UI: гейты фаз (предусловия, причина недоступности действия), обзор решений (обоснование/альтернативы/последствия/влияние) и «Запросить альтернативу», ADR как документ; UI-представления «Сценарии/Экраны/Связи», состояния экрана (loading/empty/error/success/доступ), маппинг на UIKit, комментарии к элементам; API и CLI. DoD: архитектуру и UI можно принять или отправить на доработку без ухода с экрана; ещё не выполненные UI-проверки (axe/visual regression) показываются как «запланировано на исполнении», без зелёного статуса. Зависит от T063 — ADR-032, ADR-034
+- [ ] T065 M4 — План и исполнение: read-model списка задач (результат, AC, зависимости, роль, оценка, состояние), покрытие AC, критический путь, корректировка скоупа; управление исполнением с точными семантиками pause/resume/cancel/correct; hard-stop бюджета и прогноз. DoD: план утверждается или корректируется из интерфейса; исполнение наблюдаемо (активно/параллельно/заблокировано + почему); лимит расхода останавливает работу. Зависит от T064 — ADR-033
+- [ ] T066 M5 — Демонстрация, доставка и закрытие: матрица AC → результат → evidence, замечание из превью, счётчик rework и эскалация; превью (dev-URL) и smoke; модель промоушена multi-image продукта и release-опции драйвера (закрывает TD-031); «Помощник merge» (чек-лист готовности, версионно-привязанное решение, merge как явное человеческое действие — ADR-036); подтверждение baseline и закрытие ChangeSet; e2e-прогон калькулятора. DoD: приёмка MVP — сквозной прогон `intent → deploy` на чистом репозитории без ручных правок артефактов агента и без низкоуровневых CLI-команд; согласования версионно привязаны; следующий шаг виден на каждом шаге; лимит расхода соблюдён. Зависит от T065 — ADR-036, TD-031 (`docs/tech-dept.md`)
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -204,6 +219,7 @@ description: "Task list for Dark Factory MVP implementation"
 - **US2–US6 (Phases 4–8)**: зависят от Foundational; внутри каждой — свой порядок.
 - **Pilot (Phase 9)**: зависит от P0-цепочки US3–US6.
 - **Polish/Extensions (Phase 10)**: зависит от соответствующих ранних задач; не блокирует MVP.
+- **ChangeSet workspace (Phase 11)**: T061 → T062 → T063 → T064 → T065 → T066; предусловие M0 — снятие блокеров пилота (B1/B2, TD-030); не зависит от Polish/Extensions, но пересекается с Pilot (T043) по живому продукту.
 
 ### User Story Dependencies
 
