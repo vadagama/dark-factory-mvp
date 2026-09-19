@@ -8,7 +8,7 @@ core never imports ``dark_factory.adapters`` (enforced by
 (FR-017, ADR-006 p.3); one run executes in exactly one provider (ADR-019 §5).
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
@@ -37,6 +37,11 @@ from dark_factory.ports.context import (
     WorkspaceRequest,
 )
 from dark_factory.ports.events import DomainEvent
+from dark_factory.ports.provisioning import (
+    BaselineBootstrapResult,
+    MirrorRef,
+    RepositoryValidation,
+)
 from dark_factory.ports.reconciliation import ReconcileDesired, ReconcileObserved, ReconcileResult
 
 
@@ -86,6 +91,43 @@ class RepositoryPort(Protocol):
         message: str,
         idempotency_key: str,
     ) -> str: ...
+
+
+@runtime_checkable
+class RepositoryProvisioningPort(Protocol):
+    """Repository preparation before any agent stage touches it (ADR-031 p.1).
+
+    Two adapters share this port (ADR-031 p.2): ``LocalMirror`` over an
+    operator-prepared local mirror and ``ProviderClone`` over a provider clone
+    on a GitHub App installation token (T068). The core never learns where the
+    mirror came from; the execution layer keeps working from the prepared one.
+
+    * ``validate`` — read-only probe (no idempotency key and no mutation,
+      ADR-031 p.5): availability, the observed default branch and head
+      revision, and whether the product baseline is present. An *empty*
+      repository (unborn HEAD) is a normal state, not an error (p.4) — the
+      baseline bootstrap is what gives it a first revision. A repository the
+      adapter cannot reach is reported as ``UNAVAILABLE``, not raised: the
+      availability fact is evidence (p.6), not a control-flow error.
+    * ``ensure_mirror`` — prepare the local mirror the execution layer works
+      from. Replay-dedup by key: the same key returns the locator recorded at
+      the first call. A repository the adapter cannot materialise is absent —
+      the shared ``KeyError`` convention.
+    * ``bootstrap_baseline`` — apply the named ``packs`` to an empty or
+      unprepared repository. Replay-dedup by key (ADR-006 p.3: one external
+      effect) and evidence as the result (ADR-031 p.6). An adapter that cannot
+      perform the operation raises
+      ``ProvisioningOperationUnsupportedError`` naming it — never reporting a
+      bootstrap it did not perform.
+    """
+
+    async def validate(self, repository: RepositoryRef, /) -> RepositoryValidation: ...
+    async def ensure_mirror(
+        self, repository: RepositoryRef, /, *, idempotency_key: str
+    ) -> MirrorRef: ...
+    async def bootstrap_baseline(
+        self, repository: RepositoryRef, /, *, packs: Sequence[str], idempotency_key: str
+    ) -> BaselineBootstrapResult: ...
 
 
 @runtime_checkable
