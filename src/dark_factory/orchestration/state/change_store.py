@@ -1,9 +1,10 @@
-"""Repositories over change intake, approvals and audit (T035, FR-001/FR-017, ADR-009 p.7).
+"""Repositories over change intake, products, approvals and audit (T035/T065, ADR-009 p.7).
 
 The repositories are thin and idempotent: intake dedupes by change id and by
 the tracker ``external_ref`` (partial unique index), decisions replay by the
-``Idempotency-Key`` (same key → same decision), and every mutating API
-operation appends one audit row inside the caller's transaction (ADR-009 p.7).
+``Idempotency-Key`` (same key → same decision), product registration dedupes by
+product id, and every mutating API operation appends one audit row inside the
+caller's transaction (ADR-009 p.7).
 """
 
 from datetime import UTC, datetime
@@ -13,8 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from dark_factory.changes.enums import DecisionOutcome, DecisionSource, Gate, Role
+from dark_factory.changes.enums import DecisionOutcome, DecisionSource, Gate, ProductStatus, Role
 from dark_factory.changes.findings import Decision
+from dark_factory.changes.product import Product
 from dark_factory.changes.run import Change
 from dark_factory.orchestration.state.models import (
     AuditLogEntry,
@@ -25,6 +27,10 @@ from dark_factory.orchestration.state.models import (
 from dark_factory.orchestration.state.models import (
     Decision as DecisionRow,
 )
+from dark_factory.orchestration.state.models import (
+    Product as ProductRow,
+)
+from dark_factory.orchestration.state.repositories import StateConflictError
 
 CHANGE_INTAKE_ACTION: str = "change.intake"
 APPROVAL_RECORD_ACTION: str = "approval.record"
@@ -34,12 +40,20 @@ class ChangeAlreadyExistsError(RuntimeError):
     """A change with the same id or external_ref already exists."""
 
 
+class ProductAlreadyExistsError(RuntimeError):
+    """A product with the same id already exists but could not be read back."""
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
 
 def _change_from_row(row: ChangeRow) -> Change:
     return Change.model_validate(row.payload)
+
+
+def _product_from_row(row: ProductRow) -> Product:
+    return Product.model_validate(row.payload)
 
 
 def _role_from_value(value: str | None) -> Role | None:
@@ -85,6 +99,7 @@ class ChangeRepository:
                 external_ref=change.external_ref,
                 risk_class=change.risk_class.value,
                 product=change.product.model_dump(mode="json"),
+                product_id=change.product_id,
                 payload=payload,
                 state_revision=1,
                 created_at=change.created_at,
@@ -122,6 +137,89 @@ class ChangeRepository:
             .offset(offset)
         ).scalars()
         return [_change_from_row(row) for row in rows]
+
+
+class ProductRepository:
+    """Idempotent registration and status transitions of products (T065, ADR-030)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create(self, product: Product) -> tuple[Product, bool]:
+        """Insert one product; ``(existing, False)`` when the id already exists."""
+        payload = product.model_dump(mode="json")
+        stmt = (
+            pg_insert(ProductRow)
+            .values(
+                id=product.id,
+                name=product.name,
+                description=product.description,
+                repository=product.repository.model_dump(mode="json"),
+                repository_url=product.repository_url,
+                baseline_ref=product.baseline_ref,
+                dev_env_ref=product.dev_env_ref,
+                status=product.status.value,
+                status_reason=product.status_reason,
+                payload=payload,
+                state_revision=product.state_revision,
+                created_at=product.created_at,
+            )
+            .on_conflict_do_nothing(index_elements=[ProductRow.id])
+            .returning(ProductRow.id)
+        )
+        inserted = self._session.execute(stmt).scalar_one_or_none()
+        if inserted is not None:
+            return product, True
+        existing = self.get(product.id)
+        if existing is None:  # pragma: no cover - defensive
+            raise ProductAlreadyExistsError(f"product {product.id!r} was not created")
+        return existing, False
+
+    def get(self, product_id: str) -> Product | None:
+        row = self._session.get(ProductRow, product_id)
+        return _product_from_row(row) if row is not None else None
+
+    def list(self, *, limit: int = 50, offset: int = 0) -> list[Product]:
+        rows = self._session.execute(
+            select(ProductRow)
+            .order_by(ProductRow.created_at, ProductRow.id)
+            .limit(limit)
+            .offset(offset)
+        ).scalars()
+        return [_product_from_row(row) for row in rows]
+
+    def update_status(
+        self,
+        product_id: str,
+        target: ProductStatus,
+        *,
+        expected_revision: int,
+        reason: str | None = None,
+    ) -> Product:
+        """Move one product to ``target`` under the optimistic revision (ADR-006 p.4).
+
+        The target must be reachable from the persisted status through
+        ``PRODUCT_STATUS_TRANSITIONS``; anything else raises
+        ``InvalidStatusTransition``, so no persisted status can drift from the
+        domain table (ADR-024, условие 3). ``reason`` is required for ``error``
+        and rejected otherwise: the failure cause belongs in ``status_reason``.
+        """
+        row = self._session.get(ProductRow, product_id, with_for_update=True)
+        if row is None:
+            raise StateConflictError(f"product {product_id!r} does not exist")
+        if row.state_revision != expected_revision:
+            raise StateConflictError(
+                f"product {product_id!r} is at revision {row.state_revision}, "
+                f"expected {expected_revision}"
+            )
+        product = _product_from_row(row)
+        product.apply_status(target, reason=reason)
+        row.status = product.status.value
+        row.status_reason = product.status_reason
+        row.state_revision = product.state_revision
+        row.payload = product.model_dump(mode="json")
+        self._session.flush()
+        return product
 
 
 class DecisionRepository:

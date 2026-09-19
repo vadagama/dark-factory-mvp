@@ -15,6 +15,7 @@ from dark_factory.changes.enums import (
     Gate,
     GateStatus,
     HumanParticipation,
+    ProductStatus,
     Provider,
     RiskClass,
     Role,
@@ -44,6 +45,7 @@ from dark_factory.changes.next_action import (
     WaitForCIAction,
     WaitForInputAction,
 )
+from dark_factory.changes.product import Product
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.run import (
     RETRYABLE_STAGE_STATUSES,
@@ -108,6 +110,8 @@ __all__ = [
     "InvalidStatusTransition",
     "MergeAction",
     "NextAction",
+    "Product",
+    "ProductStatus",
     "Provider",
     "ReleaseAction",
     "RepositoryRef",
