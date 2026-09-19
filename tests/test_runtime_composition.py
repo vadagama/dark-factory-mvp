@@ -15,7 +15,8 @@ import pytest
 
 from dark_factory.adapters.fakes import FakeExecution
 from dark_factory.adapters.harness import PydanticAIHarness
-from dark_factory.adapters.scm.github import GitHubAdapter, StaticTokenProvider
+from dark_factory.adapters.provisioning import LocalMirror
+from dark_factory.adapters.scm.github import GitHubAdapter, ProviderClone, StaticTokenProvider
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter
 from dark_factory.agents.profiles.registry import DEVELOP_PROFILE
 from dark_factory.changes.enums import Role, Route, Stage
@@ -172,6 +173,40 @@ def test_broken_workspace_configuration_is_not_swallowed(tmp_path: Path) -> None
             },
             token_provider=_static_tokens(),
         )
+
+
+# --- the provisioning port: provider clone first, local mirror fallback ------
+
+
+def test_provisioning_prefers_the_provider_clone_when_the_app_is_configured(
+    tmp_path: Path,
+) -> None:
+    # App credentials plus a mirror root give the adapter that clones from the
+    # provider and can apply baseline packs (T069, ADR-031 p.3).
+    runtime = build_runtime(
+        env={**GITHUB_ENV, **_workspace_env(tmp_path, tmp_path / "mirror")},
+        token_provider=_static_tokens(),
+    )
+
+    assert isinstance(runtime.provisioning, ProviderClone)
+
+
+def test_provisioning_keeps_the_local_mirror_without_the_app_credentials(
+    tmp_path: Path,
+) -> None:
+    # A contour without App credentials keeps today's behaviour: the
+    # operator-prepared mirror is the only adapter it can build (ADR-031 p.2).
+    runtime = build_runtime(
+        env=_workspace_env(tmp_path, tmp_path / "mirror"), token_provider=_static_tokens()
+    )
+
+    assert isinstance(runtime.provisioning, LocalMirror)
+
+
+def test_without_a_mirror_root_there_is_no_provisioning_port() -> None:
+    runtime = build_runtime(env=GITHUB_ENV, token_provider=_static_tokens())
+
+    assert runtime.provisioning is None
 
 
 def test_harness_factory_binds_the_role_tools() -> None:

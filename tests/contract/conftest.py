@@ -117,6 +117,9 @@ from tests.sdd_factories import seed_baseline
 
 PRODUCT = RepositoryRef(provider=Provider.GITHUB, slug="small/pilot")
 
+PACKS_ROOT = Path(__file__).resolve().parents[2] / "packs"
+"""The repository's packs directory: the real packs a bootstrap resolves (T069)."""
+
 
 class _RepositoryBinding(NamedTuple):
     """RepositoryPort plus the commit journal and file view of the same binding."""
@@ -196,9 +199,9 @@ class _ProvisioningBinding(NamedTuple):
     (ADR-031 p.4), so the binding owns the seeder: a test materialises the state it
     asserts (absent repository, empty repository, commits without/with a baseline) and
     the port must report it. ``supports_bootstrap`` states the capability split of
-    ADR-031 p.2 explicitly — the fake applies packs, while ``LocalMirror`` and
-    ``ProviderClone`` do not (T069) and must fail loudly instead of reporting a
-    bootstrap they did not perform.
+    ADR-031 p.2 explicitly: the fake and ``ProviderClone`` apply packs (T069), while
+    ``LocalMirror`` serves an operator-prepared mirror and never applies them — it
+    must fail loudly instead of reporting a bootstrap it did not perform.
     """
 
     port: RepositoryProvisioningPort
@@ -604,7 +607,9 @@ def provisioning_binding(request: pytest.FixtureRequest, tmp_path: Path) -> _Pro
     """RepositoryProvisioningPort bound to the fake and the two real adapters (T067/T068).
 
     ``provider_clone`` speaks to the loopback git emulator with the installation
-    token, so the clone/fetch path is exercised end to end without a provider.
+    token, so the clone/fetch path is exercised end to end without a provider; its
+    bootstrap applies the repository's real ``packs/`` payload and pushes the first
+    baseline commit over the same transport (T069).
     """
     if request.param == "provider_clone":
         emulator: GitHttpEmulator = request.getfixturevalue("git_http_emulator")
@@ -616,11 +621,12 @@ def provisioning_binding(request: pytest.FixtureRequest, tmp_path: Path) -> _Pro
                     github=GitHubConfig(
                         api_base_url=emulator.base_url, clone_base_url=emulator.base_url
                     ),
+                    packs_root=PACKS_ROOT,
                 ),
                 token_provider=StaticTokenProvider(emulator.token),
             ),
             repository=PRODUCT,
-            supports_bootstrap=False,
+            supports_bootstrap=True,
             seed=lambda state: emulator.seed(PRODUCT, state),
         )
     if request.param == "local_mirror":

@@ -15,13 +15,16 @@ Capabilities (ADR-031 p.2/p.4/p.5):
   ``UNAVAILABLE``, an unborn HEAD is the normal ``EMPTY`` state, and a repository
   with commits is ``BASELINE_CURRENT`` or ``BASELINE_ABSENT`` by whether
   ``.factory/product`` (ADR-020) exists at HEAD. ``BASELINE_STALE`` is unreachable
-  here — comparing the observed baseline against a desired one needs the packs of
-  T069.
+  here — comparing the observed baseline against a desired one would require the
+  adapter to hold a desired baseline, which it deliberately does not (p.2).
 * ``ensure_mirror`` locates the operator-prepared mirror and returns its locator.
   Preparing the mirror is the operator's step, so nothing is fetched or created;
   a mirror that is not there is the port's ``KeyError`` (absent = 404).
-* ``bootstrap_baseline`` is not performed: applying packs is T069, and an adapter
-  must never report a bootstrap it did not perform (ADR-031 p.6).
+* ``bootstrap_baseline`` is never performed: the mirror is operator-prepared and
+  read-only for this adapter, so it deliberately does not apply packs (ADR-031
+  p.2/p.7). It fails loudly with ``ProvisioningOperationUnsupportedError`` rather
+  than report a bootstrap it did not perform (p.6); applying packs to a provider
+  repository is ``ProviderClone`` (T069).
 
 The adapter reads a local path only: no network and no credentials (ADR-031 p.7).
 """

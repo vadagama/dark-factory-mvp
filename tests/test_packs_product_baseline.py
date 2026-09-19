@@ -9,6 +9,7 @@ import asyncio
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -36,6 +37,7 @@ CHANGESET = PACK_ROOT / "changeset"
 REVISION_PLACEHOLDER = "0" * 64
 CHANGE_ID = "chg:example-product:2026:0001"
 CHECKOUT_TIMEOUT = "req:example-product:checkout:timeout"
+SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 # Only these two template files pin the baseline revision; everything else is
 # copied as-is.
@@ -46,6 +48,38 @@ def _read_manifest() -> ChangeManifest:
     return ChangeManifest.model_validate(
         yaml.safe_load((CHANGESET / "change.yaml").read_text(encoding="utf-8"))
     )
+
+
+def _read_pack_manifest() -> dict[str, Any]:
+    manifest = yaml.safe_load((PACK_ROOT / "pack.yaml").read_text(encoding="utf-8"))
+    assert isinstance(manifest, dict)
+    return manifest
+
+
+def test_pack_manifest_declares_a_valid_pack() -> None:
+    manifest = _read_pack_manifest()
+    assert manifest["schema"] == "dark-factory.dev/pack/v1"
+    assert manifest["id"] == "pack:product-baseline"
+    assert manifest["name"] == "product-baseline"
+    assert SEMVER.match(manifest["version"]), manifest["version"]
+    assert manifest["description"].strip()
+    kinds = {entry["path"]: entry["kind"] for entry in manifest["contents"]}
+    assert kinds == {
+        "README.md": "doc",
+        "rules.md": "doc",
+        "CHANGELOG.md": "doc",
+        "baseline": "template",
+        "changeset": "template",
+    }
+    for path in kinds:
+        assert (PACK_ROOT / path).exists(), path
+
+
+def test_changelog_declares_the_initial_version() -> None:
+    changelog = (PACK_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    version = str(_read_pack_manifest()["version"])
+    assert f"## [{version}]" in changelog
+    assert version in changelog.split("## [", 1)[1]  # the initial entry is the first one
 
 
 def test_baseline_template_is_valid() -> None:

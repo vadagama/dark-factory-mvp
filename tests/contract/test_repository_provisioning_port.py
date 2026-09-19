@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from dark_factory.ports import (
+    BaselineBootstrapResult,
     ProvisioningOperationUnsupportedError,
     RepositoryProvisioningPort,
     RepositoryState,
@@ -12,6 +13,19 @@ from dark_factory.ports import (
 from tests.contract.conftest import _ProvisioningBinding
 
 PACKS = ("product-baseline",)
+
+
+def _bootstrap(binding: _ProvisioningBinding, key: str) -> BaselineBootstrapResult:
+    """One bootstrap of the binding's repository, keyed as the test asks."""
+    return asyncio.run(
+        binding.port.bootstrap_baseline(binding.repository, packs=PACKS, idempotency_key=key)
+    )
+
+
+def _require_bootstrap(binding: _ProvisioningBinding) -> None:
+    """Skip the post-bootstrap assertions an adapter without the capability cannot make."""
+    if not binding.supports_bootstrap:
+        pytest.skip("the adapter deliberately does not apply packs (ADR-031 p.2/p.7)")
 
 
 def test_adapter_satisfies_protocol(provisioning_binding: _ProvisioningBinding) -> None:
@@ -121,7 +135,7 @@ def test_bootstrap_baseline_is_explicit_about_the_adapter_capability(
     provisioning_binding.seed("empty")
     if not provisioning_binding.supports_bootstrap:
         # ADR-031 p.2: LocalMirror serves an operator-prepared mirror and does not
-        # apply packs (T069). It must say so, not report a bootstrap it never did.
+        # apply packs (p.2/p.7). It must say so, not report a bootstrap it never did.
         with pytest.raises(ProvisioningOperationUnsupportedError) as excinfo:
             asyncio.run(
                 provisioning_binding.port.bootstrap_baseline(
@@ -145,3 +159,62 @@ def test_bootstrap_baseline_is_explicit_about_the_adapter_capability(
     assert second == first  # one external effect per key (ADR-006 p.3)
     assert first.revision != ""
     assert [pack.name for pack in first.applied_packs] == list(PACKS)
+
+
+def test_a_bootstrapped_repository_reads_back_as_baseline_current(
+    provisioning_binding: _ProvisioningBinding,
+) -> None:
+    # Evidence, not a message (ADR-031 p.6): after a successful bootstrap the
+    # repository reads back as BASELINE_CURRENT at exactly the returned revision.
+    _require_bootstrap(provisioning_binding)
+    provisioning_binding.seed("empty")
+    result = _bootstrap(provisioning_binding, "b-1")
+
+    validation = asyncio.run(provisioning_binding.port.validate(provisioning_binding.repository))
+    assert validation.state is RepositoryState.BASELINE_CURRENT
+    assert validation.head_revision == result.revision
+
+
+def test_a_replayed_bootstrap_key_leaves_the_revision_untouched(
+    provisioning_binding: _ProvisioningBinding,
+) -> None:
+    _require_bootstrap(provisioning_binding)
+    provisioning_binding.seed("empty")
+    first = _bootstrap(provisioning_binding, "b-1")
+    second = _bootstrap(provisioning_binding, "b-1")
+
+    assert second == first  # the same key returns the same revision (FR-017)
+    validation = asyncio.run(provisioning_binding.port.validate(provisioning_binding.repository))
+    assert validation.head_revision == first.revision
+
+
+def test_a_new_bootstrap_key_on_a_current_baseline_creates_no_second_commit(
+    provisioning_binding: _ProvisioningBinding,
+) -> None:
+    # A key the bootstrap has not seen on a HEAD that already carries the baseline
+    # stages nothing: the effect is the physical no-op, not a second commit (T069).
+    _require_bootstrap(provisioning_binding)
+    provisioning_binding.seed("empty")
+    first = _bootstrap(provisioning_binding, "b-1")
+    second = _bootstrap(provisioning_binding, "b-2")
+
+    assert second.revision == first.revision
+    assert second.applied_packs == first.applied_packs
+    validation = asyncio.run(provisioning_binding.port.validate(provisioning_binding.repository))
+    assert validation.head_revision == first.revision
+
+
+def test_bootstrap_on_a_baseline_less_repository_commits_on_top(
+    provisioning_binding: _ProvisioningBinding,
+) -> None:
+    # Commits exist but no baseline: the bootstrap adds a commit instead of reusing the
+    # head, and the baseline reads back at the new revision (ADR-031 p.4/p.6).
+    _require_bootstrap(provisioning_binding)
+    seeded = provisioning_binding.seed("baseline_absent")
+    result = _bootstrap(provisioning_binding, "b-1")
+
+    assert seeded is not None
+    assert result.revision != seeded
+    validation = asyncio.run(provisioning_binding.port.validate(provisioning_binding.repository))
+    assert validation.state is RepositoryState.BASELINE_CURRENT
+    assert validation.head_revision == result.revision

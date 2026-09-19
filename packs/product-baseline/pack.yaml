@@ -1,0 +1,21 @@
+# Manifest of the Product Baseline pack (T069, ADR-031 p.1/p.6, ADR-020).
+# The pack is data, not code: its baseline/ subtree is materialised into a
+# product repository's .factory/ skeleton by bootstrap_baseline, and its
+# templates are validated by factory tests (tests/test_packs_product_baseline.py),
+# so a drifted template fails CI in the factory, not in a product repository.
+schema: dark-factory.dev/pack/v1
+id: pack:product-baseline
+name: product-baseline
+version: 0.1.0
+description: Product Baseline and ChangeSet templates of Native SDD Core (ADR-020) — the .factory/ skeleton, baseline node examples and the canonical ChangeSet layout for product repositories.
+contents:
+  - path: README.md
+    kind: doc
+  - path: rules.md
+    kind: doc
+  - path: CHANGELOG.md
+    kind: doc
+  - path: baseline
+    kind: template
+  - path: changeset
+    kind: template
