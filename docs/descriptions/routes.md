@@ -1,8 +1,8 @@
-# Маршруты Factory Flow — `flows/routes.py`
+# Маршруты Factory Flow — `orchestration/routes.py`
 
-**Исходник:** [`src/dark_factory/flows/routes.py`](../../src/dark_factory/flows/routes.py)
+**Исходник:** [`src/dark_factory/orchestration/routes.py`](../../src/dark_factory/orchestration/routes.py)
 
-**Связанные модули:** [`changes/enums.py`](../../src/dark_factory/changes/enums.py), [`changes/risk.py`](../../src/dark_factory/changes/risk.py), [`context/sdd/strictness.py`](../../src/dark_factory/context/sdd/strictness.py), [`rules/gates.py`](../../src/dark_factory/rules/gates.py), [`orchestration/flow.py`](../../src/dark_factory/orchestration/flow.py)
+**Связанные модули:** [`changes/enums.py`](../../src/dark_factory/changes/enums.py), [`changes/risk.py`](../../src/dark_factory/changes/risk.py), [`context/sdd/strictness.py`](../../src/dark_factory/context/sdd/strictness.py), [`orchestration/rules/gates.py`](../../src/dark_factory/orchestration/rules/gates.py), [`orchestration/flow.py`](../../src/dark_factory/orchestration/flow.py)
 
 ## 1. Зачем нужен модуль
 
@@ -19,10 +19,10 @@
 
 | Аспект | Где задаётся |
 |---|---|
-| Порядок стадий | `flows/routes.py` |
-| Полоса классов риска маршрута | `flows/routes.py` |
+| Порядок стадий | `orchestration/routes.py` |
+| Полоса классов риска маршрута | `orchestration/routes.py` |
 | Допустимые типы действий на стадии | `orchestration/flow.py::FLOW_TRANSITIONS` |
-| Обязательные гейты | `rules/gates.py` |
+| Обязательные гейты | `orchestration/rules/gates.py` |
 
 Если в будущем появится маршрут, пропускающий часть стадий, достаточно добавить другой `RouteProfile`: таблицу типов действий и движок переходов менять не требуется.
 
@@ -141,7 +141,7 @@ Property, возвращающее `HUMAN_GATES` — frozenset гейтов, т�
 
 ## 4. Человеческие гейты — `HUMAN_GATES`
 
-Базовый набор определён в [`rules/gates.py`](../../src/dark_factory/rules/gates.py) — единственном источнике гейт-политики (ADR-005) — и реэкспортируется из `flows/routes.py` (публичная поверхность модуля сохранена):
+Базовый набор определён в [`orchestration/rules/gates.py`](../../src/dark_factory/orchestration/rules/gates.py) — единственном источнике гейт-политики (ADR-005) — и реэкспортируется из `orchestration/routes.py` (публичная поверхность модуля сохранена):
 
 ```python
 HUMAN_GATES: Final[frozenset[Gate]] = frozenset({Gate.SPECIFICATION, Gate.REVIEW})
@@ -187,7 +187,7 @@ ROUTE_PROFILES = {
 
 `route_profile(route)` выполняет прямой lookup в этом словаре и возвращает существующий экземпляр без копирования; полнота словаря по всем значениям `Route` закреплена тестом.
 
-Аннотация `Final` запрещает переприсваивание имени для статического анализатора, но сам объект `ROUTE_PROFILES` остаётся обычным изменяемым `dict`. Код проекта рассматривает его как конфигурационную константу. `HUMAN_GATES` — такая же `Final`-константа, но её модуль-источник — `rules/gates.py`; `flows/routes.py` её импортирует и реэкспортирует, а `flows/__init__.py` — дальше.
+Аннотация `Final` запрещает переприсваивание имени для статического анализатора, но сам объект `ROUTE_PROFILES` остаётся обычным изменяемым `dict`. Код проекта рассматривает его как конфигурационную константу. `HUMAN_GATES` — такая же `Final`-константа, но её модуль-источник — `orchestration/rules/gates.py`; `orchestration/routes.py` её импортирует и реэкспортирует, а `flows/__init__.py` — дальше.
 
 ## 6. Как маршрут участвует в переходе
 

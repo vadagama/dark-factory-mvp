@@ -4,7 +4,7 @@ import pytest
 
 from dark_factory.changes.enums import Gate, GateStatus, Route, Stage
 from dark_factory.changes.findings import GateResult
-from dark_factory.rules.gates import required_gates, unsatisfied_gates
+from dark_factory.orchestration.rules.gates import required_gates, unsatisfied_gates
 
 ALL_GATES: frozenset[Gate] = frozenset(Gate)
 

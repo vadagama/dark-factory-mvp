@@ -17,7 +17,7 @@ from dark_factory.orchestration.rework import (
     finding_signature,
     plan_rework,
 )
-from dark_factory.rules.limits import rework_violation
+from dark_factory.orchestration.rules.limits import rework_violation
 from tests.changes_factories import make_finding
 
 SHA_A = "731ac91"

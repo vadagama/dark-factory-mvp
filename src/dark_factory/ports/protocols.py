@@ -182,7 +182,7 @@ class CiStageTogglePort(Protocol):
     Bound to one configured repository at construction: no request can point a
     read or a write at another repository. The contract is deliberately
     value-level — *which* value switches a stage off belongs to the catalog
-    (``dark_factory.ci.stages``), not to the provider — so any provider that
+    (``dark_factory.orchestration.ci``), not to the provider — so any provider that
     stores non-secret configuration variables can implement it.
     """
 

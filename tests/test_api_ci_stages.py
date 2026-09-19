@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from dark_factory.api.app import create_app
 from dark_factory.api.auth import SCOPE_CI_WRITE, ApiToken, ApiTokenStore
-from dark_factory.ci import CI_STAGES, SKIP_VALUE
+from dark_factory.orchestration.ci import CI_STAGES, SKIP_VALUE
 from dark_factory.ports import CiStageTogglePort, PortError
 
 API = "/api/v1"

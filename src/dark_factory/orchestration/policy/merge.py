@@ -30,7 +30,7 @@ Given these preconditions, the merge is performed by a human (MVP default) or
 finalizer (FR-010). The default policy lists no classes: absent or ambiguous
 policy means manual mode (FR-010), and auto-merge stays disabled until T-085.
 The merge method is squash-only (T-032), declared here and enforced on the
-provider by ``dark_factory.rules.merge_protection``; this module never
+provider by ``dark_factory.orchestration.rules.merge_protection``; this module never
 executes a merge itself.
 """
 
@@ -49,7 +49,7 @@ from dark_factory.changes.enums import (
 from dark_factory.changes.findings import Decision, GateResult
 from dark_factory.changes.risk import is_r2_or_higher
 from dark_factory.orchestration.policy.risk import missing_control_points
-from dark_factory.rules.gates import unsatisfied_gates
+from dark_factory.orchestration.rules.gates import unsatisfied_gates
 
 type MergeExecutor = Literal["human", "trusted_finalizer", "agent"]
 """Who performs the merge (FR-010, FR-023): the human, the trusted finalizer
@@ -84,7 +84,7 @@ class MergePolicy:
 
     merge_methods: frozenset[str] = _SQUASH_ONLY
     """Declared merge methods; MVP mandates squash (T-032). Provider-side
-    enforcement lives in ``dark_factory.rules.merge_protection``."""
+    enforcement lives in ``dark_factory.orchestration.rules.merge_protection``."""
 
     merge_authorization_gate: Gate = Gate.REVIEW
     """Human gate carrying merge authorization (ADR-011 p.2: review carries

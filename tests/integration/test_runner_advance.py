@@ -35,7 +35,7 @@ from dark_factory.changes.run import Change, InvalidStatusTransition, StageResul
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.cli.main import EXIT_OK, EXIT_WAITING, RunAdvanceArgs, main
 from dark_factory.cli.runner import run_advance_command
-from dark_factory.flows.routes import route_profile
+from dark_factory.orchestration.routes import route_profile
 from dark_factory.orchestration.runner import (
     RunAdvance,
     RunAdvanceOutcome,

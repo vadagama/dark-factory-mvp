@@ -19,10 +19,10 @@ from dark_factory.changes.findings import GateResult
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import apply_result
+from dark_factory.orchestration.routes import route_profile
+from dark_factory.orchestration.rules.gates import required_gates
 from dark_factory.orchestration.stages import StageContext, build_context, run_deterministic_stage
-from dark_factory.rules.gates import required_gates
 from tests.changes_factories import (
     NOW,
     make_change,

@@ -59,7 +59,6 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import ChangeRun, StageResult
-from dark_factory.flows.routes import STAGE_SEQUENCE
 from dark_factory.orchestration.flow import apply_result, expected_result_status
 from dark_factory.orchestration.policy.escalation import (
     BoundaryChange,
@@ -75,7 +74,8 @@ from dark_factory.orchestration.policy.escalation import (
     ui_verification_violation,
 )
 from dark_factory.orchestration.policy.merge import MergeRequestContext
-from dark_factory.rules.gates import required_gates
+from dark_factory.orchestration.routes import STAGE_SEQUENCE
+from dark_factory.orchestration.rules.gates import required_gates
 from tests.changes_factories import NOW, make_contract, make_merge_approval, make_run
 
 SHA = "731ac91"

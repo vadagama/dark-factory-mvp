@@ -17,9 +17,9 @@ Guarantees are layered (ADR-005 p.2):
 - tests: the table is traversed exhaustively, including dead-edge detection
   (see ``tests/test_flow_transitions.py``).
 
-Rework and budget limits live in ``dark_factory.rules.limits``, gate policy in
-``dark_factory.rules.gates``, route topology and risk bands in
-``dark_factory.flows.routes``, escalation policy (T-016, ADR-018 p.5) in
+Rework and budget limits live in ``dark_factory.orchestration.rules.limits``, gate policy in
+``dark_factory.orchestration.rules.gates``, route topology and risk bands in
+``dark_factory.orchestration.routes``, escalation policy (T-016, ADR-018 p.5) in
 ``dark_factory.orchestration.policy``, merge policy (T-026, ADR-011 p.2) in
 ``dark_factory.orchestration.policy.merge`` and the risk-class obligations
 (T-080, ADR-023 p.3/p.5) in ``dark_factory.orchestration.policy.risk``: the
@@ -66,7 +66,6 @@ from dark_factory.changes.run import (
     completion_violations,
 )
 from dark_factory.changes.usage import BudgetSnapshot, Usage
-from dark_factory.flows.routes import route_allows_risk, route_profile
 from dark_factory.orchestration.policy.escalation import (
     autonomy_budget_violation,
     escalation_stop_reason,
@@ -80,8 +79,9 @@ from dark_factory.orchestration.policy.merge import (
     evaluate_merge,
 )
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
-from dark_factory.rules.gates import required_human_gates, unsatisfied_gates
-from dark_factory.rules.limits import continuation_violations, rework_violation
+from dark_factory.orchestration.routes import route_allows_risk, route_profile
+from dark_factory.orchestration.rules.gates import required_human_gates, unsatisfied_gates
+from dark_factory.orchestration.rules.limits import continuation_violations, rework_violation
 
 type NextActionType = Literal[
     "execute_stage",

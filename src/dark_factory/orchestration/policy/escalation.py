@@ -18,8 +18,8 @@ from dark_factory.changes.escalations import EscalationViolation
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.implementation_contract import ChangeScope, ImplementationContract
 from dark_factory.changes.risk import is_r2_or_higher
-from dark_factory.flows.routes import route_allows_risk, route_profile
 from dark_factory.orchestration.policy.risk import missing_control_points
+from dark_factory.orchestration.routes import route_allows_risk, route_profile
 
 _UNSUPPORTED_TEXT: Final = "not provided for by the approved implementation contract"
 

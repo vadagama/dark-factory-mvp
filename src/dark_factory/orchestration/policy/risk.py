@@ -43,8 +43,8 @@ from dark_factory.changes.risk import (
     effective_risk_class,
     is_r2_or_higher,
 )
-from dark_factory.flows.routes import route_profile
-from dark_factory.rules.gates import required_human_gates
+from dark_factory.orchestration.routes import route_profile
+from dark_factory.orchestration.rules.gates import required_human_gates
 
 __all__ = [
     "CONTROL_POINT_BINDING",

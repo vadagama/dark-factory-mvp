@@ -139,7 +139,7 @@ from dark_factory.cli.release import (
 from dark_factory.cli.release_facts import CliReleaseFactsProvider
 from dark_factory.cli.run_records import RunRecordError, collect_run_manifest
 from dark_factory.execution.runs.store import RunRecordStore
-from dark_factory.flows.routes import route_profile
+from dark_factory.orchestration.routes import route_profile
 from dark_factory.orchestration.runner import (
     FactsProvider,
     ReleaseFactsProvider,

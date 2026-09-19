@@ -72,10 +72,10 @@ from dark_factory.changes.run import (
     StageResult,
     StageRun,
 )
-from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import FlowDecision, apply_result
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
+from dark_factory.orchestration.routes import route_profile
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
 from dark_factory.orchestration.stages.context import StageContext
 from dark_factory.orchestration.stages.gates import (

@@ -4,7 +4,7 @@ The policy is pure data: it fixes *which* limits exist, while
 :mod:`dark_factory.orchestration.budget.coordinator` decides whether they are
 exhausted. Field names and semantics mirror ``BudgetSnapshot``
 (:mod:`dark_factory.changes.usage`) so the two cannot drift, and no threshold is
-restated here — the comparison itself stays in ``rules/limits.py``.
+restated here — the comparison itself stays in ``orchestration/rules/limits.py``.
 
 A role allowance may only **tighten** the run budget, never loosen it (FR-018):
 the effective limit of a role is the tighter of the run and the role value per

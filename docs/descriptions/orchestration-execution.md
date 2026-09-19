@@ -109,7 +109,7 @@ def build_context(*, change: Change, stage: Stage, route: Route, run_id: str,
 | `construction_entry_reason(context: StageContext) -> str \| None` | причина, по которой попытка не может войти в Construction, либо `None` | гейт входа в construction (T-016): только `Stage.CONSTRUCTION` и только гейтящийся контекст (`enforce_contract_entry`); причина берётся из `contract_entry_violation(context.implementation_contract)`; префлайт обоих исполнителей (T-063), до workspace/harness/публикации |
 | `change_request_missing(stage: Stage, change: Change) -> bool` | `True`, если стадия завершается через merge, а `change.change_request is None` | применяется только к `REVIEW_VERIFICATION` (`_STAGES_REQUIRING_CHANGE_REQUEST`); на других стадиях `False` |
 
-Делегирование в `rules/limits.py` — точные тексты причин:
+Делегирование в `orchestration/rules/limits.py` — точные тексты причин:
 
 | Правило | Условие | `LimitViolation.reason` |
 |---|---|---|
@@ -221,7 +221,7 @@ API:
 
 Функция чистая: не мутирует `budget` и `passes`, одинаковый вход — одинаковый вердикт. `ValueError` для структурно неверного входа: пустая история («the rework loop is planned after a failed review») и последний pass без blocking findings. Модуль не импортирует `quality` — цикл потребляет сигнатуры, которые вызывающий вывел из классификации review (направление зависимости `quality → flow` сохраняется; в цикл входят только блокирующие findings: resolved и неблокирующие — нет).
 
-Связь с `rules/limits.py` и `BudgetSnapshot` (дефолты: `max_rework_rounds=3`, `used_rework_rounds=0`, `token_budget=None`, `tokens_used=0`, `cost_budget=None`, `cost_used=Decimal("0")`, `deadline=None`): `rework_violation` возвращает `None` или `LimitViolation(rule="rework_limit", reason=...)` с двумя вариантами текста (см. таблицу в разделе 4); токен/стоимость/deadline в rework-решении отдельно не проверяются — у цикла только rework-лимит.
+Связь с `orchestration/rules/limits.py` и `BudgetSnapshot` (дефолты: `max_rework_rounds=3`, `used_rework_rounds=0`, `token_budget=None`, `tokens_used=0`, `cost_budget=None`, `cost_used=Decimal("0")`, `deadline=None`): `rework_violation` возвращает `None` или `LimitViolation(rule="rework_limit", reason=...)` с двумя вариантами текста (см. таблицу в разделе 4); токен/стоимость/deadline в rework-решении отдельно не проверяются — у цикла только rework-лимит.
 
 ## 8. Входы исполнителя: снапшот, ContextBundle, HarnessPort
 
