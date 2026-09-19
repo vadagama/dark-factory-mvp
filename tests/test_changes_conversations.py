@@ -23,6 +23,21 @@ from dark_factory.changes import (
     Role,
 )
 
+
+def _status(
+    entity: Question | Comment | ReworkOrder,
+) -> QuestionStatus | CommentStatus | ReworkOrderStatus:
+    """The current status read through a call: mypy narrows ``entity.status`` to the literal
+    asserted before a mutation, so a direct comparison after the mutation reads as
+    non-overlapping — the declared return type keeps the full enum."""
+    return entity.status
+
+
+def _round(order: ReworkOrder) -> int | None:
+    """``order.round`` without the ``None`` narrowing of the assertion before ``start``."""
+    return order.round
+
+
 ANCHOR = ArtifactAnchor(
     artifact="spec/requirements/REQ-001.md", anchor_id="REQ-001", revision="abc"
 )
@@ -49,7 +64,7 @@ def test_question_lifecycle_open_answered_resolved() -> None:
     assert question.status is QuestionStatus.OPEN
     assert question.blocks_gate
     answer = question.answer_with("  round half up ", answered_by="alice", comment=" ok ")
-    assert question.status is QuestionStatus.ANSWERED
+    assert _status(question) is QuestionStatus.ANSWERED
     assert answer.value == "round half up"
     assert answer.comment == "ok"
     assert not question.blocks_gate
@@ -131,9 +146,9 @@ def test_comment_addressed_is_not_closed_and_only_the_operator_closes() -> None:
     assert comment.addressed_note == "reworded the criterion"
     assert comment.is_open, "addressed still owes the operator's re-check"
     comment.reopen()
-    assert comment.status is CommentStatus.OPEN
+    assert _status(comment) is CommentStatus.OPEN
     comment.close()
-    assert comment.status is CommentStatus.CLOSED
+    assert _status(comment) is CommentStatus.CLOSED
     assert not comment.is_open
     with pytest.raises(InvalidStatusTransition):
         comment.mark_addressed()
@@ -163,12 +178,12 @@ def test_rework_order_lifecycle_and_round_from_the_run_budget() -> None:
     assert order.is_pending
     assert order.round is None, "the round is the run's counter, set when the round starts"
     order.start(round=2, run_id="run_1")
-    assert order.status is ReworkOrderStatus.IN_PROGRESS
-    assert (order.round, order.run_id) == (2, "run_1")
+    assert _status(order) is ReworkOrderStatus.IN_PROGRESS
+    assert (_round(order), order.run_id) == (2, "run_1")
     order.finish(
         ReworkSummary(changed=("REQ-001 reworded",), remaining=(), addressed_comment_ids=("cmt_1",))
     )
-    assert order.status is ReworkOrderStatus.DONE
+    assert _status(order) is ReworkOrderStatus.DONE
     assert order.summary is not None and order.summary.addressed_comment_ids == ("cmt_1",)
     with pytest.raises(InvalidStatusTransition):
         order.escalate("too late")

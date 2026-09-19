@@ -110,7 +110,7 @@ def test_apply_revision_marks_lost_questions_stale_and_reports_detached_comments
 
 def test_render_inputs_lists_answers_comments_open_questions_and_the_order() -> None:
     answered = _question("AC-1", QuestionStatus.ANSWERED)
-    answered.answer.comment  # noqa: B018 - answer exists
+    assert answered.answer is not None
     order = ReworkOrder(
         id="rw_1",
         change_id="chg",
