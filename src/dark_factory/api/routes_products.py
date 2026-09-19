@@ -6,7 +6,9 @@ append one audit row inside the caller's transaction (ADR-009 p.7). Registration
 replays by product id, so a retry cannot create a second product (FR-017).
 
 Validation observes the repository through ``RepositoryProvisioningPort``
-(ADR-031 p.1) and records the outcome in the product status: the state machine
+(ADR-031 p.1) and records the outcome in the product status through the core
+rule of ``orchestration.products`` — the same rule ``factory product validate``
+applies (T070), so the API and the CLI agree on readiness: the state machine
 passes through ``validating`` and lands in ``ready`` or ``error`` — a repository
 the factory cannot reach is ``error``, with the cause in ``status_reason``
 (ADR-030 p.4). Without a configured provisioning port the endpoint refuses with
@@ -14,7 +16,6 @@ the factory cannot reach is ``error``, with the cause in ``status_reason``
 not observe (ADR-031 p.6).
 """
 
-import asyncio
 from collections.abc import Callable, Iterator
 from typing import Annotated
 
@@ -32,8 +33,12 @@ from dark_factory.api.dto import (
     ProductValidateRequest,
     ProductValidationView,
 )
-from dark_factory.changes.enums import ProductStatus
 from dark_factory.changes.product import Product
+from dark_factory.orchestration.products import (
+    PROVISIONING_UNCONFIGURED_DETAIL,
+    observe_repository,
+    record_validation,
+)
 from dark_factory.orchestration.state.change_store import (
     PRODUCT_ADD_ACTION,
     PRODUCT_VALIDATE_ACTION,
@@ -41,29 +46,9 @@ from dark_factory.orchestration.state.change_store import (
     ProductRepository,
 )
 from dark_factory.orchestration.state.repositories import StateConflictError
-from dark_factory.ports import (
-    RepositoryProvisioningPort,
-    RepositoryState,
-    RepositoryValidation,
-)
+from dark_factory.ports import RepositoryProvisioningPort
 
-PROVISIONING_UNCONFIGURED_DETAIL = (
-    "repository provisioning is not configured in this contour, so readiness cannot"
-    " be observed; the product status is unchanged"
-)
-
-
-def _outcome(validation: RepositoryValidation) -> tuple[ProductStatus, str | None]:
-    """Readiness of one observation (ADR-030 p.4, ADR-031 p.4/p.6).
-
-    ``ready`` means "the factory reached the repository": an empty repository and
-    a missing baseline are normal states in which the baseline is created later
-    (ADR-031 p.4), so neither is a failure. Only an unreachable repository is
-    ``error``; the cause goes to ``status_reason``.
-    """
-    if validation.state is RepositoryState.UNAVAILABLE:
-        return ProductStatus.ERROR, "the repository is not available to the factory"
-    return ProductStatus.READY, None
+__all__ = ["PROVISIONING_UNCONFIGURED_DETAIL", "create_products_router"]
 
 
 def create_products_router(
@@ -164,18 +149,11 @@ def create_products_router(
         ):
             raise HTTPException(status_code=409, detail="state_revision mismatch")
 
-        validation = asyncio.run(provisioning.validate(product.repository))
-        target, reason = _outcome(validation)
+        validation = observe_repository(provisioning, product)
         try:
-            # The state machine passes through ``validating`` (ADR-030 p.4). Both
-            # writes share the request transaction, so an observer sees the outcome.
-            if product.status is not ProductStatus.VALIDATING:
-                product = repository.update_status(
-                    product_id, ProductStatus.VALIDATING, expected_revision=product.state_revision
-                )
-            product = repository.update_status(
-                product_id, target, expected_revision=product.state_revision, reason=reason
-            )
+            # Both writes share the request transaction, so an observer sees the
+            # outcome, never the intermediate ``validating`` (ADR-030 p.4).
+            product = record_validation(repository, product, validation)
         except StateConflictError:
             raise HTTPException(status_code=409, detail="state_revision mismatch") from None
         _audit(token, PRODUCT_VALIDATE_ACTION, product_id, "created", idempotency_key, session)

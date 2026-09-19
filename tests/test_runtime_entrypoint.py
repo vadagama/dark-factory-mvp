@@ -15,11 +15,18 @@ from typing import Any
 import pytest
 
 import dark_factory.cli.api as api_module
+import dark_factory.cli.products as products_module
 import dark_factory.cli.runner as runner_module
 import dark_factory.runtime.entrypoint as entrypoint_module
 from dark_factory.changes.enums import Stage
 from dark_factory.changes.run import Change, ChangeRun, StageResult
-from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ApiServeArgs, RunAdvanceArgs
+from dark_factory.cli.main import (
+    EXIT_INVALID_INPUT,
+    EXIT_OK,
+    ApiServeArgs,
+    ProductValidateArgs,
+    RunAdvanceArgs,
+)
 from dark_factory.cli.main import main as cli_main
 from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
 from dark_factory.orchestration.stages.gates import GateObservation
@@ -407,3 +414,116 @@ def test_cli_main_without_seams_keeps_the_deterministic_path(
 
     assert cli_main(["run", "advance", "--change-id", "chg-001"]) == EXIT_OK
     assert seen == {"executor": None, "revision_of": None, "gate_facts": None}
+
+
+# --- product validate: the provisioning port (T070, ADR-030/ADR-031) ---------
+
+
+def test_product_validate_assembles_the_runtime_and_passes_the_provisioning_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime()
+    built = _stub_runtime(monkeypatch, runtime)
+    calls = _record_cli(monkeypatch, EXIT_OK)
+
+    argv = ["product", "validate", "--id", "prd-calc", "--json"]
+    code = entrypoint_module.main(argv)
+
+    assert code == EXIT_OK
+    assert built == [1]
+    assert runtime.executor_calls == 0, "product validate consumes no stage executor"
+    assert runtime.revision_calls == 0, "product validate consumes no revision resolver"
+    assert runtime.facts_calls == 0, "product validate consumes no gate facts"
+    assert len(calls) == 1
+    assert calls[0].argv == argv
+    assert calls[0].kwargs == {"provisioning": runtime.provisioning}
+    assert runtime.close_calls == 1, "the assembled adapters are released"
+
+
+def test_product_validate_without_provisioning_passes_the_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A contour without a mirror root has no provisioning port: the absence must
+    # travel as None so the command refuses honestly (ADR-031 p.6).
+    runtime = FakeRuntime()
+    runtime.provisioning = None
+    _stub_runtime(monkeypatch, runtime)
+    calls = _record_cli(monkeypatch, EXIT_INVALID_INPUT)
+
+    code = entrypoint_module.main(["product", "validate", "--id", "prd-calc"])
+
+    assert code == EXIT_INVALID_INPUT
+    assert calls[0].kwargs == {"provisioning": None}
+    assert runtime.close_calls == 1
+
+
+def test_product_validate_releases_the_runtime_even_when_the_command_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime()
+    _stub_runtime(monkeypatch, runtime)
+
+    def _failing_cli(argv: Sequence[str] | None = None, **kwargs: Any) -> int:
+        raise RuntimeError("the store blew up")
+
+    monkeypatch.setattr(entrypoint_module, "cli_main", _failing_cli)
+
+    with pytest.raises(RuntimeError, match="blew up"):
+        entrypoint_module.main(["product", "validate", "--id", "prd-calc"])
+
+    assert runtime.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "product",
+            "add",
+            "--id",
+            "prd-calc",
+            "--name",
+            "Calc",
+            "--provider",
+            "github",
+            "--repository",
+            "small/calculator",
+        ],
+        ["product", "list"],
+        ["product", "show", "--id", "prd-calc"],
+    ],
+)
+def test_the_registry_commands_do_not_assemble_the_runtime(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # add/list/show touch only the state store: no adapter is needed, so no
+    # environment beyond the command's own is read (ADR-025).
+    _forbid_runtime(monkeypatch)
+    calls = _record_cli(monkeypatch, EXIT_OK)
+
+    code = entrypoint_module.main(argv)
+
+    assert code == EXIT_OK
+    assert len(calls) == 1
+    assert calls[0].argv == argv
+    assert calls[0].kwargs == {}
+
+
+def test_cli_main_forwards_the_provisioning_seam_to_product_validate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def _fake_validate(args: ProductValidateArgs, **kwargs: Any) -> int:
+        seen["args"] = args
+        seen.update(kwargs)
+        return EXIT_OK
+
+    monkeypatch.setattr(products_module, "run_product_validate_command", _fake_validate)
+    provisioning = ProvisioningSentinel()
+
+    code = cli_main(["product", "validate", "--id", "prd-calc"], provisioning=provisioning)
+
+    assert code == EXIT_OK
+    assert seen["args"] == ProductValidateArgs(product_id="prd-calc", json_output=False)
+    assert seen["provisioning"] is provisioning

@@ -31,7 +31,12 @@ releases the assembled resources. It never decides what a stage does.
 import asyncio
 from collections.abc import Sequence
 
-from dark_factory.cli.main import ApiServeArgs, RunAdvanceArgs, parse_command
+from dark_factory.cli.main import (
+    ApiServeArgs,
+    ProductValidateArgs,
+    RunAdvanceArgs,
+    parse_command,
+)
 from dark_factory.cli.main import main as cli_main
 from dark_factory.cli.release import ReleaseVerifyError, resolve_expected_digest
 from dark_factory.runtime.composition import RuntimeNotConfiguredError, build_runtime
@@ -53,10 +58,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     revision resolver keys it by the product commit and the provider-facts
     observer resolves a waiting stage's external wait (T-092 S3). For ``api
     serve`` the same runtime supplies the CI stage switchboard
-    (``ci_toggles``/``ci_repository``, T059) — absent credentials leave it
-    ``None`` and the API reports the toggles unconfigured. The runtime is
-    released in a ``finally``, so the adapters' resources (HTTP pool, tracer
-    provider) are freed even when the command fails.
+    (``ci_toggles``/``ci_repository``, T059) and the provisioning port
+    (``provisioning``, T066) — absent credentials leave them ``None`` and the
+    API reports the toggles unconfigured. ``product validate`` (T070) consumes
+    the provisioning port alone: without it the command refuses instead of
+    inventing a readiness (ADR-031 p.6). The runtime is released in a
+    ``finally``, so the adapters' resources (HTTP pool, tracer provider) are
+    freed even when the command fails.
 
     An invalid expected digest (the XOR of ``--expected-digest``/
     ``--digest-json`` violated, or an unreadable artifact) leaves the release
@@ -74,6 +82,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ci_repository=runtime.ci_repository,
                 provisioning=runtime.provisioning,
             )
+        finally:
+            asyncio.run(runtime.aclose())
+    if isinstance(command, ProductValidateArgs):
+        runtime = build_runtime()
+        try:
+            return cli_main(argv, provisioning=runtime.provisioning)
         finally:
             asyncio.run(runtime.aclose())
     if not isinstance(command, RunAdvanceArgs):

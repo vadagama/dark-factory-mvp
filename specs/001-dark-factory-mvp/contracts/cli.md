@@ -19,6 +19,13 @@ factory run advance  --change-id <id> | --run-id <id> [--json]  # одна ст�
                      [--smoke-url <url>] [--smoke-digest-url <url>] [--smoke-digest-header <h>]
                      [--application <ns/name>] [--runs-root <dir>]
 factory run publish  --record <path> [--runs-root <dir>] [--json]  # публикация run-записи (T-061)
+factory run withdraw --run-id <id> [--reason <text>] [--json]  # операторское снятие паркованного run (T064)
+factory product add  --id <id> --name <name> --provider github|gitlab --repository <owner/name>
+                     [--description <text>] [--repository-url <url>] [--baseline-ref <ref>]
+                     [--dev-env-ref <ref>] [--json]  # регистрация продукта (T070, ADR-030)
+factory product validate --id <id> [--json]   # наблюдение репозитория и запись готовности (ADR-031)
+factory product list     [--limit <1..200>] [--offset <n>] [--json]
+factory product show     --id <id> [--json]
 factory reconcile    [--json]           # один идемпотентный проход Reconciler
 factory outbox dispatch [--once]        # доставка событий (ADR-016)
 factory doctor       [--json]           # проверка окружения и конфигурации
@@ -84,6 +91,8 @@ factory doctor       [--json]           # проверка окружения и
 
 - `--contract-json <path|->` — Implementation Contract запуска (T-016): читается (`-` — stdin), валидируется pydantic-схемой и прикрепляется к резолвнутому запуску **в той же транзакции**, что и решение стадии. Идемпотентно и без подмены: запуск без контракта записывает переданный; идентичный — no-op; **другой** контракт — отказ store (`ContractConflictError`) → exit 2, ничего не записано (утверждённая граница работающего изменения не подменяется, ADR-018 p.3). Битый файл/JSON/схема — exit 2 до обращения к store.
 - `--approve-contract` — проставляет human-утверждение (`approved_by=Role.PRODUCT`, `decided_at=now(UTC)`) на загруженный контракт (решение оператора, ADR-011); флаг без `--contract-json` — exit 2; контракт, уже несущий approval, вместе с флагом — двусмысленность, exit 2. Утверждённый контракт снимает блокировку входа в construction (T-016); неутверждённый прикрепляется и честно блокирует вход (`blocked`).
+
+`factory product *` (T070, ADR-030/ADR-031) — операторская сторона реестра продуктов; та же модель и то же правило готовности, что у `/products` (T066), поэтому CLI и Console показывают один статус. `add` идемпотентен по `--id` (повтор — replay, ничего не пишется) и оставляет audit-запись `product.add`; `validate` наблюдает репозиторий через `RepositoryProvisioningPort`, который связывает composition root, и записывает `validating → ready | error` в одной транзакции. Коды выхода: `0` — `add` зарегистрировал или replay'нул, `validate` дал `ready`, `list`/`show` напечатали; `1` — `validate`: репозиторий недоступен (`error` записан с причиной) или само наблюдение упало (ничего не записано); `2` — неверный ввод, неизвестный продукт, порт провижининга не сконфигурирован (статус не меняется), недоступный store. Секреты не эхоятся: тексты исключений адаптера и URL store в вывод не попадают (ADR-009).
 
 ## Поведение и инварианты
 

@@ -121,6 +121,7 @@ from dark_factory.changes.run import Change, ChangeRun
 from dark_factory.changes.run_records import RunRecord
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.cli._common import (
+    CLI_ACTOR,
     StateStoreUnreachableError,
     default_owner_id,
     open_state_store,
@@ -180,7 +181,6 @@ RUNS_ROOT_ENV_VAR: Final[str] = "DARK_FACTORY_RUNS_ROOT"
 DEFAULT_RUN_ROUTE: Final[Route] = Route.STANDARD
 """Route of a run created by the CLI (ADR-005): the full gate set, never a shortcut."""
 
-CLI_ACTOR: Final[str] = "cli"
 """Audit actor of a CLI-issued decision (T064): the local CLI has no authenticated identity."""
 
 EXIT_NOT_WITHDRAWABLE: Final[int] = EXIT_ERROR
