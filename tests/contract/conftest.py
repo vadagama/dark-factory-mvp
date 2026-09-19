@@ -20,7 +20,7 @@ markers), and the OTel binding decodes the exporter it was built with.
 import asyncio
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -46,7 +46,13 @@ from dark_factory.adapters.fakes import (
     FakeWorkflowEngine,
 )
 from dark_factory.adapters.provisioning import LocalMirror, LocalMirrorConfig
-from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, StaticTokenProvider
+from dark_factory.adapters.scm.github import (
+    GitHubAdapter,
+    GitHubConfig,
+    ProviderClone,
+    ProviderCloneConfig,
+    StaticTokenProvider,
+)
 from dark_factory.adapters.telemetry import (
     USAGE_ATTRIBUTE_PREFIX,
     USAGE_SPAN_NAME,
@@ -92,6 +98,7 @@ from dark_factory.ports import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
+from tests.contract.git_http_api import GitHttpEmulator
 from tests.contract.github_api import (
     GITHUB_API_BASE_URL,
     GITHUB_INSTALLATION_TOKEN,
@@ -187,10 +194,11 @@ class _ProvisioningBinding(NamedTuple):
 
     Provisioning is the port whose validation result *is* the observable state
     (ADR-031 p.4), so the binding owns the seeder: a test materialises the state it
-    asserts (absent mirror, empty repository, commits without/with a baseline) and
+    asserts (absent repository, empty repository, commits without/with a baseline) and
     the port must report it. ``supports_bootstrap`` states the capability split of
-    ADR-031 p.2 explicitly — the fake applies packs, ``LocalMirror`` does not (T069)
-    and must fail loudly instead of reporting a bootstrap it did not perform.
+    ADR-031 p.2 explicitly — the fake applies packs, while ``LocalMirror`` and
+    ``ProviderClone`` do not (T069) and must fail loudly instead of reporting a
+    bootstrap they did not perform.
     """
 
     port: RepositoryProvisioningPort
@@ -581,9 +589,40 @@ def evidence_workspace(execution_binding: _ExecutionBinding) -> WorkspaceHandle:
     return handle
 
 
-@pytest.fixture(params=["fake", "local_mirror"])
+@pytest.fixture
+def git_http_emulator() -> Iterator[GitHttpEmulator]:
+    """A loopback git smart-HTTP server of one test, torn down with the test."""
+    emulator = GitHttpEmulator()
+    try:
+        yield emulator
+    finally:
+        emulator.close()
+
+
+@pytest.fixture(params=["fake", "local_mirror", "provider_clone"])
 def provisioning_binding(request: pytest.FixtureRequest, tmp_path: Path) -> _ProvisioningBinding:
-    """RepositoryProvisioningPort bound to the fake and the local-mirror adapter (T067)."""
+    """RepositoryProvisioningPort bound to the fake and the two real adapters (T067/T068).
+
+    ``provider_clone`` speaks to the loopback git emulator with the installation
+    token, so the clone/fetch path is exercised end to end without a provider.
+    """
+    if request.param == "provider_clone":
+        emulator: GitHttpEmulator = request.getfixturevalue("git_http_emulator")
+        mirror_root = tmp_path / "provider-clone-mirror"
+        return _ProvisioningBinding(
+            port=ProviderClone(
+                ProviderCloneConfig(
+                    mirror_root=mirror_root,
+                    github=GitHubConfig(
+                        api_base_url=emulator.base_url, clone_base_url=emulator.base_url
+                    ),
+                ),
+                token_provider=StaticTokenProvider(emulator.token),
+            ),
+            repository=PRODUCT,
+            supports_bootstrap=False,
+            seed=lambda state: emulator.seed(PRODUCT, state),
+        )
     if request.param == "local_mirror":
         mirror_root = tmp_path / "provisioning-mirror"
         return _ProvisioningBinding(
