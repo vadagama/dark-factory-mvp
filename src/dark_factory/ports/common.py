@@ -34,6 +34,28 @@ class PipelineStatus:
 
 
 @dataclass(frozen=True)
+class CommitInfo:
+    """One commit of a repository path, provider-neutral (T082, ADR-035 p.1).
+
+    The read model of ``RepositoryPort.list_commits``: the revision of one
+    change of an artifact plus the facts a history view shows. ``authored_at``
+    stays ``None`` when the provider does not report it — never guessed.
+    """
+
+    sha: str
+    """The commit SHA — the revision of the artifact after this commit."""
+
+    message: str = ""
+    """First line(s) of the commit message as the provider reports it."""
+
+    author: str | None = None
+    """Login or name of the author, when reported."""
+
+    authored_at: datetime | None = None
+    """Authoring instant, when reported."""
+
+
+@dataclass(frozen=True)
 class ReviewObservation:
     """One human review recorded on a change request, provider-neutral (ADR-019 p.2)."""
 

@@ -16,16 +16,33 @@ are scanned for the marker before anything is created, so a replay (or a cold
 adapter after a crash between commit and bookkeeping) returns the recorded SHA
 and creates no second commit. A missing branch is a ``KeyError`` (404 =
 absent, the same convention as ``get_revision``).
+
+The read methods (T082, ADR-035) use the contents API (``read_file``), the
+recursive trees API of the ref's tree (``list_tree``) and the commits API
+with its ``path`` filter (``list_commits``); an absent ref or path is a
+``KeyError`` like everywhere else on the port.
 """
 
-from collections.abc import Mapping
+import base64
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any, Final
 
 from dark_factory.adapters.scm.github.client import GitHubClient
 from dark_factory.adapters.scm.github.pull_requests import IDEMPOTENCY_MARKER_TEMPLATE
-from dark_factory.ports import RepositoryPort, RepositoryRef
+from dark_factory.ports import CommitInfo, RepositoryPort, RepositoryRef
 
 _PER_PAGE: Final[int] = 100
+
+
+def _parse_instant(value: Any) -> datetime | None:
+    """ISO-8601 instant of the commits API (``Z`` suffix) → aware datetime, or ``None``."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 class GitHubRepository(RepositoryPort):
@@ -104,6 +121,66 @@ class GitHubRepository(RepositoryPort):
         )
         self._client.expect(moved, 200)
         return commit_sha
+
+    async def read_file(self, repository: RepositoryRef, ref: str, path: str, /) -> bytes:
+        response = await self._client.request(
+            "GET", f"/repos/{repository.slug}/contents/{path}", params={"ref": ref}
+        )
+        if response.status_code == 404:
+            raise KeyError(f"no file {path!r} at {repository.slug!r}@{ref!r}")
+        data: dict[str, Any] = self._client.expect(response, 200).json()
+        if isinstance(data, list) or data.get("type") != "file":
+            raise KeyError(f"{path!r} at {repository.slug!r}@{ref!r} is not a file")
+        encoding = data.get("encoding")
+        content = str(data.get("content") or "")
+        if encoding == "base64":
+            return base64.b64decode(content)
+        return content.encode("utf-8")
+
+    async def list_tree(
+        self, repository: RepositoryRef, ref: str, /, *, prefix: str = ""
+    ) -> Sequence[str]:
+        head = await self._head(repository, ref)
+        if not head["tree"]:
+            return ()
+        response = await self._client.request(
+            "GET",
+            f"/repos/{repository.slug}/git/trees/{head['tree']}",
+            params={"recursive": "1"},
+        )
+        data: dict[str, Any] = self._client.expect(response, 200).json()
+        paths = [
+            str(entry["path"])
+            for entry in data.get("tree", [])
+            if entry.get("type") == "blob" and str(entry["path"]).startswith(prefix)
+        ]
+        return tuple(sorted(paths))
+
+    async def list_commits(
+        self, repository: RepositoryRef, ref: str, /, *, path: str | None = None
+    ) -> Sequence[CommitInfo]:
+        params = {"sha": ref, "per_page": str(_PER_PAGE)}
+        if path is not None:
+            params["path"] = path
+        response = await self._client.request(
+            "GET", f"/repos/{repository.slug}/commits", params=params
+        )
+        if response.status_code in (404, 422):
+            raise KeyError(f"no revision recorded for {repository.slug!r}@{ref!r}")
+        commits: list[CommitInfo] = []
+        for item in self._client.expect(response, 200).json():
+            info: dict[str, Any] = item.get("commit") or {}
+            author: dict[str, Any] = info.get("author") or {}
+            authored_at = _parse_instant(author.get("date"))
+            commits.append(
+                CommitInfo(
+                    sha=str(item["sha"]),
+                    message=str(info.get("message") or ""),
+                    author=author.get("name") or (item.get("author") or {}).get("login"),
+                    authored_at=authored_at,
+                )
+            )
+        return tuple(commits)
 
     async def _marker_commit(
         self, repository: RepositoryRef, branch: str, marker: str

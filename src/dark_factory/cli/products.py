@@ -60,23 +60,27 @@ from dark_factory.cli.main import (
     EXIT_ERROR,
     EXIT_OK,
     ProductAddArgs,
+    ProductBootstrapArgs,
     ProductListArgs,
     ProductShowArgs,
     ProductValidateArgs,
 )
 from dark_factory.orchestration.products import (
     PROVISIONING_UNCONFIGURED_DETAIL,
+    bootstrap_baseline,
     observe_repository,
     record_validation,
 )
 from dark_factory.orchestration.state.change_store import (
     PRODUCT_ADD_ACTION,
+    PRODUCT_BOOTSTRAP_ACTION,
     PRODUCT_VALIDATE_ACTION,
     AuditRepository,
     ProductRepository,
 )
 from dark_factory.orchestration.state.engine import session_scope
 from dark_factory.orchestration.state.repositories import StateConflictError
+from dark_factory.ports import ProvisioningOperationUnsupportedError
 
 if TYPE_CHECKING:
     # Type-only: the CLI is core and must not import the ports package (ADR-024
@@ -205,6 +209,33 @@ def run_product_show_command(
 # --- store access -----------------------------------------------------------
 
 
+def run_product_bootstrap_command(
+    args: ProductBootstrapArgs,
+    *,
+    provisioning: "RepositoryProvisioningPort | None" = None,
+    session_factory: sessionmaker[Session] | None = None,
+) -> int:
+    """Handle ``factory product bootstrap``; return the process exit code (T069, ADR-031 p.3).
+
+    The operator's «Подготовить baseline»: applies the named packs (default
+    ``product-baseline``) to the product repository as one commit on the
+    default branch, replay-safe by a deterministic key. Without a provisioning
+    port, or with one that cannot bootstrap (the read-only local mirror), the
+    command refuses with exit 2 — never a baseline the factory did not create
+    (ADR-031 p.6). An adapter failure is exit 1 with fixed wording.
+    """
+    if provisioning is None:
+        return report_invalid_input(
+            "product bootstrap", PROVISIONING_UNCONFIGURED_DETAIL, json_output=args.json_output
+        )
+    return _with_store(
+        "product bootstrap",
+        args.json_output,
+        session_factory,
+        lambda factory: _bootstrap(factory, args, provisioning),
+    )
+
+
 def _with_store(
     command: str,
     json_output: bool,
@@ -293,6 +324,57 @@ def _validate(
         else render_validate_text(product, validation)
     )
     return EXIT_OK if product.status is ProductStatus.READY else EXIT_ERROR
+
+
+def _bootstrap(
+    factory: sessionmaker[Session],
+    args: ProductBootstrapArgs,
+    provisioning: "RepositoryProvisioningPort",
+) -> int:
+    packs = list(args.packs) or ["product-baseline"]
+    try:
+        with session_scope(factory) as session:
+            product = ProductRepository(session).get(args.product_id)
+            if product is None:
+                return _unknown_product("product bootstrap", args.product_id, args.json_output)
+            try:
+                result = bootstrap_baseline(
+                    provisioning,
+                    product,
+                    packs=packs,
+                    idempotency_key=f"bootstrap:{product.id}:{','.join(packs)}",
+                )
+            except ProvisioningOperationUnsupportedError as error:
+                return report_invalid_input(
+                    "product bootstrap", str(error), json_output=args.json_output
+                )
+            except Exception as error:
+                raise _ObservationFailed() from error
+            _audit(session, PRODUCT_BOOTSTRAP_ACTION, product.id, "created")
+    except _ObservationFailed:
+        return report_execution_error(
+            "product bootstrap",
+            "the baseline bootstrap failed in the provisioning adapter; nothing was recorded",
+            json_output=args.json_output,
+        )
+    except SQLAlchemyError:
+        return report_state_store_unreachable("product bootstrap", json_output=args.json_output)
+    if args.json_output:
+        print(
+            json.dumps(
+                {
+                    "product": product.model_dump(mode="json"),
+                    "result": result.model_dump(mode="json"),
+                }
+            )
+        )
+    else:
+        applied = ", ".join(f"{pack.name}@{pack.version}" for pack in result.applied_packs) or "-"
+        print(
+            f"product {product.id}: baseline at {result.revision}"
+            f" ({product.repository.provider.value}:{product.repository.slug}; packs: {applied})"
+        )
+    return EXIT_OK
 
 
 def _list(factory: sessionmaker[Session], args: ProductListArgs) -> int:

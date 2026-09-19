@@ -33,6 +33,13 @@ from collections.abc import Sequence
 
 from dark_factory.cli.main import (
     ApiServeArgs,
+    ChangeAnswerArgs,
+    ChangeApproveArgs,
+    ChangeArtifactsArgs,
+    ChangeCommentArgs,
+    ChangeReworkArgs,
+    ChangeStatusArgs,
+    ProductBootstrapArgs,
     ProductValidateArgs,
     RunAdvanceArgs,
     parse_command,
@@ -42,6 +49,16 @@ from dark_factory.cli.release import ReleaseVerifyError, resolve_expected_digest
 from dark_factory.runtime.composition import RuntimeNotConfiguredError, build_runtime
 
 __all__ = ["main"]
+
+_CHANGE_REPOSITORY_COMMANDS = (
+    ChangeStatusArgs,
+    ChangeAnswerArgs,
+    ChangeCommentArgs,
+    ChangeReworkArgs,
+    ChangeApproveArgs,
+    ChangeArtifactsArgs,
+)
+"""``factory change`` commands that consume the product repository seam (T086)."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -83,13 +100,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ci_repository=runtime.ci_repository,
                 provisioning=runtime.provisioning,
                 brief_formulator=runtime.brief_formulator(),
+                repository=runtime.repository,
             )
         finally:
             asyncio.run(runtime.aclose())
-    if isinstance(command, ProductValidateArgs):
+    if isinstance(command, ProductValidateArgs | ProductBootstrapArgs):
         runtime = build_runtime()
         try:
             return cli_main(argv, provisioning=runtime.provisioning)
+        finally:
+            asyncio.run(runtime.aclose())
+    if isinstance(command, _CHANGE_REPOSITORY_COMMANDS):
+        # The change commands that read or write artifacts and revisions (T086):
+        # the product repository port is the one seam they need.
+        runtime = build_runtime()
+        try:
+            return cli_main(argv, repository=runtime.repository)
         finally:
             asyncio.run(runtime.aclose())
     if not isinstance(command, RunAdvanceArgs):

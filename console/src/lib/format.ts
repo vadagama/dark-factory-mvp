@@ -52,3 +52,14 @@ export function formatGate(gate: string): string {
 export function formatStage(stage: string): string {
   return stage.replaceAll("_", " ");
 }
+
+const CLOCK_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "UTC",
+});
+
+/** "HH:MM" for the editor's save state («Черновик сохранён 09:30»), UTC like the rest. */
+export function formatClock(timestamp: number): string {
+  return CLOCK_FORMAT.format(new Date(timestamp));
+}

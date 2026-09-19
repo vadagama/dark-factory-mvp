@@ -466,3 +466,262 @@ export interface CiStages {
   reason: string | null;
   stages: CiStage[];
 }
+
+// ---------------------------------------------------------------------------
+// Conversations (changes/conversations.py, changes/enums.py — T086, ADR-034):
+// questions, answers, comments, rework orders. Wire strings are lowercase.
+// ---------------------------------------------------------------------------
+
+/** Operator phase of a ChangeSet (ADR-032): F0..F8 plus `done`; same values as `GuidancePhase`. */
+export type Phase = GuidancePhase;
+export type AnswerKind = "choice" | "text" | "number";
+/** `open → answered → resolved | stale` (ADR-034 p.1). */
+export type QuestionStatus = "open" | "answered" | "resolved" | "stale";
+/** `addressed` is the agent's «исправлено» — never a closure; only the operator closes. */
+export type CommentStatus = "open" | "addressed" | "closed";
+/** Read-model fact: a `detached` anchor is shown explicitly and never re-attached. */
+export type AnchorState = "attached" | "detached";
+export type ReworkOrderStatus = "pending" | "in_progress" | "done" | "escalated";
+/** How a recorded approval relates to the current revision (ADR-035 p.7). */
+export type RevisionState = "current" | "stale" | "unbound";
+
+/** `artifact + anchor_id + revision` — where a question or a comment points (ADR-034 p.1). */
+export interface ArtifactAnchor {
+  artifact: string;
+  anchor_id: string | null;
+  revision: string | null;
+}
+
+export interface Answer {
+  value: string;
+  comment: string | null;
+  answered_by: string;
+  answered_at: string;
+}
+
+export interface Question {
+  id: string;
+  change_id: string;
+  phase: Phase;
+  run_id: string | null;
+  asked_by: Role | null;
+  text: string;
+  kind: AnswerKind;
+  options: string[];
+  anchor: ArtifactAnchor | null;
+  /** `false` = an assumption: the gate stays available while it is open (T087). */
+  blocking: boolean;
+  status: QuestionStatus;
+  answer: Answer | null;
+  asked_at: string;
+  updated_at: string;
+}
+
+export interface Comment {
+  id: string;
+  change_id: string;
+  phase: Phase;
+  anchor: ArtifactAnchor;
+  body: string;
+  author: string;
+  status: CommentStatus;
+  rework_order_id: string | null;
+  addressed_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /changes/{id}/comments` item: the comment plus its anchor state at the head. */
+export interface CommentView extends Comment {
+  anchor_state: AnchorState;
+}
+
+/** The agent's report after a rework round: what changed, what remains. */
+export interface ReworkSummary {
+  changed: string[];
+  remaining: string[];
+  addressed_comment_ids: string[];
+}
+
+export interface ReworkOrder {
+  id: string;
+  change_id: string;
+  phase: Phase;
+  /** Artifact path → revision the order was issued against. */
+  revisions: Record<string, string>;
+  comment_ids: string[];
+  question_ids: string[];
+  instruction: string | null;
+  issued_by: string;
+  status: ReworkOrderStatus;
+  round: number | null;
+  run_id: string | null;
+  summary: ReworkSummary | null;
+  escalation_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Phase gate (orchestration/phase_gate.py — T087): why the gate is closed and how to open it.
+
+export interface GateReason {
+  what: string;
+  how: string;
+}
+
+export interface ApprovalView {
+  decision_id: string;
+  outcome: DecisionOutcome;
+  revision: string | null;
+  state: RevisionState;
+  comment: string | null;
+}
+
+export interface PhaseGate {
+  change_id: string;
+  phase: Phase;
+  gate: Gate | null;
+  available: boolean;
+  reasons: GateReason[];
+  current_revision: string | null;
+  /** A *current* approval exists; a view mark or a stale approval never counts. */
+  approved: boolean;
+  skippable: boolean;
+  approvals: ApprovalView[];
+  blocking_questions: number;
+  open_questions: number;
+  answered_questions: number;
+  open_comments: number;
+  addressed_comments: number;
+  detached_comments: number;
+  rework_pending: boolean;
+  rework_in_progress: boolean;
+  rework_rounds_used: number;
+  rework_rounds_max: number;
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts (context/artifacts.py, api/dto.py — T082–T085, ADR-035): git is the
+// source of truth; the Console reads documents by revision and writes commits.
+// ---------------------------------------------------------------------------
+
+export type ArtifactKind = "spec" | "design" | "adr" | "ui" | "plan" | "other";
+
+export interface ArtifactNode {
+  path: string;
+  kind: ArtifactKind;
+  revision: string | null;
+}
+
+/** `GET /changes/{id}/artifacts`: `revision === null` means no branch yet (≠ an empty branch). */
+export interface ArtifactTreeView {
+  change_id: string;
+  branch: string;
+  revision: string | null;
+  nodes: ArtifactNode[];
+  /** Paths that have an autosave draft. */
+  drafts: string[];
+}
+
+/** Frontmatter as data (ADR-035 p.5): values and the keys the editor must not change. */
+export interface DocumentProperties {
+  values: Record<string, unknown>;
+  protected: string[];
+}
+
+export interface ArtifactDraftView {
+  change_id: string;
+  artifact: string;
+  content: string;
+  base_revision: string | null;
+  saved_by: string;
+  updated_at: string;
+  /** The branch head moved away from `base_revision`. */
+  stale: boolean;
+}
+
+/** `GET /changes/{id}/artifacts/{path}`: one document at one revision with its context. */
+export interface ArtifactDocumentView {
+  path: string;
+  kind: ArtifactKind;
+  /** A commit SHA — never `latest`. */
+  revision: string;
+  /** The whole file, verbatim (frontmatter included) — the editor's source of truth. */
+  content: string;
+  properties: DocumentProperties | null;
+  body: string;
+  /** Stable ids a comment or a question may bind to, in document order. */
+  anchors: string[];
+  frontmatter_error: string | null;
+  draft: ArtifactDraftView | null;
+  /** The operator viewed *this* revision — «просмотрено» ≠ «согласовано» (ADR-034 p.2). */
+  viewed: boolean;
+  open_comments: number;
+  open_questions: number;
+}
+
+/** `PUT /changes/{id}/artifacts/{path}`: the new revision and the staleness effects. */
+export interface ArtifactWriteView {
+  path: string;
+  revision: string;
+  previous_revision: string | null;
+  created_commit: boolean;
+  stale_questions: string[];
+  detached_comments: string[];
+}
+
+export interface ArtifactRevision {
+  revision: string;
+  message: string;
+  author: string | null;
+  authored_at: string | null;
+}
+
+export interface ArtifactDiff {
+  path: string;
+  from_revision: string;
+  to_revision: string;
+  unified: string;
+  added: number;
+  removed: number;
+}
+
+// Request bodies (api/dto.py)
+
+export interface AnswerRequest {
+  value: string;
+  comment?: string | null;
+}
+
+export interface CommentCreateRequest {
+  artifact: string;
+  anchor_id?: string | null;
+  revision?: string | null;
+  body: string;
+  phase?: Phase | null;
+}
+
+export interface ReworkOrderRequest {
+  phase?: Phase | null;
+  comment_ids: string[];
+  question_ids: string[];
+  instruction?: string | null;
+  expected_revision?: string | null;
+}
+
+export interface ArtifactEditRequest {
+  content: string;
+  base_revision: string | null;
+  message?: string | null;
+  /** Frontmatter values replaced on top of `content`; protected keys are refused with 422. */
+  properties?: Record<string, unknown> | null;
+}
+
+export interface ArtifactDraftRequest {
+  content: string;
+  base_revision: string | null;
+}
+
+export interface ArtifactViewRequest {
+  revision: string;
+}

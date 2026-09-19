@@ -29,7 +29,7 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from dark_factory.changes.enums import Gate, ProductStatus, RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import Gate, Phase, ProductStatus, RunStatus, Stage, StageStatus
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
@@ -43,6 +43,7 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.product import Product
 from dark_factory.changes.run import Change, ChangeRun
+from dark_factory.orchestration.phase_gate import PhaseGate
 
 __all__ = [
     "GUIDANCE_SCHEMA_VERSION",
@@ -70,18 +71,9 @@ class GuidanceActor(StrEnum):
     EXTERNAL = "external"
 
 
-class GuidancePhase(StrEnum):
-    """User-facing phase of a ChangeSet (ADR-032), projected from the stage."""
-
-    INITIATIVE = "initiative"
-    REQUIREMENTS = "requirements"
-    ARCHITECTURE = "architecture"
-    INTERFACE = "interface"
-    PLAN = "plan"
-    EXECUTION = "execution"
-    DEMONSTRATION = "demonstration"
-    DELIVERY = "delivery"
-    DONE = "done"
+GuidancePhase = Phase
+"""The operator phase of ADR-032; ``Phase`` lives in ``changes.enums`` since T078 so the
+discussion entities bind to it — this alias keeps the M1 name."""
 
 
 STAGE_PHASE: Final[dict[Stage, GuidancePhase]] = {
@@ -114,6 +106,16 @@ GATE_LABEL: Final[dict[Gate, str]] = {
     Gate.VERIFICATION: "проверку",
     Gate.RELEASE: "релиз",
 }
+
+PHASE_GATE_LABEL: Final[dict[GuidancePhase, str]] = {
+    GuidancePhase.REQUIREMENTS: "требования",
+    GuidancePhase.ARCHITECTURE: "архитектуру",
+    GuidancePhase.INTERFACE: "интерфейс",
+    GuidancePhase.PLAN: "план",
+    GuidancePhase.DEMONSTRATION: "результат",
+    GuidancePhase.DELIVERY: "доставку",
+}
+"""Stage-specific label of the phase approval («Согласовать …», plan §4 rule 1)."""
 
 _ACTIVE_STAGE_STATUSES: Final[frozenset[StageStatus]] = frozenset(
     {StageStatus.IN_PROGRESS, StageStatus.WAITING, StageStatus.BLOCKED, StageStatus.PENDING}
@@ -290,6 +292,7 @@ def change_guidance(
     product: Product | None,
     run: ChangeRun | None,
     waiting_on: NextAction | None = None,
+    phase_gate: PhaseGate | None = None,
 ) -> Guidance:
     """Next step for a change (T074): intake → requirements → run states.
 
@@ -297,6 +300,10 @@ def change_guidance(
     unknown ``product_id``), ``run`` the latest run of the change and
     ``waiting_on`` the ``NextAction`` of that run's latest stage result — the
     technical continuation the operator's step is derived from (ADR-033 p.5).
+    ``phase_gate`` (T087) is the precondition view of the current phase's gate:
+    with it, a parked human wait renders the approval step with its blockers
+    (open blocking questions, a pending rework round, stale approvals) and a
+    running rework round names itself; without it the M1 rendering stands.
     """
     subject = GuidanceSubject(kind="change", id=change.id)
     blockers: list[GuidanceBlocker] = []
@@ -320,7 +327,7 @@ def change_guidance(
 
     if run is None:
         return _intake_guidance(change, subject, product, blockers)
-    return _run_guidance(change, subject, run, waiting_on, blockers)
+    return _run_guidance(change, subject, run, waiting_on, blockers, phase_gate)
 
 
 def _intake_guidance(
@@ -407,6 +414,7 @@ def _run_guidance(
     run: ChangeRun,
     waiting_on: NextAction | None,
     blockers: list[GuidanceBlocker],
+    phase_gate: PhaseGate | None = None,
 ) -> Guidance:
     phase = phase_of_run(run)
     phase_label = PHASE_LABEL[phase]
@@ -459,6 +467,29 @@ def _run_guidance(
 
     match run.status:
         case RunStatus.PENDING | RunStatus.RUNNING:
+            if phase_gate is not None and phase_gate.rework_in_progress:
+                # A rework round was spent on the send-back (T081): the next
+                # advance executes it — one step, like every other advance.
+                return Guidance(
+                    subject=subject,
+                    phase=phase,
+                    headline=(
+                        f"Доработка «{phase_label}»: раунд {phase_gate.rework_rounds_used}"
+                        f" из {phase_gate.rework_rounds_max}"
+                    ),
+                    why="Замечания и ответы переданы агенту; раунд исполняется следующим"
+                    " запуском стадии.",
+                    primary=advance.model_copy(
+                        update={
+                            "label": "Выполнить раунд доработки",
+                            "cli": f"factory run advance --change-id {change.id}",
+                        }
+                    ),
+                    secondary=(status, withdraw),
+                    blockers=tuple(blockers),
+                    after="После раунда: сводка агента «что изменил / что осталось» и повторное"
+                    " согласование.",
+                )
             return Guidance(
                 subject=subject,
                 phase=phase,
@@ -470,6 +501,20 @@ def _run_guidance(
                 after=f"После завершения: результат фазы «{phase_label}» и следующий шаг.",
             )
         case RunStatus.WAITING:
+            if phase_gate is not None and isinstance(
+                waiting_on, RequestApprovalAction | WaitForInputAction
+            ):
+                return _approval_guidance(
+                    change,
+                    subject,
+                    phase,
+                    phase_gate,
+                    waiting_on,
+                    blockers,
+                    status,
+                    advance,
+                    withdraw,
+                )
             return _waiting_guidance(
                 change, subject, run, phase, waiting_on, blockers, status, advance, withdraw
             )
@@ -567,6 +612,116 @@ def _run_guidance(
                 blockers=tuple(blockers),
                 after=None,
             )
+
+
+def _approval_guidance(
+    change: Change,
+    subject: GuidanceSubject,
+    phase: GuidancePhase,
+    gate: PhaseGate,
+    waiting_on: RequestApprovalAction | WaitForInputAction,
+    blockers: list[GuidanceBlocker],
+    status: GuidanceAction,
+    advance: GuidanceAction,
+    withdraw: GuidanceAction,
+) -> Guidance:
+    """The human gate of a phase with its preconditions (T087, ADR-032 p.4).
+
+    Exactly one primary — «Согласовать …» — enabled only when the gate is
+    available; otherwise it stays visible with the first reason, and every
+    reason becomes an attributed blocker with its action (ADR-033 p.4). The
+    send-back (the rework order) is always a secondary action: a comment alone
+    never starts a round (ADR-034 p.2).
+    """
+    phase_label = PHASE_LABEL[phase]
+    approve = GuidanceAction(
+        label=f"Согласовать {PHASE_GATE_LABEL.get(phase, phase_label.lower())}",
+        cli=f"factory change approve --id {change.id} --phase {phase.value}",
+        api=f"POST /changes/{change.id}/approvals",
+    )
+    rework = GuidanceAction(
+        label="На доработку",
+        cli=f"factory change rework --id {change.id} --phase {phase.value} …",
+        api=f"POST /changes/{change.id}/rework-orders",
+    )
+    questions = GuidanceAction(
+        label="Ответить на вопросы",
+        cli=f"factory change status --id {change.id}",
+        api=f"GET /changes/{change.id}/questions?status=open",
+    )
+    artifacts = GuidanceAction(
+        label="Посмотреть артефакты",
+        cli=f"factory change artifacts --id {change.id} list",
+        api=f"GET /changes/{change.id}/artifacts",
+    )
+    for reason in gate.reasons:
+        blockers.insert(
+            0, GuidanceBlocker(what=reason.what, who=GuidanceActor.OPERATOR, how=reason.how)
+        )
+    counts = (
+        f"вопросов без ответа: {gate.open_questions} (блокирующих {gate.blocking_questions});"
+        f" открытых замечаний: {gate.open_comments}"
+        + (
+            f", ждут повторной проверки: {gate.addressed_comments}"
+            if gate.addressed_comments
+            else ""
+        )
+        + (f"; отвязанных замечаний: {gate.detached_comments}" if gate.detached_comments else "")
+    )
+    stale = sum(1 for view in gate.approvals if view.state == "stale")
+    if stale:
+        counts += f"; прежних согласований неактуально: {stale}"
+    if gate.approved:
+        return Guidance(
+            subject=subject,
+            phase=phase,
+            headline=f"Фаза «{phase_label}» согласована на текущей ревизии",
+            why=f"Решение записано на ревизии {gate.current_revision}; {counts}.",
+            primary=advance.model_copy(update={"label": "Продолжить после согласования"}),
+            secondary=(rework, artifacts, status),
+            blockers=tuple(blockers),
+            after=f"Следующая фаза после «{phase_label}».",
+        )
+    if not gate.available:
+        first = gate.reasons[0].what if gate.reasons else "гейт недоступен"
+        secondary: list[GuidanceAction] = []
+        if gate.blocking_questions:
+            secondary.append(questions)
+        secondary.extend((rework, artifacts, withdraw))
+        primary = (
+            questions
+            if gate.blocking_questions
+            else approve.model_copy(update={"enabled": False, "reason": first})
+        )
+        return Guidance(
+            subject=subject,
+            phase=phase,
+            headline=f"Фаза «{phase_label}»: нужно решение, гейт пока закрыт",
+            why=f"{_sentence(first)}; {counts}.",
+            primary=primary,
+            secondary=tuple(action for action in secondary if action is not primary),
+            blockers=tuple(blockers),
+            after=f"После снятия причин: согласование «{phase_label}» или доработка.",
+        )
+    blockers.insert(
+        0,
+        GuidanceBlocker(
+            what=f"Нужно решение человека: согласовать «{phase_label}»",
+            who=GuidanceActor.OPERATOR,
+            how=f"Просмотрите артефакты на ревизии {gate.current_revision} и запишите решение"
+            " (согласовать / на доработку).",
+        ),
+    )
+    return Guidance(
+        subject=subject,
+        phase=phase,
+        headline=f"Фаза «{phase_label}» готова к согласованию",
+        why=f"{_sentence(waiting_on.reason or 'агент подготовил результат')}; {counts}.",
+        primary=approve,
+        secondary=(rework, artifacts, withdraw),
+        blockers=tuple(blockers),
+        after=f"После согласования: следующая фаза после «{phase_label}».",
+    )
 
 
 def _waiting_guidance(

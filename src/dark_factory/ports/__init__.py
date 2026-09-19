@@ -40,6 +40,7 @@ from dark_factory.ports.agents import (
 from dark_factory.ports.common import (
     ArtifactSpec,
     ChangeRequestObservation,
+    CommitInfo,
     HealthStatus,
     OpenChangeRequest,
     PipelineStatus,
@@ -109,6 +110,7 @@ __all__ = [
     "ChangeSet",
     "ChangeSource",
     "CiStageTogglePort",
+    "CommitInfo",
     "ContextBundle",
     "ContextRequest",
     "ContextSchemaVersion",

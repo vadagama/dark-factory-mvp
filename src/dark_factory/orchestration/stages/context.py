@@ -15,6 +15,7 @@ from dark_factory.changes.enums import Gate, RiskClass, Route, Stage
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
+from dark_factory.orchestration.conversations import ConversationInputs
 from dark_factory.orchestration.rules.gates import required_gates, required_human_gates
 
 
@@ -62,6 +63,16 @@ class StageContext:
     Construction and never re-runs the completed outgoing work.
     """
 
+    conversation: ConversationInputs | None = None
+    """The discussion the attempt must take into account (T080, ADR-034 p.5).
+
+    The operator's answers, the open comments, the questions still open and the
+    rework order that sent the work back — typed inputs assembled by the driver
+    from the store for the phase of the stage. ``None`` means "no discussion
+    yet" (a first attempt, or a caller without the store); the deterministic
+    path ignores it, the agent executor renders it into the instruction.
+    """
+
     enforce_contract_entry: bool = True
     """Whether entering Construction is gated on ``implementation_contract`` (T-063).
 
@@ -87,6 +98,7 @@ def build_context(
     risk_class: RiskClass | None = None,
     implementation_contract: ImplementationContract | None = None,
     enforce_contract_entry: bool = True,
+    conversation: ConversationInputs | None = None,
 ) -> StageContext:
     """Assemble the stage context from the validated snapshot and the flow tables.
 
@@ -102,6 +114,8 @@ def build_context(
     callers that do not track retries. ``implementation_contract`` is the
     contract of the run the attempt belongs to and ``enforce_contract_entry``
     says whether the Construction entry gate applies to this context (T-063).
+    ``conversation`` is the discussion the attempt must take into account
+    (T080, ADR-034 p.5), assembled by the driver from the store.
     """
     effective_class = risk_class if risk_class is not None else change.risk_class
     return StageContext(
@@ -116,4 +130,5 @@ def build_context(
         attempt_number=attempt_number,
         implementation_contract=implementation_contract,
         enforce_contract_entry=enforce_contract_entry,
+        conversation=conversation,
     )

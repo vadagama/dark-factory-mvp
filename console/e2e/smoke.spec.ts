@@ -1,13 +1,14 @@
 /**
- * Playwright smoke suite (T036 DoD, extended for T075/T076): one scenario per
- * console screen, run against `vite preview` with the API stubbed by
- * page.route (synthetic data only — ADR-021 p.4, no secrets in fixtures).
- * ADR-037 IA: products are the index; the legacy changes list lives at
- * /changes; the service screens moved under /service with redirects.
+ * Playwright smoke suite (T036 DoD, extended for T075/T076 and the M2
+ * ChangeSet workspace T088–T090): one scenario per console screen, run against
+ * `vite preview` with the API stubbed by page.route (synthetic data only —
+ * ADR-021 p.4, no secrets in fixtures). ADR-037 IA: products are the index;
+ * /changes/:id is the ChangeSet workspace, the M1 card lives at
+ * /changes/:id/card; the service screens moved under /service with redirects.
  */
 
 import { expect, test } from "@playwright/test";
-import { E2E_TOKEN, TOKEN_STORAGE_KEY, stubApi } from "./fixtures/api";
+import { E2E_HEAD, E2E_SPEC_CONTENT, E2E_SPEC_PATH, E2E_TOKEN, TOKEN_STORAGE_KEY, stubApi } from "./fixtures/api";
 
 test.beforeEach(async ({ page }) => {
   await stubApi(page);
@@ -33,8 +34,8 @@ test("screen 1: changes list with statuses and fail-closed intake", async ({ pag
   await expect(page.getByRole("button", { name: "Создать изменение" })).toBeDisabled();
 });
 
-test("screen 2: change card with stages, evidence, usage and the stage chain", async ({ page }) => {
-  await page.goto("/changes/chg_demo_001");
+test("screen 2: change card (M1, /card) with stages, evidence, usage and the stage chain", async ({ page }) => {
+  await page.goto("/changes/chg_demo_001/card");
   await expect(page.getByRole("heading", { name: "Add /health endpoint" })).toBeVisible();
   await expect(page.getByText("источник: console")).toBeVisible();
   await expect(page.getByText("решений: 1")).toBeVisible();
@@ -319,7 +320,7 @@ test("change card: brief editor saves via PUT and the guidance re-reads", async 
     [TOKEN_STORAGE_KEY, E2E_TOKEN],
   );
   const { writes } = await stubApi(page);
-  await page.goto("/changes/chg_demo_001");
+  await page.goto("/changes/chg_demo_001/card");
   await expect(page.getByTestId("next-step")).toContainText("Задача завершена");
   await expect(page.getByTestId("brief-section")).toContainText("сформулировал: агент");
   await page.getByLabel("Цель").fill("Эндпоинт /health отвечает 200 и покрыт тестом");
@@ -348,4 +349,164 @@ test("placeholders and redirects: attention, activity, /budgets → /service/bud
   await page.goto("/service");
   await expect(page.getByTestId("service-links")).toContainText("Бюджеты");
   await expect(page.getByRole("link", { name: "Служебное" })).toHaveClass(/active/);
+});
+
+// --- M2: ChangeSet workspace, requirements phase, markdown editor (T088–T090) ----
+
+function seedToken(page: import("@playwright/test").Page) {
+  return page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    [TOKEN_STORAGE_KEY, E2E_TOKEN],
+  );
+}
+
+test("changeset: the workspace shell — panels, phases, tabs, one CTA, no percentage", async ({ page }) => {
+  await page.goto("/changes/chg_demo_003");
+  await expect(page.getByRole("heading", { name: "Add rate limiting" })).toBeVisible();
+  const top = page.getByTestId("workspace-top");
+  await expect(top).toContainText("chg_demo_003");
+  await expect(page.getByTestId("workspace-phase")).toContainText("Требования");
+  await expect(page.getByTestId("workspace-budget")).toContainText("факт $0.1200 · лимит 40.0000 USD · прогноз —");
+  await expect(page.getByTestId("workspace-blockers")).toHaveText("1");
+
+  const phases = page.getByTestId("workspace-phases");
+  for (const label of ["Инициатива", "Требования", "Архитектура", "Интерфейс", "План", "Исполнение", "Демонстрация", "Доставка"]) {
+    await expect(phases).toContainText(label);
+  }
+  await expect(page.getByTestId("phase-requirements")).toContainText("вопросов 2 · замечаний 0 · итерация 0");
+  await expect(page.getByTestId("phase-requirements")).toContainText("в работе");
+
+  const tabs = page.getByRole("tablist");
+  await expect(tabs).toContainText("Результат");
+  await expect(tabs).toContainText("Изменения");
+  await expect(tabs).toContainText("Проверки");
+  await expect(tabs).toContainText("История");
+  await expect(page.getByTestId("context-panel")).toBeVisible();
+  await page.getByTestId("context-toggle").click();
+  await expect(page.getByTestId("context-panel")).toHaveCount(0);
+  await page.getByTestId("context-toggle").click();
+
+  await expect(page.getByTestId("workspace-decision").getByTestId("next-step-primary")).toHaveCount(1);
+  await expect(page.getByTestId("next-step-primary")).toHaveText("Ответить на вопросы");
+
+  // Requirements delta with stable ids; other phases are honest placeholders.
+  await expect(page.getByTestId("anchors-REQ-001-rate-limit.md")).toContainText("AC-1");
+  await page.getByTestId("tab-checks").click();
+  await expect(page.getByTestId("phase-gate")).toContainText("закрыт");
+  await expect(page.getByTestId("phase-gate-counts")).toContainText("0 из 3");
+  await page.getByTestId("phase-architecture").click();
+  await expect(page.getByTestId("phase-placeholder")).toContainText("появится в M3");
+
+  const text = await page.locator("body").innerText();
+  expect(text).not.toMatch(/\d+\s?%/);
+});
+
+test("changeset: honest states when the contour has no repository", async ({ page }) => {
+  await page.goto("/changes/chg_demo_002");
+  await expect(page.getByRole("heading", { name: "Split legacy billing module" })).toBeVisible();
+  await page.getByTestId("tab-changes").click();
+  await expect(page.getByRole("tabpanel")).toContainText("the product repository is not configured in this contour");
+});
+
+test("requirements: answer a question in one click, then approve on the gate revision", async ({ page }) => {
+  await seedToken(page);
+  const { posts } = await stubApi(page);
+  await page.goto("/changes/chg_demo_003");
+  const question = page.getByTestId("question-q_e2e_choice");
+  await expect(question).toContainText("блокирует гейт");
+  await page.getByTestId("options-q_e2e_choice").getByRole("button", { name: "429" }).click();
+  await expect(page.getByTestId("answer-q_e2e_choice")).toContainText("Ответ: 429");
+  const answer = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/questions/q_e2e_choice/answer");
+  expect(answer?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(answer?.body).toEqual({ value: "429" });
+
+  // The assumption is confirmed with one click too.
+  await page.getByTestId("question-q_e2e_assume").getByRole("button", { name: "Подтвердить" }).click();
+  await expect(page.getByTestId("answer-q_e2e_assume")).toContainText("confirmed");
+
+  // The gate opened: the guidance primary is now the approval.
+  await expect(page.getByTestId("next-step-primary")).toHaveText("Согласовать требования");
+  await page.getByTestId("next-step-primary").click();
+  await expect(page.getByTestId("approval-revision")).toHaveText(E2E_HEAD.slice(0, 12));
+  await page.getByTestId("approval-comment").fill("требования согласованы в smoke");
+  await page.getByTestId("approval-submit").click();
+  await expect(page.getByTestId("approval-recorded")).toContainText("Решение записано: dec_e2e_1");
+  const approval = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/approvals");
+  expect(approval?.body).toMatchObject({ gate: "specification", outcome: "approved", subject_revision: E2E_HEAD, comment: "требования согласованы в smoke" });
+  await expect(page.getByTestId("phase-requirements")).toContainText("согласована");
+});
+
+test("requirements: leave a comment on a fragment, then send to rework", async ({ page }) => {
+  await seedToken(page);
+  const { posts } = await stubApi(page);
+  await page.goto("/changes/chg_demo_003");
+  await expect(page.getByTestId("anchors-REQ-001-rate-limit.md")).toBeVisible();
+  // Picking an anchor chip selects the fragment for the composer.
+  await page.getByTestId("anchors-REQ-001-rate-limit.md").getByRole("button", { name: "AC-2" }).click();
+  await expect(page.getByTestId("context-fragment")).toContainText("AC-2");
+  await page.getByTestId("comment-body").fill("Уточнить, кто меняет лимит.");
+  await page.getByTestId("comment-submit").click();
+  await expect(page.getByTestId("comment-cmt_e2e_1")).toContainText("Уточнить, кто меняет лимит.");
+  const comment = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/comments");
+  expect(comment?.body).toEqual({ artifact: E2E_SPEC_PATH, anchor_id: "AC-2", revision: E2E_HEAD, body: "Уточнить, кто меняет лимит.", phase: "requirements" });
+  // A comment never starts rework by itself.
+  await expect(page.getByTestId("context-rework")).toContainText("Поручения (0)");
+
+  await page.getByTestId("rework-toggle").click();
+  await page.getByTestId("rework-instruction").fill("Описать, кто и как меняет лимит.");
+  await page.getByTestId("rework-submit").click();
+  await expect(page.getByTestId("rework-rw_e2e_1")).toContainText("ожидает раунда");
+  await expect(page.getByTestId("rework-rw_e2e_1")).toContainText("Раунд ещё не запущен");
+  const order = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/rework-orders");
+  expect(order?.body).toMatchObject({ phase: "requirements", comment_ids: ["cmt_e2e_1"], instruction: "Описать, кто и как меняет лимит.", expected_revision: E2E_HEAD });
+  // The gate is closed by the pending order; the history shows the send-back as a rejected decision.
+  await expect(page.getByTestId("next-step")).toContainText("Отправлено на доработку");
+  await page.getByTestId("tab-history").click();
+  await expect(page.getByTestId("history-decisions")).toContainText("rejected");
+});
+
+test("editor: modes keep the content verbatim, the draft autosaves, the commit goes to git", async ({ page }) => {
+  await seedToken(page);
+  const { writes } = await stubApi(page);
+  await page.goto("/changes/chg_demo_003");
+  await page.getByTestId("delta-REQ-001-rate-limit.md").getByRole("button", { name: "REQ-001-rate-limit.md" }).click();
+  const editor = page.getByTestId("markdown-editor");
+  await expect(editor).toBeVisible();
+  await expect(page.getByTestId("editor-properties")).toContainText("защищено");
+  await expect(page.getByTestId("editor-rendered")).toContainText("Rate limiting");
+
+  await page.getByTestId("editor-mode-markdown").click();
+  await expect(page.getByTestId("editor-textarea")).toHaveValue(E2E_SPEC_CONTENT);
+  await page.getByTestId("editor-mode-reading").click();
+  await expect(page.getByTestId("editor-textarea")).toHaveCount(0);
+  await expect(page.getByTestId("editor-rendered")).toContainText("configurable without a redeploy");
+  await page.getByTestId("editor-mode-markdown").click();
+  await expect(page.getByTestId("editor-textarea")).toHaveValue(E2E_SPEC_CONTENT);
+  await expect(page.getByTestId("editor-save-state")).toHaveText("Без изменений");
+  expect(writes.filter((write) => write.pathname.includes("/artifact"))).toHaveLength(0);
+
+  const edited = `${E2E_SPEC_CONTENT}- AC-3: the response carries Retry-After.\n`;
+  await page.getByTestId("editor-textarea").fill(edited);
+  await expect(page.getByTestId("editor-save-state")).toHaveText("Не сохранено");
+  await expect(page.getByTestId("editor-save-state")).toHaveText("Черновик сохранён 10:30");
+  const draft = writes.find((write) => write.method === "PUT" && write.pathname.includes("/artifact-drafts/"));
+  expect(draft?.pathname).toBe(`/api/v1/changes/chg_demo_003/artifact-drafts/${E2E_SPEC_PATH}`);
+  expect(draft?.body).toEqual({ content: edited, base_revision: E2E_HEAD });
+
+  await page.getByLabel("Сообщение коммита (необязательно)").fill("spec: add AC-3");
+  await page.getByTestId("editor-save-git").click();
+  await expect(page.getByTestId("artifact-editor-pane")).toContainText("Сохранено в git: ревизия e2e0002e2e00");
+  const commit = writes.find((write) => write.method === "PUT" && write.pathname === `/api/v1/changes/chg_demo_003/artifacts/${E2E_SPEC_PATH}`);
+  expect(commit?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(commit?.body).toEqual({ content: edited, base_revision: E2E_HEAD, message: "spec: add AC-3", properties: null });
+
+  // The editor reloaded on the new revision: the committed text is the source now, the draft is gone.
+  await page.getByTestId("editor-mode-markdown").click();
+  await expect(page.getByTestId("editor-textarea")).toHaveValue(edited);
+  await expect(page.getByTestId("editor-save-state")).toHaveText("Без изменений");
+  await page.getByTestId("editor-history-toggle").click();
+  await expect(page.getByTestId("editor-history")).toContainText("spec: add AC-3");
+  await expect(page.getByTestId("editor-history")).toContainText("spec: initial requirements");
+  await page.getByTestId("editor-show-diff").click();
+  await expect(page.getByTestId("editor-diff")).toContainText("+- AC-3: the response carries Retry-After.");
 });

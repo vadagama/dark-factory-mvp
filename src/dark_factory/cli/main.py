@@ -9,8 +9,9 @@ is the explicit core path (deterministic executor, no composition).
 This module owns the command tree (``stage run``/``stage resume``,
 ``run advance``/``run status``/``run publish``/``run withdraw``, ``reconcile``, ``outbox dispatch``/
 ``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
-``release verify``, ``product add``/``product validate``/``product list``/``product show``,
-``change create``/``change status``), option validation and exit codes.
+``release verify``, ``product add``/``product validate``/``product list``/``product show``/
+``product bootstrap``, ``change create``/``change status``/``change answer``/``change comment``/
+``change rework``/``change approve``/``change artifacts``), option validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
 error, 2 invalid input/configuration; argparse rejects invalid input with
 exit code 2, matching the contract.
@@ -50,7 +51,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, assert_never
 
-from dark_factory.changes.enums import Provider, RiskClass, Route, Scenario, Stage
+from dark_factory.changes.enums import Phase, Provider, RiskClass, Route, Scenario, Stage
 from dark_factory.cli import doctor
 
 if TYPE_CHECKING:
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
     # imports) into the import of the command tree. The seams arrive as values.
     from dark_factory.orchestration.intake import BriefFormulator
     from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
-    from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
+    from dark_factory.ports import CiStageTogglePort, RepositoryPort, RepositoryProvisioningPort
 
 # Exit codes of the CLI (contract cli.md).
 EXIT_OK = 0
@@ -263,6 +264,97 @@ class ChangeStatusArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeAnswerArgs:
+    """Arguments of ``factory change answer`` (T086, ADR-034 p.1): the operator's answer."""
+
+    change_id: str
+    question_id: str
+    value: str
+    comment: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeCommentArgs:
+    """Arguments of ``factory change comment`` (T086): a remark anchored to a fragment."""
+
+    change_id: str
+    artifact: str
+    anchor_id: str | None
+    body: str
+    phase: Phase | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeReworkArgs:
+    """Arguments of ``factory change rework`` (T086, ADR-034 p.2/p.3): the send-back."""
+
+    change_id: str
+    phase: Phase | None
+    comment_ids: tuple[str, ...]
+    question_ids: tuple[str, ...]
+    instruction: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeApproveArgs:
+    """Arguments of ``factory change approve`` (T086/T087): the phase decision.
+
+    ``waive`` records the explicit skip of the phase (``waived``), which needs
+    ``comment`` as its reason (ADR-032 p.5); ``revision`` overrides the current
+    head the decision binds to (needed without a bound repository).
+    """
+
+    change_id: str
+    phase: Phase | None
+    waive: bool
+    comment: str | None
+    revision: str | None
+    json_output: bool
+
+
+class ArtifactAction(StrEnum):
+    """Sub-actions of ``factory change artifacts`` (T086, ADR-035)."""
+
+    LIST = "list"
+    SHOW = "show"
+    EDIT = "edit"
+    DIFF = "diff"
+    VERSIONS = "versions"
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeArtifactsArgs:
+    """Arguments of ``factory change artifacts`` (T086): the document artifacts of a change.
+
+    ``path`` is required for every action but ``list``; ``edit`` reads the new
+    content from ``file`` (``-`` = stdin) and binds the save to ``base_revision``;
+    ``diff`` needs ``from_revision`` and ``to_revision``.
+    """
+
+    change_id: str
+    action: ArtifactAction
+    path: str | None
+    revision: str | None
+    from_revision: str | None
+    to_revision: str | None
+    file: str | None
+    base_revision: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProductBootstrapArgs:
+    """Arguments of ``factory product bootstrap`` (T069/M2): apply the baseline packs."""
+
+    product_id: str
+    packs: tuple[str, ...]
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReconcileArgs:
     """Arguments of ``factory reconcile`` (contract cli.md)."""
 
@@ -357,6 +449,12 @@ CommandArgs = (
     | ProductShowArgs
     | ChangeCreateArgs
     | ChangeStatusArgs
+    | ChangeAnswerArgs
+    | ChangeCommentArgs
+    | ChangeReworkArgs
+    | ChangeApproveArgs
+    | ChangeArtifactsArgs
+    | ProductBootstrapArgs
     | ReconcileArgs
     | OutboxDispatchArgs
     | OutboxReplayArgs
@@ -592,6 +690,25 @@ def build_parser() -> argparse.ArgumentParser:
     product_show.add_argument("--json", action="store_true", help="Emit the product as JSON.")
     product_show.set_defaults(command="product_show")
 
+    product_bootstrap = product_commands.add_parser(
+        "bootstrap",
+        help="Apply the baseline packs to the product repository (T069, ADR-031 p.3).",
+    )
+    product_bootstrap.add_argument(
+        "--id", dest="product_id", required=True, help="Id of the product to bootstrap."
+    )
+    product_bootstrap.add_argument(
+        "--pack",
+        dest="packs",
+        action="append",
+        default=[],
+        help="Baseline pack to apply (repeatable; default: product-baseline).",
+    )
+    product_bootstrap.add_argument(
+        "--json", action="store_true", help="Emit the product and the bootstrap evidence as JSON."
+    )
+    product_bootstrap.set_defaults(command="product_bootstrap")
+
     change = commands.add_parser(
         "change", help="Intake of a change with a brief, and its next step (T073)."
     )
@@ -658,6 +775,110 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit the change, run and guidance as JSON."
     )
     change_status.set_defaults(command="change_status")
+
+    phase_choices = [phase.value for phase in Phase]
+    change_answer = change_commands.add_parser(
+        "answer", help="Answer an agent question (T086, ADR-034 p.1)."
+    )
+    change_answer.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_answer.add_argument(
+        "--question", dest="question_id", required=True, help="Id of the question to answer."
+    )
+    change_answer.add_argument(
+        "--value", required=True, help="The answer: an option, a text or a number."
+    )
+    change_answer.add_argument("--comment", help="Optional note on the answer.")
+    change_answer.add_argument(
+        "--json", action="store_true", help="Emit the question and the guidance as JSON."
+    )
+    change_answer.set_defaults(command="change_answer")
+
+    change_comment = change_commands.add_parser(
+        "comment", help="Leave a remark on an artifact fragment (T086, ADR-034 p.1)."
+    )
+    change_comment.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_comment.add_argument(
+        "--artifact", required=True, help="Path of the artifact inside the change branch."
+    )
+    change_comment.add_argument(
+        "--anchor",
+        dest="anchor_id",
+        help="Stable id of the fragment (REQ-001, AC-2, a heading slug).",
+    )
+    change_comment.add_argument("--body", required=True, help="The remark.")
+    change_comment.add_argument(
+        "--phase", choices=phase_choices, help="Phase of the remark (default: the current one)."
+    )
+    change_comment.add_argument(
+        "--json", action="store_true", help="Emit the comment and the guidance as JSON."
+    )
+    change_comment.set_defaults(command="change_comment")
+
+    change_rework = change_commands.add_parser(
+        "rework", help="Send the phase back to the agent with comments and answers (ADR-034 p.3)."
+    )
+    change_rework.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_rework.add_argument(
+        "--phase", choices=phase_choices, help="Phase to rework (default: the current one)."
+    )
+    change_rework.add_argument(
+        "--comment",
+        dest="comment_ids",
+        action="append",
+        default=[],
+        help="Id of a comment to carry (repeatable).",
+    )
+    change_rework.add_argument(
+        "--question",
+        dest="question_ids",
+        action="append",
+        default=[],
+        help="Id of an answered question to carry (repeatable).",
+    )
+    change_rework.add_argument("--instruction", help="Free-text instruction for the agent.")
+    change_rework.add_argument(
+        "--json", action="store_true", help="Emit the rework order and the guidance as JSON."
+    )
+    change_rework.set_defaults(command="change_rework")
+
+    change_approve = change_commands.add_parser(
+        "approve", help="Approve (or waive) the current phase on its current revision (T087)."
+    )
+    change_approve.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_approve.add_argument(
+        "--phase", choices=phase_choices, help="Phase to approve (default: the current one)."
+    )
+    change_approve.add_argument(
+        "--waive",
+        action="store_true",
+        help="Skip the phase with a stated reason (--comment) instead of approving it.",
+    )
+    change_approve.add_argument("--comment", help="Decision comment; the reason of a --waive.")
+    change_approve.add_argument(
+        "--revision", help="Revision to bind the decision to (default: the current branch head)."
+    )
+    change_approve.add_argument(
+        "--json", action="store_true", help="Emit the decision, the gate and the guidance as JSON."
+    )
+    change_approve.set_defaults(command="change_approve")
+
+    change_artifacts = change_commands.add_parser(
+        "artifacts", help="Document artifacts of the change: list, show, edit, diff, versions."
+    )
+    change_artifacts.add_argument(
+        "action", choices=[action.value for action in ArtifactAction], help="What to do."
+    )
+    change_artifacts.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_artifacts.add_argument("--path", help="Artifact path (required except for list).")
+    change_artifacts.add_argument("--revision", help="Revision to show (default: the head).")
+    change_artifacts.add_argument("--from", dest="from_revision", help="diff: the older revision.")
+    change_artifacts.add_argument("--to", dest="to_revision", help="diff: the newer revision.")
+    change_artifacts.add_argument("--file", help="edit: file with the new content (- for stdin).")
+    change_artifacts.add_argument(
+        "--base-revision", dest="base_revision", help="edit: the revision the edit started from."
+    )
+    change_artifacts.add_argument("--json", action="store_true", help="Emit the result as JSON.")
+    change_artifacts.set_defaults(command="change_artifacts")
 
     reconcile = commands.add_parser(
         "reconcile", help="Perform one idempotent Reconciler pass (ADR-019 p.5)."
@@ -924,6 +1145,62 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 change_id=_required_str(data, "change_id"),
                 json_output=_flag(data, "json"),
             )
+        case "change_answer":
+            return ChangeAnswerArgs(
+                change_id=_required_str(data, "change_id"),
+                question_id=_required_str(data, "question_id"),
+                value=_required_str(data, "value"),
+                comment=_option_str(data, "comment"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_comment":
+            phase = _option_str(data, "phase")
+            return ChangeCommentArgs(
+                change_id=_required_str(data, "change_id"),
+                artifact=_required_str(data, "artifact"),
+                anchor_id=_option_str(data, "anchor_id"),
+                body=_required_str(data, "body"),
+                phase=Phase(phase) if phase is not None else None,
+                json_output=_flag(data, "json"),
+            )
+        case "change_rework":
+            phase = _option_str(data, "phase")
+            return ChangeReworkArgs(
+                change_id=_required_str(data, "change_id"),
+                phase=Phase(phase) if phase is not None else None,
+                comment_ids=_str_list(data, "comment_ids"),
+                question_ids=_str_list(data, "question_ids"),
+                instruction=_option_str(data, "instruction"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_approve":
+            phase = _option_str(data, "phase")
+            return ChangeApproveArgs(
+                change_id=_required_str(data, "change_id"),
+                phase=Phase(phase) if phase is not None else None,
+                waive=_flag(data, "waive"),
+                comment=_option_str(data, "comment"),
+                revision=_option_str(data, "revision"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_artifacts":
+            return ChangeArtifactsArgs(
+                change_id=_required_str(data, "change_id"),
+                action=ArtifactAction(_required_str(data, "action")),
+                path=_option_str(data, "path"),
+                revision=_option_str(data, "revision"),
+                from_revision=_option_str(data, "from_revision"),
+                to_revision=_option_str(data, "to_revision"),
+                file=_option_str(data, "file"),
+                base_revision=_option_str(data, "base_revision"),
+                json_output=_flag(data, "json"),
+            )
+        case "product_bootstrap":
+            return ProductBootstrapArgs(
+                product_id=_required_str(data, "product_id"),
+                packs=_str_list(data, "packs"),
+                json_output=_flag(data, "json"),
+            )
         case "reconcile":
             return ReconcileArgs(json_output=_flag(data, "json"))
         case "outbox_dispatch":
@@ -1079,10 +1356,52 @@ def _create_change(args: ChangeCreateArgs) -> int:
     return changes.run_change_create_command(args)
 
 
-def _show_change_status(args: ChangeStatusArgs) -> int:
+def _show_change_status(
+    args: ChangeStatusArgs, *, repository: "RepositoryPort | None" = None
+) -> int:
     from dark_factory.cli import changes
 
-    return changes.run_change_status_command(args)
+    return changes.run_change_status_command(args, repository=repository)
+
+
+def _answer_question(args: ChangeAnswerArgs, *, repository: "RepositoryPort | None" = None) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_answer_command(args, repository=repository)
+
+
+def _comment_change(args: ChangeCommentArgs, *, repository: "RepositoryPort | None" = None) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_comment_command(args, repository=repository)
+
+
+def _rework_change(args: ChangeReworkArgs, *, repository: "RepositoryPort | None" = None) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_rework_command(args, repository=repository)
+
+
+def _approve_change(args: ChangeApproveArgs, *, repository: "RepositoryPort | None" = None) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_approve_command(args, repository=repository)
+
+
+def _change_artifacts(
+    args: ChangeArtifactsArgs, *, repository: "RepositoryPort | None" = None
+) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_artifacts_command(args, repository=repository)
+
+
+def _bootstrap_product(
+    args: ProductBootstrapArgs, *, provisioning: "RepositoryProvisioningPort | None" = None
+) -> int:
+    from dark_factory.cli import products
+
+    return products.run_product_bootstrap_command(args, provisioning=provisioning)
 
 
 def _reconcile(args: ReconcileArgs) -> int:
@@ -1126,6 +1445,7 @@ def _serve_api(
     ci_repository: str | None = None,
     provisioning: "RepositoryProvisioningPort | None" = None,
     brief_formulator: "BriefFormulator | None" = None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
     # Imported here: cli.api imports ApiServeArgs and the exit codes from this
     # module, so a module-level import would be circular.
@@ -1137,6 +1457,7 @@ def _serve_api(
         ci_repository=ci_repository,
         provisioning=provisioning,
         brief_formulator=brief_formulator,
+        repository=repository,
     )
 
 
@@ -1158,14 +1479,18 @@ def dispatch(
     ci_repository: str | None = None,
     provisioning: "RepositoryProvisioningPort | None" = None,
     brief_formulator: "BriefFormulator | None" = None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree).
 
     ``executor``, ``revision_of`` and ``gate_facts`` are the optional binding
     seams of ``factory run advance`` and are consumed only by that branch;
     ``ci_toggles``/``ci_repository`` are the CI stage switchboard seam of
-    ``factory api serve`` (T059), and ``provisioning`` the product-validation
-    seam of ``api serve`` (T066) and ``product validate`` (T070). They are
+    ``factory api serve`` (T059), ``provisioning`` the product-validation
+    seam of ``api serve`` (T066), ``product validate`` (T070) and ``product
+    bootstrap`` (M2), and ``repository`` the product repository port of the
+    document artifacts (T082-T086) consumed by ``api serve`` and the ``change``
+    commands that read or write artifacts and revisions. They are
     values, not imports: this module is
     core and must not name ``dark_factory.runtime`` (ADR-024 p.5), so the
     composition root (``runtime.entrypoint``) hands the assembled bindings over
@@ -1198,7 +1523,19 @@ def dispatch(
         case ChangeCreateArgs():
             return _create_change(command)
         case ChangeStatusArgs():
-            return _show_change_status(command)
+            return _show_change_status(command, repository=repository)
+        case ChangeAnswerArgs():
+            return _answer_question(command, repository=repository)
+        case ChangeCommentArgs():
+            return _comment_change(command, repository=repository)
+        case ChangeReworkArgs():
+            return _rework_change(command, repository=repository)
+        case ChangeApproveArgs():
+            return _approve_change(command, repository=repository)
+        case ChangeArtifactsArgs():
+            return _change_artifacts(command, repository=repository)
+        case ProductBootstrapArgs():
+            return _bootstrap_product(command, provisioning=provisioning)
         case ReconcileArgs():
             return _reconcile(command)
         case OutboxDispatchArgs():
@@ -1216,6 +1553,7 @@ def dispatch(
                 ci_repository=ci_repository,
                 provisioning=provisioning,
                 brief_formulator=brief_formulator,
+                repository=repository,
             )
         case ReleaseVerifyArgs():
             return _release_verify(command)
@@ -1233,6 +1571,7 @@ def main(
     ci_repository: str | None = None,
     provisioning: "RepositoryProvisioningPort | None" = None,
     brief_formulator: "BriefFormulator | None" = None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
     """Run one command from ``argv``; return the process exit code.
 
@@ -1261,4 +1600,5 @@ def main(
         ci_repository=ci_repository,
         provisioning=provisioning,
         brief_formulator=brief_formulator,
+        repository=repository,
     )

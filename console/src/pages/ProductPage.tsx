@@ -90,9 +90,14 @@ export function ProductPage() {
         navigate(newChangePath);
         return;
       case "open_change":
+      case "approve_phase":
+      case "rework":
+      case "focus_questions":
+      case "open_artifacts":
+        navigate(`/changes/${encodeURIComponent(action.changeId)}`);
+        return;
       case "edit_brief":
-      case "open_gates":
-        navigate(`/changes/${encodeURIComponent(action.changeId)}${action.kind === "open_gates" ? "/gates" : ""}`);
+        navigate(`/changes/${encodeURIComponent(action.changeId)}/card`);
         return;
       case "open_run":
         state.reload();

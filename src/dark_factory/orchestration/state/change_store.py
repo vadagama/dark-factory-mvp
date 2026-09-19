@@ -36,6 +36,7 @@ CHANGE_INTAKE_ACTION: str = "change.intake"
 CHANGE_BRIEF_ACTION: str = "change.brief"
 PRODUCT_ADD_ACTION: str = "product.add"
 PRODUCT_VALIDATE_ACTION: str = "product.validate"
+PRODUCT_BOOTSTRAP_ACTION: str = "product.bootstrap"
 APPROVAL_RECORD_ACTION: str = "approval.record"
 
 

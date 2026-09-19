@@ -31,7 +31,7 @@ BASE = datetime(2026, 9, 19, 12, 0, 0, tzinfo=UTC)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
-MIGRATION_HEAD = "0005_products"
+MIGRATION_HEAD = "0006_conversations"
 MIGRATION_PARENT = "0004_runner_state"
 
 

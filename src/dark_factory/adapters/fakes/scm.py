@@ -1,6 +1,6 @@
 """In-memory fakes of the source control ports (ADR-019 p.2/p.6)."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -8,6 +8,7 @@ from dark_factory.ports import (
     ChangeRequestObservation,
     ChangeRequestRef,
     ChangeRequestStatus,
+    CommitInfo,
     HeadMismatchError,
     MergeRequestPort,
     OpenChangeRequest,
@@ -39,7 +40,9 @@ class FakeRepository(RepositoryPort):
     branch is a ``KeyError``. The commit's files are the parent's files merged
     with ``changes`` (deletions are not expressible, per the port contract);
     ``commits_of`` and ``commit_files`` are read views for tests, not port
-    methods.
+    methods. The read methods of the port (``read_file``, ``list_tree``,
+    ``list_commits``, T082) resolve a branch name or a known commit SHA and
+    answer from the commit's file set; an unknown ref or path is a ``KeyError``.
     """
 
     def __init__(self) -> None:
@@ -98,6 +101,50 @@ class FakeRepository(RepositoryPort):
         self._branches[(*_repo_key(repository), branch)] = sha
         self._commit_keys[idempotency_key] = sha
         return sha
+
+    async def read_file(self, repository: RepositoryRef, ref: str, path: str, /) -> bytes:
+        sha = self._resolve(repository, ref)
+        files = self._commits[sha].files if sha in self._commits else {}
+        try:
+            return files[path]
+        except KeyError:
+            raise KeyError(f"no file {path!r} at {repository.slug!r}@{ref!r}") from None
+
+    async def list_tree(
+        self, repository: RepositoryRef, ref: str, /, *, prefix: str = ""
+    ) -> Sequence[str]:
+        sha = self._resolve(repository, ref)
+        files = self._commits[sha].files if sha in self._commits else {}
+        return tuple(sorted(path for path in files if path.startswith(prefix)))
+
+    async def list_commits(
+        self, repository: RepositoryRef, ref: str, /, *, path: str | None = None
+    ) -> Sequence[CommitInfo]:
+        sha: str | None = self._resolve(repository, ref)
+        commits: list[CommitInfo] = []
+        while sha is not None and sha in self._commits:
+            record = self._commits[sha]
+            parent_files = (
+                self._commits[record.parent].files
+                if record.parent is not None and record.parent in self._commits
+                else {}
+            )
+            if path is None or record.files.get(path) != parent_files.get(path):
+                commits.append(CommitInfo(sha=sha, message=record.message))
+            sha = record.parent
+        return tuple(commits)
+
+    def _resolve(self, repository: RepositoryRef, ref: str) -> str:
+        """A branch name or a known commit SHA → the SHA; anything else is absent."""
+        branch_head = self._branches.get((*_repo_key(repository), ref))
+        if branch_head is not None:
+            return branch_head
+        if ref in self._commits or ref in self._branches.values():
+            # A known commit, or the raw revision a branch was created at (the
+            # fake records no commit object for it): both resolve, like the
+            # emulator's tree-less commit does.
+            return ref
+        raise KeyError(f"no revision recorded for {repository.slug!r}@{ref!r}")
 
     def commits_of(self, repository: RepositoryRef, branch: str) -> tuple[str, ...]:
         """Read view: the commit SHAs of ``branch``, oldest first (not port state)."""

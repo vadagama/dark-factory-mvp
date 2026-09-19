@@ -30,7 +30,14 @@ factory change create    --product <id> --title <t> --limit-usd <amount>
                          [--problem <p> --goal <g> [--constraint <c>]... [--out-of-scope <o>]... | --brief-json <path|->]
                          [--scenario specs_only|full] [--token-limit <n>] [--risk-class R0..R4]
                          [--description <text>] [--id <chg_id>] [--json]   # intake задачи (T073, T071)
-factory change status    --id <chg_id> [--json]    # задача, последний run и «Следующий шаг» (Guidance, T074)
+factory change status    --id <chg_id> [--json]    # задача, run, обсуждение и «Следующий шаг» (Guidance, T074/T086)
+factory change answer    --id <chg_id> --question <q_id> --value <v> [--comment <c>] [--json]   # ответ оператора (T086)
+factory change comment   --id <chg_id> --artifact <path> [--anchor <id>] --body <text> [--phase <p>] [--json]
+factory change rework    --id <chg_id> [--phase <p>] [--comment <cmt_id>]... [--question <q_id>]... [--instruction <t>] [--json]
+factory change approve   --id <chg_id> [--phase <p>] [--waive --comment <reason>] [--comment <c>] [--revision <sha>] [--json]
+factory change artifacts <list|show|edit|diff|versions> --id <chg_id> [--path <p>] [--revision <r>]
+                         [--from <r> --to <r>] [--file <path|->] [--base-revision <r>] [--json]   # артефакты в git (T086, ADR-035)
+factory product bootstrap --id <id> [--pack <name>]... [--json]   # baseline-паки в репозиторий продукта (T069, ADR-031 п.3)
 factory reconcile    [--json]           # один идемпотентный проход Reconciler
 factory outbox dispatch [--once]        # доставка событий (ADR-016)
 factory doctor       [--json]           # проверка окружения и конфигурации
@@ -62,11 +69,14 @@ factory doctor       [--json]           # проверка окружения и
   "gate_results": [ { "gate": "code", "status": "passed", "sha": "a1b2c3d" } ],
   "findings": [],
   "usage": { "prompt_tokens": 0, "completion_tokens": 0, "cost": "0.00" },
+  "questions": [],
+  "rework_summary": null,
+  "conversation_errors": [],
   "produced_at": "2026-09-13T10:00:00Z"
 }
 ```
 
-Контракт `StageResult` — [`../data-model.md`](../data-model.md) §1.3; закрытое объединение `NextAction` — §1.4.
+Контракт `StageResult` — [`../data-model.md`](../data-model.md) §1.3; закрытое объединение `NextAction` — §1.4. Поля `questions` (вопросы агента оператору, `QuestionDraft`), `rework_summary` («что изменил / что осталось» после раунда доработки) и `conversation_errors` (некорректные записи структурных блоков агента) добавлены в T078/T081 аддитивно — версия схемы остаётся 1 (ADR-015 §3).
 
 ## Exit codes
 
@@ -100,6 +110,10 @@ factory doctor       [--json]           # проверка окружения и
 `factory product *` (T070, ADR-030/ADR-031) — операторская сторона реестра продуктов; та же модель и то же правило готовности, что у `/products` (T066), поэтому CLI и Console показывают один статус. `add` идемпотентен по `--id` (повтор — replay, ничего не пишется) и оставляет audit-запись `product.add`; `validate` наблюдает репозиторий через `RepositoryProvisioningPort`, который связывает composition root, и записывает `validating → ready | error` в одной транзакции. Коды выхода: `0` — `add` зарегистрировал или replay'нул, `validate` дал `ready`, `list`/`show` напечатали; `1` — `validate`: репозиторий недоступен (`error` записан с причиной) или само наблюдение упало (ничего не записано); `2` — неверный ввод, неизвестный продукт, порт провижининга не сконфигурирован (статус не меняется), недоступный store. Секреты не эхоятся: тексты исключений адаптера и URL store в вывод не попадают (ADR-009).
 
 `factory change *` (T073, T071, T074, ADR-033) — intake задачи для зарегистрированного продукта: репозиторий берётся из реестра, бриф — из флагов или JSON той же формы, что ответ `POST /briefs/formulate`; бриф без проблемы/цели сохраняется черновиком. Лимит — деньги в USD (копируется в `BudgetSnapshot.cost_budget` run). Обе команды завершаются блоком «Следующий шаг» — рендером `Guidance`, вычисленного ядром и отдаваемого `GET /changes/{id}/guidance`: CLI и Console показывают один и тот же шаг по построению. Коды выхода: `0` — создано/replay/показано; `2` — неверный ввод (лимит, бриф), неизвестный продукт или задача, недоступный store.
+
+`factory change answer | comment | rework | approve | artifacts` (T086, ADR-034/ADR-035) — операторская сторона цикла «вопрос → ответ → правка → сводка → согласовать / на доработку». Команды исполняют те же операции, что API (`orchestration/state/conversation_ops.py`, `orchestration/artifacts.py`), поэтому CLI и Console не расходятся; каждая завершается блоком «Следующий шаг». `answer` — ответ проверяется по типу вопроса (`choice` — только из вариантов, `number` — число); `comment` — замечание к фрагменту, привязанное к голове ветки изменения (замечание **не** запускает доработку); `rework` — явное поручение: одно на фазу одновременно, пишет `rejected` по гейту фазы; `approve` — согласование на текущей ревизии через прекондиции гейта (T087; `--waive` с `--comment` — пропуск фазы с основанием); `artifacts list|show|edit|diff|versions` — дерево, документ, правка (один коммит через `RepositoryPort.publish_commit`, конфликт по `--base-revision` — exit 1), diff и ревизии. Шов `repository` связывает `runtime.entrypoint`; без него `artifacts` отказывает (exit 2), а решения привязываются к `--revision`, названной оператором. Коды выхода: `0` — выполнено/replay; `1` — конфликт правки; `2` — неверный ввод, неизвестная задача/вопрос/комментарий, закрытый гейт, повторное поручение, недоступный store.
+
+`factory product bootstrap` (T069/M2, ADR-031 п.3) применяет baseline-паки (по умолчанию `product-baseline`) к репозиторию продукта одним коммитом в default-ветку через `RepositoryProvisioningPort.bootstrap_baseline`; replay по детерминированному ключу; без порта или с адаптером, не умеющим bootstrap (локальное зеркало), — exit 2; сбой адаптера — exit 1.
 
 ## Поведение и инварианты
 

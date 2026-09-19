@@ -175,7 +175,21 @@ def _stub(monkeypatch: pytest.MonkeyPatch, outcome: RunAdvanceOutcome) -> None:
     monkeypatch.setattr(runner_module, "RunStore", StubStore)
     monkeypatch.setattr(runner_module, "ChangeRepository", StubChanges)
     monkeypatch.setattr(runner_module, "advance_run", fake_advance)
+    _stub_conversation(monkeypatch)
     monkeypatch.delenv("DARK_FACTORY_RUNS_ROOT", raising=False)
+
+
+def _stub_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The M2 discussion seams (T080/T081) are store-backed; the stubbed store has none."""
+    monkeypatch.setattr(
+        runner_module, "load_conversation_inputs", lambda session, change_id, stage: None
+    )
+    monkeypatch.setattr(
+        runner_module, "with_store_facts", lambda gate_facts, session, change_id: gate_facts
+    )
+    monkeypatch.setattr(
+        runner_module, "record_stage_outcome", lambda session, advance, change_id: None
+    )
 
 
 def _last_store() -> StubStore:

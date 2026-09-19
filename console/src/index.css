@@ -642,3 +642,439 @@ details.profile summary {
   padding-left: var(--space-4);
   margin: 0;
 }
+
+/* --- ChangeSet workspace (T088–T090, ADR-037 p.4) --------------------------- */
+
+/* The workspace wants the width; the other screens keep the 1080px column. */
+.layout__main:has(.workspace) {
+  width: min(1480px, 100%);
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.workspace__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.workspace__title h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.workspace__facts {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  margin: var(--space-3) 0;
+}
+
+.workspace__facts dt {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+}
+
+.workspace__facts dd {
+  margin: 0;
+}
+
+.workspace__body {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 340px;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.workspace__body--collapsed {
+  grid-template-columns: 220px minmax(0, 1fr) 140px;
+}
+
+@media (max-width: 1100px) {
+  .workspace__body,
+  .workspace__body--collapsed {
+    grid-template-columns: 1fr;
+  }
+}
+
+.workspace__phases ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.phase-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.phase-item:hover {
+  background: var(--color-bg);
+}
+
+.phase-item--selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.phase-item__name {
+  font-weight: 600;
+}
+
+.phase-item__counts {
+  font-size: 12px;
+}
+
+.workspace__center {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.workspace__center-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.workspace__center-head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab {
+  font: inherit;
+  font-weight: 600;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.tab--active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.workspace__context {
+  position: sticky;
+  top: var(--space-4);
+  max-height: calc(100vh - 2 * var(--space-4));
+  overflow-y: auto;
+}
+
+.context__title {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+}
+
+.workspace__decision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.link-button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.anchor-chip {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.anchor-chip:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.anchors {
+  margin-top: var(--space-1);
+}
+
+.delta-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.delta-item {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.delta-item__path {
+  overflow-wrap: anywhere;
+}
+
+.question-card,
+.comment-card,
+.rework-card {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.question-card--assumption {
+  border-left-color: var(--color-info);
+}
+
+.rework-card {
+  border-left-color: var(--color-border-strong);
+}
+
+.question-card__text,
+.comment-card__body,
+.rework-card__instruction {
+  margin: 0;
+}
+
+.question-card__answer {
+  margin: 0;
+}
+
+.rework-card__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+
+.rework-card__summary h5 {
+  margin: 0 0 var(--space-1);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+}
+
+.rework-card__summary ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.rework-list {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+}
+
+.check {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin: var(--space-1) 0;
+}
+
+.rework-form,
+.approval-form {
+  padding: var(--space-3);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius);
+}
+
+/* --- markdown editor (T090, ADR-035) ---------------------------------------- */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.editor__modes {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.editor__save-state {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.editor__draft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.editor__document {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.editor__properties {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+}
+
+.editor__properties h4 {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+}
+
+.editor__properties input,
+.editor__properties select {
+  width: 100%;
+}
+
+.editor__lock {
+  margin-left: var(--space-1);
+}
+
+.editor__rendered {
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 80ch;
+}
+
+.editor__rendered h1 {
+  font-size: 22px;
+}
+
+.editor__rendered h2 {
+  font-size: 18px;
+}
+
+.editor__rendered table {
+  border-collapse: collapse;
+}
+
+.editor__rendered th,
+.editor__rendered td {
+  border: 1px solid var(--color-border);
+  padding: 2px var(--space-2);
+}
+
+.editor__rendered pre,
+.editor__rendered code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--color-bg);
+  border-radius: 4px;
+}
+
+.editor__textarea {
+  width: 100%;
+  min-height: 420px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.editor__selection {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--color-accent-soft);
+}
+
+.editor__commit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.editor__commit input[type="text"] {
+  flex: 1;
+  min-width: 200px;
+}
+
+.editor__conflict {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.editor__history h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.diff {
+  margin: 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+}

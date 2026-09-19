@@ -44,8 +44,10 @@ from dark_factory.changes.enums import DecisionOutcome, DecisionSource
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.intake import IntakeBrief
 from dark_factory.changes.run import Change
+from dark_factory.orchestration.artifacts import ArtifactService
 from dark_factory.orchestration.guidance import Guidance
 from dark_factory.orchestration.intake import BriefFormulator
+from dark_factory.orchestration.phase_gate import phase_of_gate
 from dark_factory.orchestration.state.change_store import (
     APPROVAL_RECORD_ACTION,
     CHANGE_BRIEF_ACTION,
@@ -54,7 +56,11 @@ from dark_factory.orchestration.state.change_store import (
     ChangeRepository,
     DecisionRepository,
 )
-from dark_factory.orchestration.state.guidance import build_change_guidance
+from dark_factory.orchestration.state.guidance import (
+    build_change_guidance,
+    build_phase_gate,
+    latest_run,
+)
 from dark_factory.orchestration.state.models import Change as ChangeRow
 from dark_factory.orchestration.state.models import Decision as DecisionRow
 from dark_factory.orchestration.state.models import Execution
@@ -64,12 +70,16 @@ def create_changes_router(
     session_dependency: Callable[..., Iterator[Session]],
     token_store: ApiTokenStore,
     brief_formulator: BriefFormulator | None = None,
+    artifacts: ArtifactService | None = None,
 ) -> APIRouter:
     """Build the ``/changes`` router with its auth dependencies.
 
     ``brief_formulator`` is the harness-backed «Помоги сформулировать» seam
     (T072); ``None`` (no ``DARK_FACTORY_LLM_*``) keeps the endpoint honest —
     it answers a ``draft`` brief whose ``error`` says the harness is absent.
+    ``artifacts`` (T087) binds ``Guidance`` and the approval preconditions to
+    the current revision of the change's artifacts; ``None`` leaves the
+    revision unknown.
     """
     SessionDep = Annotated[Session, Depends(session_dependency)]
     changes_write = require_write(token_store, SCOPE_CHANGES_WRITE)
@@ -84,6 +94,42 @@ def create_changes_router(
         if row is None:
             raise HTTPException(status_code=404, detail=f"Change {change_id!r} does not exist")
         return row
+
+    def _check_phase_gate(session: Session, change_row: ChangeRow, body: ApprovalRequest) -> None:
+        """Apply the phase gate preconditions to an approval (T087, ADR-032 p.4/p.5).
+
+        ``approved`` needs an available gate and a ``subject_revision`` that is
+        the current head (a stale revision never authorizes, ADR-009 p.7);
+        ``waived`` — the explicit skip of a phase — needs a stated reason;
+        ``rejected`` is always allowed (a send-back is never blocked).
+        """
+        if body.outcome == "rejected":
+            return
+        if body.outcome == "waived":
+            if not (body.comment or "").strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="a waived phase needs a reason: set comment (ADR-032 p.5)",
+                )
+            return
+        change = Change.model_validate(change_row.payload)
+        phase = phase_of_gate(body.gate)
+        gate = build_phase_gate(
+            session, change, phase=phase, run=latest_run(session, change.id), artifacts=artifacts
+        )
+        if not gate.available:
+            reasons = "; ".join(f"{reason.what} — {reason.how}" for reason in gate.reasons)
+            raise HTTPException(
+                status_code=409, detail=f"the {phase.value} gate is closed: {reasons}"
+            )
+        if gate.current_revision is not None and body.subject_revision != gate.current_revision:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"subject_revision {body.subject_revision} is not the current revision"
+                    f" {gate.current_revision}: reload and decide on what you see"
+                ),
+            )
 
     def _audit(
         token: ApiToken,
@@ -178,7 +224,7 @@ def create_changes_router(
         change = ChangeRepository(session).get(change_id)
         if change is None:
             raise HTTPException(status_code=404, detail=f"Change {change_id!r} does not exist")
-        return build_change_guidance(session, change)
+        return build_change_guidance(session, change, artifacts=artifacts)
 
     @router.get("/changes/{change_id}", response_model=ChangeCard)
     def get_change(change_id: str, session: SessionDep) -> ChangeCard:
@@ -242,6 +288,7 @@ def create_changes_router(
             and body.expected_state_revision != change_row.state_revision
         ):
             raise HTTPException(status_code=409, detail="state_revision mismatch")
+        _check_phase_gate(session, change_row, body)
         decision = Decision(
             id=f"dec_{uuid4().hex}",
             gate=body.gate,

@@ -23,6 +23,7 @@ from dark_factory.ports.agents import AgentResult, TaskEnvelope
 from dark_factory.ports.common import (
     ArtifactSpec,
     ChangeRequestObservation,
+    CommitInfo,
     HealthStatus,
     OpenChangeRequest,
     PipelineStatus,
@@ -70,6 +71,20 @@ class RepositoryPort(Protocol):
       commit lands on the branch's current head and the returned SHA is the
       revision the change request carries as ``head_sha``. Deletions are not
       expressible in the MVP file set: the role tools do not delete.
+
+    The three read methods (T082, ADR-035 p.1/p.2 — additive, like ``observe``
+    on ``MergeRequestPort``) are the read model of the document artifacts:
+    git is the source of truth of a document, so the factory reads it from
+    the repository at a revision instead of keeping a copy. Read-only — no
+    idempotency key, because a read mints no external effect (FR-017).
+
+    * ``read_file`` — the bytes of ``path`` at ``ref`` (a branch or a SHA); a
+      ref or a path that does not exist is a ``KeyError`` (404 = absent).
+    * ``list_tree`` — the file paths under ``prefix`` at ``ref``, sorted; an
+      absent ref is a ``KeyError``, an absent prefix an empty sequence.
+    * ``list_commits`` — the commits of ``ref`` that touched ``path`` (every
+      commit when ``path`` is ``None``), newest first; an absent ref is a
+      ``KeyError``, a path no commit touched an empty sequence.
     """
 
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str: ...
@@ -91,6 +106,13 @@ class RepositoryPort(Protocol):
         message: str,
         idempotency_key: str,
     ) -> str: ...
+    async def read_file(self, repository: RepositoryRef, ref: str, path: str, /) -> bytes: ...
+    async def list_tree(
+        self, repository: RepositoryRef, ref: str, /, *, prefix: str = ""
+    ) -> Sequence[str]: ...
+    async def list_commits(
+        self, repository: RepositoryRef, ref: str, /, *, path: str | None = None
+    ) -> Sequence[CommitInfo]: ...
 
 
 @runtime_checkable

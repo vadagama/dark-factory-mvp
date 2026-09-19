@@ -49,6 +49,9 @@ CONTRACT_STAGE_RESULT_FIELDS = {
     "release",
     "usage",
     "produced_at",
+    "questions",
+    "rework_summary",
+    "conversation_errors",
 }
 
 

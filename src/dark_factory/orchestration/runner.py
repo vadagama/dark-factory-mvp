@@ -72,6 +72,7 @@ from dark_factory.changes.run import (
     StageResult,
     StageRun,
 )
+from dark_factory.orchestration.conversations import ConversationInputs
 from dark_factory.orchestration.flow import FlowDecision, apply_result
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
@@ -443,6 +444,7 @@ def advance_run(
     release_facts: ReleaseFactsProvider | None = None,
     lease_ttl: timedelta = DEFAULT_LEASE_TTL,
     now: datetime | None = None,
+    conversation: ConversationInputs | None = None,
 ) -> RunAdvance:
     """Advance ``run_id`` by exactly one stage decision, inside the caller's transaction.
 
@@ -487,6 +489,11 @@ def advance_run(
     providers the behaviour is unchanged for every input. The observed gate
     approvals are folded into ``human_decisions`` for the flow's control-point
     checks (T-080) and the merge authorization (ADR-011 p.2).
+
+    ``conversation`` is the discussion of the phase the executed stage belongs
+    to (T080, ADR-034 p.5) — answers, open comments, the pending rework order —
+    handed to the stage context as typed inputs; the driver reads none of it
+    itself (the CLI assembles it from the store).
 
     Raises :class:`RunNotFoundError` for an unknown run and
     :class:`RunNotAdvanceableError` for a terminal one; a flow violation
@@ -579,6 +586,7 @@ def advance_run(
         attempt_number=attempt_number,
         risk_class=effective_change_risk_class(run.implementation_contract, run.route),
         implementation_contract=run.implementation_contract,
+        conversation=conversation,
     )
     result = stage_executor(context)
     decision = apply_result(

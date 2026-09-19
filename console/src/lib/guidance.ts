@@ -8,7 +8,10 @@
 
 import type { GuidanceActor, GuidanceSubject } from "../api/types";
 
-/** Actions the Console can perform itself in M1 (the rest is CLI). */
+/**
+ * Actions the Console can perform itself (M1 + the M2 ChangeSet workspace);
+ * the rest — run advance/withdraw — is CLI until M4.
+ */
 export type ConsoleAction =
   | { kind: "validate_product"; productId: string }
   | { kind: "reload_product"; productId: string }
@@ -16,7 +19,14 @@ export type ConsoleAction =
   | { kind: "edit_brief"; changeId: string }
   | { kind: "open_change"; changeId: string }
   | { kind: "open_run"; runId: string }
-  | { kind: "open_gates"; changeId: string };
+  /** `POST /changes/{id}/approvals` — the phase approval form (T088 decision panel). */
+  | { kind: "approve_phase"; changeId: string }
+  /** `POST /changes/{id}/rework-orders` — the send-back form (T089). */
+  | { kind: "rework"; changeId: string }
+  /** `GET /changes/{id}/questions?status=open` — focus the open questions (T089). */
+  | { kind: "focus_questions"; changeId: string }
+  /** `GET /changes/{id}/artifacts` — open the artifacts of the phase (T089). */
+  | { kind: "open_artifacts"; changeId: string };
 
 const PATTERNS: [RegExp, (match: RegExpMatchArray, subject: GuidanceSubject) => ConsoleAction][] = [
   [/^POST \/products\/([^/\s]+)\/validate$/, (m) => ({ kind: "validate_product", productId: m[1] })],
@@ -28,7 +38,10 @@ const PATTERNS: [RegExp, (match: RegExpMatchArray, subject: GuidanceSubject) => 
   [/^PUT \/changes\/([^/\s]+)\/brief$/, (m) => ({ kind: "edit_brief", changeId: m[1] })],
   [/^GET \/changes\/([^/\s]+)$/, (m) => ({ kind: "open_change", changeId: m[1] })],
   [/^GET \/runs\/([^/\s]+)$/, (m) => ({ kind: "open_run", runId: m[1] })],
-  [/^POST \/changes\/([^/\s]+)\/approvals$/, (m) => ({ kind: "open_gates", changeId: m[1] })],
+  [/^POST \/changes\/([^/\s]+)\/approvals$/, (m) => ({ kind: "approve_phase", changeId: m[1] })],
+  [/^POST \/changes\/([^/\s]+)\/rework-orders$/, (m) => ({ kind: "rework", changeId: m[1] })],
+  [/^GET \/changes\/([^/\s]+)\/questions(?:\?status=open)?$/, (m) => ({ kind: "focus_questions", changeId: m[1] })],
+  [/^GET \/changes\/([^/\s]+)\/artifacts$/, (m) => ({ kind: "open_artifacts", changeId: m[1] })],
 ];
 
 /**

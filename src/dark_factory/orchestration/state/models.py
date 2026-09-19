@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -32,12 +33,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from dark_factory.changes.clock import utc_now
 from dark_factory.changes.enums import (
+    AnswerKind,
     ChangeSource,
+    CommentStatus,
     DecisionOutcome,
     DecisionSource,
     Gate,
+    Phase,
     ProductStatus,
     Provider,
+    QuestionStatus,
+    ReworkOrderStatus,
     RiskClass,
     Route,
     RunStatus,
@@ -67,6 +73,11 @@ RISK_CLASS_VALUES: Final = _values(RiskClass)
 GATE_VALUES: Final = _values(Gate)
 DECISION_OUTCOME_VALUES: Final = _values(DecisionOutcome)
 DECISION_SOURCE_VALUES: Final = _values(DecisionSource)
+PHASE_VALUES: Final = _values(Phase)
+ANSWER_KIND_VALUES: Final = _values(AnswerKind)
+QUESTION_STATUS_VALUES: Final = _values(QuestionStatus)
+COMMENT_STATUS_VALUES: Final = _values(CommentStatus)
+REWORK_ORDER_STATUS_VALUES: Final = _values(ReworkOrderStatus)
 RESULT_STATUS_VALUES: Final = ", ".join(
     f"'{member.value}'" for member in StageStatus if member in _RESULT_STATUSES
 )
@@ -446,6 +457,134 @@ class AuditLogEntry(Base):
     )
 
 
+class Question(Base):
+    """An agent question of a change (T078, ADR-034 p.1).
+
+    ``payload`` carries the full ``Question`` document; ``change_id``, ``phase``,
+    ``status``, ``artifact`` and ``blocking`` are denormalized for the gate
+    preconditions and the Console lists (T087).
+    """
+
+    __tablename__ = "question"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    change_id: Mapped[str] = mapped_column(ForeignKey("change.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(128))
+    phase: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default=QuestionStatus.OPEN.value)
+    blocking: Mapped[bool] = mapped_column(Boolean, default=True)
+    artifact: Mapped[str | None] = mapped_column(String(512))
+    anchor_id: Mapped[str | None] = mapped_column(String(256))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    asked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"phase IN ({PHASE_VALUES})", name="phase_allowed"),
+        CheckConstraint(f"kind IN ({ANSWER_KIND_VALUES})", name="kind_allowed"),
+        CheckConstraint(f"status IN ({QUESTION_STATUS_VALUES})", name="status_allowed"),
+    )
+
+
+class Comment(Base):
+    """An operator comment anchored to an artifact fragment (T079, ADR-034 p.1)."""
+
+    __tablename__ = "comment"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    change_id: Mapped[str] = mapped_column(ForeignKey("change.id", ondelete="CASCADE"), index=True)
+    phase: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default=CommentStatus.OPEN.value)
+    artifact: Mapped[str] = mapped_column(String(512))
+    anchor_id: Mapped[str | None] = mapped_column(String(256))
+    anchor_revision: Mapped[str | None] = mapped_column(String(128))
+    rework_order_id: Mapped[str | None] = mapped_column(String(128))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"phase IN ({PHASE_VALUES})", name="phase_allowed"),
+        CheckConstraint(f"status IN ({COMMENT_STATUS_VALUES})", name="status_allowed"),
+    )
+
+
+class ReworkOrder(Base):
+    """A rework order of a change (T079/T081, ADR-034 p.3)."""
+
+    __tablename__ = "rework_order"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    change_id: Mapped[str] = mapped_column(ForeignKey("change.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(128))
+    phase: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default=ReworkOrderStatus.PENDING.value)
+    round: Mapped[int | None] = mapped_column(Integer)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"phase IN ({PHASE_VALUES})", name="phase_allowed"),
+        CheckConstraint(f"status IN ({REWORK_ORDER_STATUS_VALUES})", name="status_allowed"),
+        CheckConstraint("round IS NULL OR round >= 1", name="round_positive"),
+    )
+
+
+class ArtifactDraft(Base):
+    """Autosave draft of one artifact of a change, outside git (T085, ADR-035 p.4).
+
+    One row per ``(change_id, artifact)``: a draft is the current unsaved state,
+    not a history — the history is git's.
+    """
+
+    __tablename__ = "artifact_draft"
+
+    change_id: Mapped[str] = mapped_column(
+        ForeignKey("change.id", ondelete="CASCADE"), primary_key=True
+    )
+    artifact: Mapped[str] = mapped_column(String(512), primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    base_revision: Mapped[str | None] = mapped_column(String(128))
+    saved_by: Mapped[str] = mapped_column(String(128))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+
+class ArtifactView(Base):
+    """«Просмотрено» of one artifact revision by the operator (T080, ADR-034 p.2).
+
+    A view mark is not a decision: it lives in its own table so nothing can
+    read it as an approval (ADR-009 p.7).
+    """
+
+    __tablename__ = "artifact_view"
+
+    change_id: Mapped[str] = mapped_column(
+        ForeignKey("change.id", ondelete="CASCADE"), primary_key=True
+    )
+    artifact: Mapped[str] = mapped_column(String(512), primary_key=True)
+    revision: Mapped[str] = mapped_column(String(128), primary_key=True)
+    viewed_by: Mapped[str] = mapped_column(String(128))
+    viewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+
 ALL_MODELS: Final[tuple[type[Base], ...]] = (
     Execution,
     Stage,
@@ -460,4 +599,9 @@ ALL_MODELS: Final[tuple[type[Base], ...]] = (
     Decision,
     StageResult,
     AuditLogEntry,
+    Question,
+    Comment,
+    ReworkOrder,
+    ArtifactDraft,
+    ArtifactView,
 )

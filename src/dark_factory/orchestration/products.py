@@ -16,16 +16,23 @@ callers refuse instead of inventing a status (ADR-031 p.6).
 """
 
 import asyncio
+from collections.abc import Sequence
 from typing import Final
 
 from dark_factory.changes.enums import ProductStatus
 from dark_factory.changes.product import Product
 from dark_factory.orchestration.state.change_store import ProductRepository
-from dark_factory.ports import RepositoryProvisioningPort, RepositoryState, RepositoryValidation
+from dark_factory.ports import (
+    BaselineBootstrapResult,
+    RepositoryProvisioningPort,
+    RepositoryState,
+    RepositoryValidation,
+)
 
 __all__ = [
     "PROVISIONING_UNCONFIGURED_DETAIL",
     "UNAVAILABLE_REASON",
+    "bootstrap_baseline",
     "observe_repository",
     "product_readiness",
     "record_validation",
@@ -78,4 +85,24 @@ def record_validation(
         )
     return repository.update_status(
         product.id, target, expected_revision=product.state_revision, reason=reason
+    )
+
+
+def bootstrap_baseline(
+    provisioning: RepositoryProvisioningPort,
+    product: Product,
+    *,
+    packs: Sequence[str],
+    idempotency_key: str,
+) -> BaselineBootstrapResult:
+    """Apply ``packs`` to the product repository once (T069, ADR-031 p.3); shared by API and CLI.
+
+    Replay-dedup by ``idempotency_key`` is the port's contract; an adapter that
+    cannot bootstrap raises ``ProvisioningOperationUnsupportedError``, which the
+    callers turn into a refusal instead of an invented baseline (ADR-031 p.6).
+    """
+    return asyncio.run(
+        provisioning.bootstrap_baseline(
+            product.repository, packs=tuple(packs), idempotency_key=idempotency_key
+        )
     )

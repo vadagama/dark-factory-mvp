@@ -14,6 +14,7 @@ from typing import Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dark_factory.changes.clock import utc_now
+from dark_factory.changes.conversations import QuestionDraft, ReworkSummary
 from dark_factory.changes.enums import (
     ChangeSource,
     FindingSeverity,
@@ -26,6 +27,7 @@ from dark_factory.changes.enums import (
     Stage,
     StageStatus,
 )
+from dark_factory.changes.errors import InvalidStatusTransition as InvalidStatusTransition
 from dark_factory.changes.escalations import EscalationViolation
 from dark_factory.changes.findings import Finding, GateResult
 from dark_factory.changes.implementation_contract import ImplementationContract
@@ -148,10 +150,6 @@ _RESULT_STATUSES: Final[frozenset[StageStatus]] = frozenset(
         StageStatus.BLOCKED,
     }
 )
-
-
-class InvalidStatusTransition(ValueError):
-    """A status pair outside the transition table was requested."""
 
 
 class Change(BaseModel):
@@ -292,6 +290,14 @@ class StageResult(BaseModel):
     defaults to ``None``) and older readers ignore the new key, so
     ``schema_version`` stays ``1``."""
     usage: Usage | None = None
+    questions: list[QuestionDraft] = []
+    """Questions the agent stated in this attempt (T078, ADR-034 p.5): additive and
+    optional like ``release`` — the runner stores them as ``Question`` entities of
+    the change; records written before it parse unchanged (schema version 1)."""
+    rework_summary: ReworkSummary | None = None
+    """The agent's "what changed / what remains" report after a rework round (T081)."""
+    conversation_errors: list[str] = []
+    """Malformed entries of the agent's structured blocks — observable, never dropped silently."""
     produced_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("status")

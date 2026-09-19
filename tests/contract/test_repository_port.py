@@ -194,3 +194,93 @@ def test_publish_commit_requires_an_existing_branch(
                 repository, "feat/missing", CHANGES, message="m", idempotency_key="c1"
             )
         )
+
+
+# --- read model of the document artifacts (T082, ADR-035) -----------------------------
+
+
+def _publish(repository_port: RepositoryPort, repository: RepositoryRef) -> tuple[str, str]:
+    """Two commits on ``feat/docs``: the second changes one file and adds another."""
+    asyncio.run(
+        repository_port.ensure_branch(
+            repository, "feat/docs", from_revision=REVISION, idempotency_key="rb-1"
+        )
+    )
+    first = asyncio.run(
+        repository_port.publish_commit(
+            repository,
+            "feat/docs",
+            {".factory/changes/2026/CHG-1/spec/requirements/REQ-001.md": b"# v1\n"},
+            message="spec v1",
+            idempotency_key="rc-1",
+        )
+    )
+    second = asyncio.run(
+        repository_port.publish_commit(
+            repository,
+            "feat/docs",
+            {
+                ".factory/changes/2026/CHG-1/spec/requirements/REQ-001.md": b"# v2\n",
+                ".factory/changes/2026/CHG-1/intent.md": b"intent\n",
+            },
+            message="spec v2",
+            idempotency_key="rc-2",
+        )
+    )
+    return first, second
+
+
+def test_read_file_returns_the_bytes_at_a_branch_or_a_sha(
+    repository_port: RepositoryPort, repository: RepositoryRef
+) -> None:
+    first, _second = _publish(repository_port, repository)
+    path = ".factory/changes/2026/CHG-1/spec/requirements/REQ-001.md"
+    assert asyncio.run(repository_port.read_file(repository, "feat/docs", path)) == b"# v2\n"
+    assert asyncio.run(repository_port.read_file(repository, first, path)) == b"# v1\n"
+
+
+def test_read_file_of_a_missing_path_or_ref_is_a_keyerror(
+    repository_port: RepositoryPort, repository: RepositoryRef
+) -> None:
+    _publish(repository_port, repository)
+    with pytest.raises(KeyError):
+        asyncio.run(repository_port.read_file(repository, "feat/docs", "nope.md"))
+    with pytest.raises(KeyError):
+        asyncio.run(repository_port.read_file(repository, "feat/missing", "intent.md"))
+
+
+def test_list_tree_filters_by_prefix_and_sorts(
+    repository_port: RepositoryPort, repository: RepositoryRef
+) -> None:
+    _publish(repository_port, repository)
+    paths = asyncio.run(
+        repository_port.list_tree(repository, "feat/docs", prefix=".factory/changes/")
+    )
+    assert list(paths) == [
+        ".factory/changes/2026/CHG-1/intent.md",
+        ".factory/changes/2026/CHG-1/spec/requirements/REQ-001.md",
+    ]
+    assert (
+        list(asyncio.run(repository_port.list_tree(repository, "feat/docs", prefix="src/"))) == []
+    )
+    with pytest.raises(KeyError):
+        asyncio.run(repository_port.list_tree(repository, "feat/missing"))
+
+
+def test_list_commits_newest_first_and_filtered_by_path(
+    repository_port: RepositoryPort, repository: RepositoryRef
+) -> None:
+    first, second = _publish(repository_port, repository)
+    everything = asyncio.run(repository_port.list_commits(repository, "feat/docs"))
+    assert [commit.sha for commit in everything][:2] == [second, first]
+    assert everything[0].message.startswith("spec v2")
+    only_intent = asyncio.run(
+        repository_port.list_commits(
+            repository, "feat/docs", path=".factory/changes/2026/CHG-1/intent.md"
+        )
+    )
+    assert [commit.sha for commit in only_intent] == [second]
+    untouched = asyncio.run(repository_port.list_commits(repository, "feat/docs", path="none.md"))
+    assert list(untouched) == []
+    with pytest.raises(KeyError):
+        asyncio.run(repository_port.list_commits(repository, "feat/missing"))

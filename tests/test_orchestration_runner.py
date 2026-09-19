@@ -13,12 +13,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from dark_factory.changes.conversations import ReworkOrder, ReworkSummary
 from dark_factory.changes.enums import (
     ChangeRequestStatus,
     FindingOrigin,
     FindingSeverity,
     Gate,
     GateStatus,
+    Phase,
     RunStatus,
     Stage,
     StageStatus,
@@ -1656,3 +1658,99 @@ def test_construction_advances_once_the_contract_is_approved() -> None:
     assert isinstance(advance.result.next_action, WaitForInputAction)
     [planning] = [stage for stage in run.stages if stage.stage is Stage.PLANNING]
     assert planning.status is StageStatus.SUCCEEDED
+
+
+# --- rework orders on a human-gated stage (T081, ADR-034 p.3) -----------------------
+
+
+def _rework_order(order_id: str, revision: str, *comment_ids: str) -> ReworkOrder:
+    return ReworkOrder(
+        id=order_id,
+        change_id="chg-001",
+        phase=Phase.REQUIREMENTS,
+        revisions={"spec/requirements/REQ-001.md": revision},
+        comment_ids=tuple(comment_ids),
+        issued_by="alice",
+    )
+
+
+def test_advance_run_turns_a_pending_rework_order_into_a_rework_round() -> None:
+    """The operator's send-back resolves the waiting spec stage into a rework round."""
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            rework_orders=(_rework_order("rw_1", HEAD, "cmt_1"),),
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    # A rework round is an advance into the rework target: the run is running again.
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.result.status is StageStatus.FAILED
+    assert advance.decision is not None
+    assert isinstance(advance.decision.action, ReworkAction)
+    assert advance.decision.action.round == 1
+    assert "cmt_1" in advance.decision.action.reason
+    # The round is spent on the run budget and the stage re-enters itself: the
+    # failed stage run is retryable (ADR-006 p.7), so the next advance opens the
+    # next attempt at the revision the round advances.
+    assert run.budget.used_rework_rounds == 1
+    assert advance.decision.next_stage is Stage.SPECIFICATION
+    assert [stage.status for stage in run.stages] == [StageStatus.FAILED]
+    assert run.status is RunStatus.RUNNING
+
+
+def test_advance_run_escalates_a_rework_order_when_the_limit_is_exhausted() -> None:
+    """An exhausted rework limit refuses the round and blocks with the loop's reason."""
+    run = make_run()
+    run.budget.used_rework_rounds = run.budget.max_rework_rounds
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            rework_orders=(_rework_order("rw_1", HEAD, "cmt_1"),),
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.BLOCKED
+    assert advance.decision is not None
+    assert isinstance(advance.decision.action, StopAction)
+    assert "rework limit exhausted" in advance.decision.action.reason
+    assert run.status is RunStatus.BLOCKED
+
+
+def test_a_done_rework_order_does_not_resolve_the_wait() -> None:
+    """Only a *pending* order is a send-back; history alone leaves the stage parked."""
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    done = _rework_order("rw_1", "older", "cmt_1")
+    done.start(round=1, run_id=run.id)
+    done.finish(ReworkSummary(changed=("x",)))
+    facts = FakeFacts(
+        GateObservation(head_sha=HEAD, merged=False, pipeline_status=None, rework_orders=(done,))
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED

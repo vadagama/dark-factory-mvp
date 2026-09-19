@@ -7,17 +7,19 @@ so the API wire format equals the versioned run-record contracts (ADR-015).
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from dark_factory.changes.enums import Gate
+from dark_factory.changes.conversations import ArtifactAnchor, Comment
+from dark_factory.changes.enums import AnchorState, AnswerKind, Gate, Phase
 from dark_factory.changes.findings import GateResult
 from dark_factory.changes.product import Product
 from dark_factory.changes.refs import ArtifactRef, RepositoryRef
 from dark_factory.changes.run import Change
+from dark_factory.context.artifacts import ArtifactDocument, ArtifactTree
 from dark_factory.orchestration.ci import CiStage, CiStageGroup, CiStageWeight
-from dark_factory.ports import RepositoryValidation
+from dark_factory.ports import BaselineBootstrapResult, RepositoryValidation
 
 
 class ErrorBody(BaseModel):
@@ -232,3 +234,154 @@ class ProductValidationView(Product):
     """
 
     validation: RepositoryValidation | None = None
+
+
+# --- conversations (T086, ADR-034) --------------------------------------------------
+
+
+class QuestionCreateRequest(BaseModel):
+    """Body of ``POST /changes/{change_id}/questions``: a question as the agent states it.
+
+    ``phase`` defaults to the phase of the change's latest run; ``anchor`` is
+    ``{artifact, anchor_id, revision}`` (ADR-034 p.1).
+    """
+
+    text: str = Field(min_length=1)
+    kind: AnswerKind = AnswerKind.TEXT
+    options: list[str] = Field(default_factory=list)
+    anchor: ArtifactAnchor | None = None
+    blocking: bool = True
+    phase: Phase | None = None
+    run_id: str | None = None
+
+
+class AnswerRequest(BaseModel):
+    """Body of ``POST /changes/{change_id}/questions/{question_id}/answer``."""
+
+    value: str = Field(min_length=1)
+    comment: str | None = None
+
+
+class CommentCreateRequest(BaseModel):
+    """Body of ``POST /changes/{change_id}/comments``: a remark anchored to a fragment.
+
+    ``revision`` defaults to the current head of the change branch when a
+    repository is bound, so the anchor is version-bound (ADR-034 p.1).
+    """
+
+    artifact: str = Field(min_length=1)
+    anchor_id: str | None = None
+    revision: str | None = None
+    body: str = Field(min_length=1)
+    phase: Phase | None = None
+
+
+class CommentNoteRequest(BaseModel):
+    """Body of ``POST .../comments/{comment_id}/addressed``: the agent's optional note."""
+
+    note: str | None = None
+
+
+class CommentView(Comment):
+    """A comment plus the read-model state of its anchor at the current revision."""
+
+    anchor_state: AnchorState = AnchorState.ATTACHED
+
+
+class ReworkOrderRequest(BaseModel):
+    """Body of ``POST /changes/{change_id}/rework-orders``: the send-back (ADR-034 p.2/p.3).
+
+    The order carries the comments and the answered questions it names plus a
+    free-text instruction; at least one of them is required. ``expected_revision``
+    turns the send-back into an optimistic check against the current head.
+    """
+
+    phase: Phase | None = None
+    comment_ids: list[str] = Field(default_factory=list)
+    question_ids: list[str] = Field(default_factory=list)
+    instruction: str | None = None
+    expected_revision: str | None = None
+
+
+# --- artifacts (T082-T085, ADR-035) ----------------------------------------------------
+
+
+class ArtifactDraftView(BaseModel):
+    """The autosave draft of one artifact and whether its base is behind the head."""
+
+    change_id: str
+    artifact: str
+    content: str
+    base_revision: str | None
+    saved_by: str
+    updated_at: datetime
+    stale: bool = False
+    """``True`` when the branch head moved away from ``base_revision`` (ADR-035 p.4)."""
+
+
+class ArtifactTreeView(ArtifactTree):
+    """Response of ``GET /changes/{change_id}/artifacts``: the tree plus the draft paths."""
+
+    drafts: list[str] = Field(default_factory=list)
+
+
+class ArtifactDocumentView(ArtifactDocument):
+    """Response of ``GET /changes/{change_id}/artifacts/{path}``: the document and its context."""
+
+    draft: ArtifactDraftView | None = None
+    viewed: bool = False
+    """The operator viewed *this* revision («просмотрено» ≠ «согласовано», ADR-034 p.2)."""
+    open_comments: int = 0
+    open_questions: int = 0
+
+
+class ArtifactEditRequest(BaseModel):
+    """Body of ``PUT /changes/{change_id}/artifacts/{path}``: the whole new content.
+
+    ``base_revision`` is the revision the operator edited from; a head that
+    changed the file since is a 409 (ADR-035 p.3). ``properties`` optionally
+    replaces frontmatter values on top of ``content`` — protected keys are
+    refused with 422 (ADR-035 p.5).
+    """
+
+    content: str
+    base_revision: str | None = None
+    message: str | None = None
+    properties: dict[str, Any] | None = None
+
+
+class ArtifactWriteView(BaseModel):
+    """Response of ``PUT .../artifacts/{path}``: the new revision and the staleness effects."""
+
+    path: str
+    revision: str
+    previous_revision: str | None
+    created_commit: bool
+    stale_questions: list[str] = Field(default_factory=list)
+    detached_comments: list[str] = Field(default_factory=list)
+
+
+class ArtifactDraftRequest(BaseModel):
+    """Body of ``PUT /changes/{change_id}/artifact-drafts/{path}`` (autosave, ADR-035 p.4)."""
+
+    content: str
+    base_revision: str | None = None
+
+
+class ArtifactViewRequest(BaseModel):
+    """Body of ``POST /changes/{change_id}/artifact-views/{path}``: the revision viewed."""
+
+    revision: str = Field(min_length=1)
+
+
+class ProductBootstrapRequest(BaseModel):
+    """Body of ``POST /products/{product_id}/bootstrap``: the baseline packs to apply (T069)."""
+
+    packs: list[str] = Field(default_factory=lambda: ["product-baseline"])
+
+
+class ProductBootstrapView(BaseModel):
+    """Response of ``POST /products/{product_id}/bootstrap``: the product and the evidence."""
+
+    product: Product
+    result: BaselineBootstrapResult

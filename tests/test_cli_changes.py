@@ -22,6 +22,7 @@ from dark_factory.changes.run import Change
 from dark_factory.cli._common import CLI_ACTOR
 from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ChangeCreateArgs, ChangeStatusArgs
 from dark_factory.orchestration.guidance import change_guidance
+from dark_factory.orchestration.phase_gate import phase_gate
 from dark_factory.orchestration.state.change_store import CHANGE_INTAKE_ACTION
 from tests.changes_factories import make_product
 
@@ -75,6 +76,21 @@ class StubChanges:
         return StubChanges.changes.get(change_id)
 
 
+class StubConversations:
+    """No discussion yet: every list is empty (the M2 status report stays silent)."""
+
+    def __init__(self, session: StubSession) -> None: ...
+
+    def list_questions(self, change_id: str, **filters: Any) -> list[Any]:
+        return []
+
+    def list_comments(self, change_id: str, **filters: Any) -> list[Any]:
+        return []
+
+    def list_rework_orders(self, change_id: str, **filters: Any) -> list[Any]:
+        return []
+
+
 class StubAudit:
     rows: ClassVar[list[dict[str, Any]]] = []
 
@@ -97,10 +113,18 @@ def _stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(changes_module, "ChangeRepository", StubChanges)
     monkeypatch.setattr(changes_module, "AuditRepository", StubAudit)
     monkeypatch.setattr(changes_module, "latest_run", lambda session, change_id: None)
+    monkeypatch.setattr(changes_module, "ConversationRepository", StubConversations)
+    monkeypatch.setattr(
+        changes_module,
+        "build_phase_gate",
+        lambda session, change, *, phase, run, artifacts: phase_gate(
+            change_id=change.id, phase=phase, current_revision=None, revision_observable=False
+        ),
+    )
     monkeypatch.setattr(
         changes_module,
         "build_change_guidance",
-        lambda session, change: change_guidance(
+        lambda session, change, artifacts=None: change_guidance(
             change, product=StubProducts.products.get(change.product_id or ""), run=None
         ),
     )
@@ -321,7 +345,18 @@ def test_status_json_shape(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert code == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
-    assert set(payload) == {"change", "run", "guidance"}
+    assert set(payload) == {
+        "change",
+        "run",
+        "questions",
+        "comments",
+        "rework_orders",
+        "phase_gate",
+        "guidance",
+    }
+    assert (
+        payload["questions"] == [] and payload["comments"] == [] and payload["rework_orders"] == []
+    )
     assert payload["run"] is None
     assert payload["guidance"]["headline"] == "Задача готова к фазе «Требования»"
 
