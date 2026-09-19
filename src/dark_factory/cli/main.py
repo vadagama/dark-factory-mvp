@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     # Type-only: the CLI is core and must not pull the driver (or anything it
     # imports) into the import of the command tree. The seams arrive as values.
     from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
-    from dark_factory.ports import CiStageTogglePort
+    from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
 
 # Exit codes of the CLI (contract cli.md).
 EXIT_OK = 0
@@ -790,12 +790,15 @@ def _serve_api(
     *,
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
+    provisioning: "RepositoryProvisioningPort | None" = None,
 ) -> int:
     # Imported here: cli.api imports ApiServeArgs and the exit codes from this
     # module, so a module-level import would be circular.
     from dark_factory.cli import api
 
-    return api.run_api_serve_command(args, ci_toggles=ci_toggles, ci_repository=ci_repository)
+    return api.run_api_serve_command(
+        args, ci_toggles=ci_toggles, ci_repository=ci_repository, provisioning=provisioning
+    )
 
 
 def _release_verify(args: ReleaseVerifyArgs) -> int:
@@ -814,16 +817,18 @@ def dispatch(
     gate_facts: "FactsProvider | None" = None,
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
+    provisioning: "RepositoryProvisioningPort | None" = None,
 ) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree).
 
     ``executor``, ``revision_of`` and ``gate_facts`` are the optional binding
     seams of ``factory run advance`` and are consumed only by that branch;
     ``ci_toggles``/``ci_repository`` are the CI stage switchboard seam of
-    ``factory api serve`` (T059). They are values, not imports: this module is
+    ``factory api serve`` (T059), and ``provisioning`` its product-validation
+    seam (T066). They are values, not imports: this module is
     core and must not name ``dark_factory.runtime`` (ADR-024 p.5), so the
     composition root (``runtime.entrypoint``) hands the assembled bindings over
-    as arguments. Every other command ignores them, and all five default to
+    as arguments. Every other command ignores them, and all of them default to
     ``None`` — the deterministic stage path and the unconfigured API, as before.
     """
     match command:
@@ -852,7 +857,12 @@ def dispatch(
         case DoctorArgs():
             return _doctor(command)
         case ApiServeArgs():
-            return _serve_api(command, ci_toggles=ci_toggles, ci_repository=ci_repository)
+            return _serve_api(
+                command,
+                ci_toggles=ci_toggles,
+                ci_repository=ci_repository,
+                provisioning=provisioning,
+            )
         case ReleaseVerifyArgs():
             return _release_verify(command)
         case _:
@@ -867,13 +877,15 @@ def main(
     gate_facts: "FactsProvider | None" = None,
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
+    provisioning: "RepositoryProvisioningPort | None" = None,
 ) -> int:
     """Run one command from ``argv``; return the process exit code.
 
     Not the console-script target any more: ``factory`` points at
     ``dark_factory.runtime.entrypoint:main``, the composition root that assembles
     the runtime and passes ``executor``/``revision_of``/``gate_facts`` (ADR-025)
-    and the CI stage switchboard (``ci_toggles``/``ci_repository``, T059). This
+    and the CI stage switchboard (``ci_toggles``/``ci_repository``, T059) plus the
+    provisioning seam (``provisioning``, T066). This
     function stays the command tree's own entry point, usable without seams —
     ``python -m dark_factory.cli`` is the explicit core path, and both the
     wrapper and ``__main__.py`` raise ``SystemExit`` with the returned code.
@@ -891,4 +903,5 @@ def main(
         gate_facts=gate_facts,
         ci_toggles=ci_toggles,
         ci_repository=ci_repository,
+        provisioning=provisioning,
     )

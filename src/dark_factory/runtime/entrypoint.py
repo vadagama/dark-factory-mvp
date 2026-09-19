@@ -72,6 +72,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 argv,
                 ci_toggles=runtime.ci_stage_toggles,
                 ci_repository=runtime.ci_repository,
+                provisioning=runtime.provisioning,
             )
         finally:
             asyncio.run(runtime.aclose())

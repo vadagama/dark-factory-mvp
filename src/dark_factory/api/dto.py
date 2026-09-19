@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field
 
 from dark_factory.changes.enums import Gate
 from dark_factory.changes.findings import GateResult
-from dark_factory.changes.refs import ArtifactRef
+from dark_factory.changes.product import Product
+from dark_factory.changes.refs import ArtifactRef, RepositoryRef
 from dark_factory.changes.run import Change
 from dark_factory.ci.stages import CiStage, CiStageGroup, CiStageWeight
+from dark_factory.ports import RepositoryValidation
 
 
 class ErrorBody(BaseModel):
@@ -185,3 +187,42 @@ class CiStageToggleRequest(BaseModel):
     """
 
     enabled: bool = Field(strict=True)
+
+
+class ProductCreateRequest(BaseModel):
+    """Body of ``POST /products`` (T066, ADR-030 p.1, contract api.md).
+
+    ``id`` is client-chosen like the change id, so registration replays by it and
+    a retry cannot create a second product (FR-017). Readiness is observed, never
+    submitted: ``status``, ``state_revision`` and ``created_at`` belong to the
+    server.
+    """
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    repository: RepositoryRef
+    description: str | None = None
+    repository_url: str | None = None
+    baseline_ref: str | None = None
+    dev_env_ref: str | None = None
+
+
+class ProductValidateRequest(BaseModel):
+    """Body of ``POST /products/{product_id}/validate`` (T066, contract api.md).
+
+    ``expected_state_revision`` turns the transition into an optimistic-concurrency
+    check (ADR-006 p.4); absent means "validate whatever is current".
+    """
+
+    expected_state_revision: int | None = None
+
+
+class ProductValidationView(Product):
+    """Response of ``POST /products/{product_id}/validate``: the product plus the observation.
+
+    ``validation`` is the raw provisioning result (ADR-031 p.4): the status is the
+    coarse ``ready``/``error`` outcome, while this field keeps the observed state
+    (empty repository, baseline absent/current/stale) and the revision.
+    """
+
+    validation: RepositoryValidation | None = None

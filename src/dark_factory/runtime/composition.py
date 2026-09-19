@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from dark_factory.adapters.harness import HarnessConfig, PydanticAIHarness
+from dark_factory.adapters.provisioning import LocalMirror, LocalMirrorConfig
 from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, TokenProvider
 from dark_factory.adapters.scm.github.config import DEFAULT_API_BASE_URL
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter, TelemetryConfig
@@ -60,6 +61,7 @@ from dark_factory.ports import (
     HarnessPort,
     MergeRequestPort,
     RepositoryPort,
+    RepositoryProvisioningPort,
     TelemetryPort,
 )
 from dark_factory.runtime.facts import ScmFactsProvider
@@ -156,6 +158,9 @@ class Runtime:
     gitops_base_ref: str = DEFAULT_TARGET_BRANCH
     harness_config: HarnessConfig | None = None
     execution: ExecutionPort | None = None
+    provisioning: RepositoryProvisioningPort | None = None
+    """Repository-provisioning port of product validation (T066, ADR-031);
+    ``None`` while no mirror root is configured."""
     descriptions: PrDescriptionRenderer | None = None
     """Renderer of change-request bodies; ``None`` lets the executor fall back
     to the packaged default template (``templates/pr-description.md``)."""
@@ -339,6 +344,8 @@ def build_runtime(
     if execution is None:
         workspace_config = WorktreeExecutionConfig.from_env(env)
         execution = None if workspace_config is None else WorktreeExecution(workspace_config)
+    provisioning_config = LocalMirrorConfig.from_env(env)
+    provisioning = None if provisioning_config is None else LocalMirror(provisioning_config)
     return Runtime(
         telemetry=telemetry,
         github=github,
@@ -347,6 +354,7 @@ def build_runtime(
         gitops_config=gitops_config,
         harness_config=HarnessConfig.from_env(env),
         execution=execution,
+        provisioning=provisioning,
         descriptions=(
             descriptions if descriptions is not None else PrDescriptionRenderer.from_env(env)
         ),

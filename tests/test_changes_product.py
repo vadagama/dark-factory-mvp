@@ -72,11 +72,23 @@ def test_product_status_records_the_error_reason() -> None:
 def test_product_rejects_a_transition_outside_the_table() -> None:
     product = make_product()
     with pytest.raises(InvalidStatusTransition):
-        product.apply_status(ProductStatus.READY)  # created -> ready
+        product.apply_status(ProductStatus.READY)  # created -> ready skips validation
+
+
+def test_product_can_be_revalidated_after_a_finished_run() -> None:
+    """Validation mutates nothing (ADR-031 p.5), so re-checking is an operator action."""
+    product = make_product()
     product.apply_status(ProductStatus.VALIDATING)
     product.apply_status(ProductStatus.READY)
-    with pytest.raises(InvalidStatusTransition):
-        product.apply_status(ProductStatus.VALIDATING)  # ready is terminal
+
+    product.apply_status(ProductStatus.VALIDATING)
+    assert product.status is ProductStatus.VALIDATING
+    assert product.status_reason is None
+
+    product.apply_status(ProductStatus.ERROR, reason="clone failed")
+    product.apply_status(ProductStatus.VALIDATING)
+    assert product.status is ProductStatus.VALIDATING
+    assert product.status_reason is None  # a fresh attempt carries no stale cause
 
 
 def test_error_requires_a_reason_and_other_statuses_reject_one() -> None:

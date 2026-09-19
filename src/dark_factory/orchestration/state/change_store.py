@@ -33,6 +33,8 @@ from dark_factory.orchestration.state.models import (
 from dark_factory.orchestration.state.repositories import StateConflictError
 
 CHANGE_INTAKE_ACTION: str = "change.intake"
+PRODUCT_ADD_ACTION: str = "product.add"
+PRODUCT_VALIDATE_ACTION: str = "product.validate"
 APPROVAL_RECORD_ACTION: str = "approval.record"
 
 
