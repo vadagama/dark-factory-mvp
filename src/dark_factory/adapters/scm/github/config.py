@@ -16,6 +16,9 @@ Environment variables:
   target repositories.
 - ``DARK_FACTORY_GITHUB_API_URL`` — REST API base URL (optional; the default
   is ``https://api.github.com``, GHES sets its own).
+- ``DARK_FACTORY_GITHUB_CLONE_URL`` — git host base URL used by
+  ``ProviderClone`` (optional; the default is ``https://github.com``, GHES
+  sets its own).
 - ``DARK_FACTORY_GITHUB_WORKFLOW_ID`` — workflow the CI port dispatches
   (optional; the default is ``factory.yml``, T-031 templates).
 - ``DARK_FACTORY_GITHUB_REPOSITORY_SLUG`` — ``owner/name`` of the repository
@@ -31,6 +34,13 @@ from typing import Final
 
 GITHUB_API_URL_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_API_URL"
 """REST API base URL (GHES overrides the default ``https://api.github.com``)."""
+
+GITHUB_CLONE_URL_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_CLONE_URL"
+"""Git host base URL of the provider clone (GHES overrides ``https://github.com``).
+
+Separate from the REST URL: a GHES contour names its own git host, and the
+installation token authenticates over git smart HTTP just as it does over REST.
+"""
 
 GITHUB_APP_ID_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_APP_ID"
 """Numeric id of the GitHub App (ADR-019 p.3)."""
@@ -54,6 +64,7 @@ _REQUIRED_ENV_VARS: Final[tuple[str, ...]] = (
 )
 
 DEFAULT_API_BASE_URL: Final[str] = "https://api.github.com"
+DEFAULT_CLONE_BASE_URL: Final[str] = "https://github.com"
 DEFAULT_WORKFLOW_ID: Final[str] = "factory.yml"
 
 
@@ -67,6 +78,8 @@ class GitHubConfig:
     """Endpoint and App configuration of the GitHub adapter (ADR-019 p.3)."""
 
     api_base_url: str = DEFAULT_API_BASE_URL
+    clone_base_url: str = DEFAULT_CLONE_BASE_URL
+    """Git host the provisioning clone is addressed at (``ProviderClone``, T068)."""
     app_id: str | None = None
     installation_id: str | None = None
     private_key: str | None = None
@@ -89,6 +102,7 @@ class GitHubConfig:
             return None
         return cls(
             api_base_url=(source.get(GITHUB_API_URL_ENV_VAR) or DEFAULT_API_BASE_URL).strip(),
+            clone_base_url=(source.get(GITHUB_CLONE_URL_ENV_VAR) or DEFAULT_CLONE_BASE_URL).strip(),
             app_id=(source.get(GITHUB_APP_ID_ENV_VAR) or "").strip(),
             installation_id=(source.get(GITHUB_INSTALLATION_ID_ENV_VAR) or "").strip(),
             private_key=source.get(GITHUB_APP_PRIVATE_KEY_ENV_VAR) or "",
