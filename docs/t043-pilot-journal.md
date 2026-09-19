@@ -3,6 +3,40 @@
 Хронология отклонений, решений и наблюдений пилота. Формат: дата, инкремент,
 событие → решение/следствие. Метрики прогонов инкремента 1 — здесь же.
 
+## 2026-09-19 — T063 (M0): B2 — гейт входа в construction атрибутируется стадии (в ветке, MR ожидает merge)
+
+- **Дефект (B2).** Гейт входа проверялся в `flow._escalation_reason` при переходе
+  `planning → construction`, поэтому `StopAction(blocked)` помечал **исходящую** стадию
+  (`planning`), а драйвер считал такую попытку retryable (`runner._attempt_number` +
+  `flow._begin_retry`) — следующий `advance` перезапускал завершённое планирование:
+  лишний LLM-прогон и второй/continuation CR.
+- **Решение (вариант b, D5).** Гейт перенесён туда, где construction **входит**: в префлайт
+  исполнителя стадии. `StageContext` получил `implementation_contract` и
+  `enforce_contract_entry`; `stages/checks.construction_entry_reason(context)` отдаёт причину
+  из `contract_entry_violation`, и обе реализации `StageExecutor` (`stages/executor.py`,
+  `stages/agent.py`) заканчивают попытку `StopAction(blocked)` **до** workspace, harness,
+  ветки и change request; `runner.advance_run` кладёт в контекст `run.implementation_contract`.
+  Из `_escalation_reason` проверка и параметр `target` удалены; объявленные эскалации,
+  полоса классов, контрольные точки и бюджет автономии не тронуты.
+- **Наблюдаемая последовательность.** advance, резолвящий planning → `planning succeeded`,
+  активной становится `construction`; следующий advance → `construction blocked` с причиной
+  гейта и нулём внешних эффектов; повтор → снова `blocked` (новая попытка construction), при
+  этом planning остаётся `succeeded` и не перезапускается; после
+  `run advance --contract-json … --approve-contract` construction исполняется штатно.
+- **Одиночный путь.** `factory stage run` (`cli/stage.py::execute_stage`) исполняет стадию
+  снапшота, у которого нет поля контракта и нет run, поэтому явно отказывается от гейта
+  (`enforce_contract_entry=False`); гейт остаётся за драйвером — единственным местом, где
+  контракт можно прикрепить и утвердить. Договор US1-parity и `factory-stage-smoke`
+  (construction на `chg_smoke.yaml`, ожидание exit 10) сохранён.
+- **Валидация.** `.venv/bin/python -m pytest tests/ -q` — **1846 passed / 74 skipped**
+  (PostgreSQL-интеграционные без БД скипаются); `ruff check`, `ruff format --check`,
+  `mypy .` — чисто. Новые регрессионные тесты: атрибуция гейта и идемпотентный retry без
+  перезапуска planning (`test_orchestration_runner.py`), префлайт до любого внешнего эффекта
+  (`test_orchestration_agent_stage.py`), префлайт детерминированного пути и opt-out
+  (`test_orchestration_stages.py`), атрибуция на уровне Flow (`test_flow_policy.py`).
+- **Документация:** `docs/descriptions/orchestration-flow-and-state.md` (§7–§8), `rules.md`
+  (§5, §6, §8), `orchestration-execution.md` (§3–§5, §9).
+
 ## 2026-09-18 — T043: D9 — объём пилота сведён к одной форме standard-R2 (ручной режим)
 
 - **Основание (решение оператора).** Вместо добора набора D3 (7/10) первый проход сводится к

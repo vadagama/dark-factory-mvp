@@ -12,6 +12,7 @@ the persisted snapshot and calls no harness/LLM (ADR-003).
 from dataclasses import dataclass
 
 from dark_factory.changes.enums import Gate, RiskClass, Route, Stage
+from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.rules.gates import required_gates, required_human_gates
@@ -51,6 +52,28 @@ class StageContext:
     (a one-shot deterministic run) keeps the default.
     """
 
+    implementation_contract: ImplementationContract | None = None
+    """Approved Implementation Contract of the run this attempt belongs to (ADR-018 p.3).
+
+    ``None`` means the run carries no approved contract. Construction must not
+    start without one, so both stage executors pre-flight this value before any
+    external effect (T-016, T-063): the gate stops the Construction attempt it
+    belongs to instead of the stage that left, so a retry of the stop lands on
+    Construction and never re-runs the completed outgoing work.
+    """
+
+    enforce_contract_entry: bool = True
+    """Whether entering Construction is gated on ``implementation_contract`` (T-063).
+
+    Defaults to ``True``: a context assembled for a durable run is run-backed, so
+    ``implementation_contract is None`` there is a genuinely missing contract and
+    the gate applies (fail-closed). The one-shot deterministic executor behind
+    ``factory stage run`` is not run-backed — it executes a single stage of a
+    snapshot that cannot carry a contract and never enters Construction for a run
+    — so it opts out explicitly; the gate stays with the driver, the only place a
+    contract can be attached and approved.
+    """
+
 
 def build_context(
     *,
@@ -62,6 +85,8 @@ def build_context(
     budget: BudgetSnapshot,
     attempt_number: int = 1,
     risk_class: RiskClass | None = None,
+    implementation_contract: ImplementationContract | None = None,
+    enforce_contract_entry: bool = True,
 ) -> StageContext:
     """Assemble the stage context from the validated snapshot and the flow tables.
 
@@ -74,7 +99,9 @@ def build_context(
     derivation so the context weighs the same set the flow checks; without it
     the snapshot's declared class is used. ``attempt_number`` is the physical
     attempt of the operation (ADR-006 p.7); it defaults to the first attempt for
-    callers that do not track retries.
+    callers that do not track retries. ``implementation_contract`` is the
+    contract of the run the attempt belongs to and ``enforce_contract_entry``
+    says whether the Construction entry gate applies to this context (T-063).
     """
     effective_class = risk_class if risk_class is not None else change.risk_class
     return StageContext(
@@ -87,4 +114,6 @@ def build_context(
         human_gates=required_human_gates(route, stage, effective_class),
         budget=budget,
         attempt_number=attempt_number,
+        implementation_contract=implementation_contract,
+        enforce_contract_entry=enforce_contract_entry,
     )

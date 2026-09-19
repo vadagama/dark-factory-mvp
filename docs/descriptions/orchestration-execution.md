@@ -86,8 +86,13 @@ Exit-коды (константы `cli/main.py`): `EXIT_OK = 0`, `EXIT_ERROR = 1
 
 ```python
 def build_context(*, change: Change, stage: Stage, route: Route, run_id: str,
-                  input_revision: str | None, budget: BudgetSnapshot) -> StageContext
+                  input_revision: str | None, budget: BudgetSnapshot,
+                  attempt_number: int = 1, risk_class: RiskClass | None = None,
+                  implementation_contract: ImplementationContract | None = None,
+                  enforce_contract_entry: bool = True) -> StageContext
 ```
+
+`implementation_contract` — контракт запуска, которому принадлежит попытка (T-063); `enforce_contract_entry` говорит, применяется ли к контексту гейт входа в Construction. Драйвер (`advance_run`) собирает run-backed контекст и кладёт в него `run.implementation_contract`, поэтому `None` там — действительно отсутствующий контракт и гейт гейтит (fail-closed); одиночный `factory stage run` передаёт `enforce_contract_entry=False`, потому что у снапшота нет поля контракта и нет запуска.
 
 `required_gates` — route-специфичный срез политики гейтов из `rules.gates` (единственный источник гейт-политики, ADR-005): на `construction` маршрут `standard` добавляет гейт `ui`, `quick` — нет. В CLI `DEFAULT_STAGE_ROUTE = Route.STANDARD` — консервативный полный набор гейтов.
 
@@ -101,6 +106,7 @@ def build_context(*, change: Change, stage: Stage, route: Route, run_id: str,
 | `budget_stop_reason(check: BudgetCheck) -> str \| None` | `None` при `within_limits`, иначе `check.diagnostics` | исчерпание run/role-бюджета останавливает попытку (T-062, FR-018, ADR-018 p.5) |
 | `budget_findings(check: BudgetCheck) -> list[Finding]` | по одному открытому blocker finding на каждое нарушение (`id = budget:<scope>[:<role>]:<rule>`, `origin = ci`) | видимость в Console: их считает `api.aggregates.open_blocker_count` (T-062) |
 | `pending_gate_results(required_gates: frozenset[Gate]) -> list[GateResult]` | `GateResult(gate, GateStatus.PENDING)` на каждый обязательный гейт, отсортировано по `gate.value` | документирует, какие гейты стадия требует и что они ещё не вычислены; `pending` не удовлетворяет гейт в политике flow |
+| `construction_entry_reason(context: StageContext) -> str \| None` | причина, по которой попытка не может войти в Construction, либо `None` | гейт входа в construction (T-016): только `Stage.CONSTRUCTION` и только гейтящийся контекст (`enforce_contract_entry`); причина берётся из `contract_entry_violation(context.implementation_contract)`; префлайт обоих исполнителей (T-063), до workspace/harness/публикации |
 | `change_request_missing(stage: Stage, change: Change) -> bool` | `True`, если стадия завершается через merge, а `change.change_request is None` | применяется только к `REVIEW_VERIFICATION` (`_STAGES_REQUIRING_CHANGE_REQUEST`); на других стадиях `False` |
 
 Делегирование в `rules/limits.py` — точные тексты причин:
@@ -127,10 +133,11 @@ def waiting_reason(context: StageContext) -> str
 
 1. `reference_now = now if now is not None else datetime.now(UTC)` — параметр `now` переопределяет настенные часы для проверки deadline и `produced_at` (детерминизм в тестах, как в `flow.apply_result`);
 2. `gate_results = pending_gate_results(context.required_gates)`;
-3. `violations = budget_exhaustions(context.budget, now=reference_now)`;
-4. если `violations` непустой → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason="; ".join(violation.reason ...))` — исчерпание переносимого snapshot выигрывает (SC-006), findings пустые;
-5. иначе, если `budget_check is not None` и `budget_stop_reason(budget_check) is not None` → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason=diagnostics)` + `findings=budget_findings(budget_check)` (T-062: Awaiting Decision);
-6. иначе → `StageStatus.WAITING` + `WaitForInputAction(reason=waiting_reason(context))`.
+3. `entry_reason = construction_entry_reason(context)`: непустой → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason=entry_reason)` — гейт входа в construction (T-063) относится к самой попытке Construction и проверяется раньше бюджета, а непустой контекст `factory stage run` от него отказался;
+4. `violations = budget_exhaustions(context.budget, now=reference_now)`;
+5. если `violations` непустой → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason="; ".join(violation.reason ...))` — исчерпание переносимого snapshot выигрывает (SC-006), findings пустые;
+6. иначе, если `budget_check is not None` и `budget_stop_reason(budget_check) is not None` → `StageStatus.BLOCKED` + `StopAction(outcome=StopOutcome.BLOCKED, reason=diagnostics)` + `findings=budget_findings(budget_check)` (T-062: Awaiting Decision);
+7. иначе → `StageStatus.WAITING` + `WaitForInputAction(reason=waiting_reason(context))`.
 
 `budget_check` — необязательный явный шов (T-062): под `DEFAULT_BUDGET_POLICY` (или без аргумента) результат побайтово совпадает с результатом до T-062, поэтому выбор политики всегда явный. Что означает вердикт `awaiting_decision` и как из него получаются blocker findings — [budget.md](budget.md).
 
@@ -247,6 +254,9 @@ API:
 | Пустая история passes в `plan_rework` | `ValueError` |
 | Последний pass без blocking findings | `ValueError` (цикл планируется только для проваленного review) |
 | Эскалация + исчерпанный лимит + повтор | побеждает эскалация (первая в порядке проверок) |
+| Попытка Construction без approved Implementation Contract (run-backed контекст) | `BLOCKED` + `StopAction(blocked)` с причиной гейта, до workspace/harness/ветки/CR (T-063) |
+| Тот же случай в контексте `factory stage run` (`enforce_contract_entry=False`) | гейт не применяется: стадия исполняется обычным путём (`waiting`) |
+| `implementation_contract` задан и утверждён | гейт молчит: результат не отличается от стадии без такого поля |
 | Частичное исправление (набор findings сократился) | разрешён следующий раунд |
 | Pass с тем же SHA, но другим набором findings | `blocked`: re-review невозможен, предыдущее принятие SHA в силе |
 | Повреждённый `stage_result.json` в evidence-dir | трактуется как отсутствие committed-результата — новое исполнение |

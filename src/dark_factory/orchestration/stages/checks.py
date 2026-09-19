@@ -7,6 +7,11 @@ policy (ADR-005). A gate the deterministic path cannot execute — machine
 checks run on the final SHA in CI (FR-009, SC-004) — is reported as
 ``pending``, never as ``passed``. There are no LLM/harness calls (ADR-003).
 
+:func:`construction_entry_reason` is the Construction entry gate (T-016), read
+from the context and shared by both stage executors (T-063): the gate is
+attributed to the Construction attempt it stops, and each executor turns the
+reason into its own blocked result before any external effect.
+
 The shared attempt budget (T-062) arrives as an already computed
 ``BudgetCheck`` from ``orchestration.budget``: here it is turned into the stop
 diagnostics of the attempt and into the open blocker findings the Console
@@ -28,6 +33,8 @@ from dark_factory.changes.findings import Finding, GateResult
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.budget import BudgetCheck, BudgetState, BudgetViolation
+from dark_factory.orchestration.policy.escalation import contract_entry_violation
+from dark_factory.orchestration.stages.context import StageContext
 from dark_factory.rules.limits import LimitViolation, continuation_violations, rework_violation
 
 # Stages whose deterministic success path needs a change request: review and
@@ -37,6 +44,28 @@ _STAGES_REQUIRING_CHANGE_REQUEST: Final[frozenset[Stage]] = frozenset({Stage.REV
 
 # Machine-class detection of a budget finding: the deterministic checks, not an agent.
 _BUDGET_FINDING_CATEGORY: Final[str] = "budget"
+
+
+def construction_entry_reason(context: StageContext) -> str | None:
+    """Reason the attempt must not enter Construction, or ``None`` when it may.
+
+    The Construction entry gate of ADR-018 p.3: entering construction requires an
+    approved Implementation Contract (T-016 DoD). The reason is produced where
+    Construction is *entered* — both stage executors pre-flight it before any
+    harness/workspace/publish work (T-063) — so the stop is attributed to the
+    Construction attempt and a retry of that stop never re-runs the completed
+    outgoing stage.
+
+    The gate applies only to Construction (other stages consume the contract, if
+    at all, through their own policies) and only to a run-backed context
+    (``context.enforce_contract_entry``): the one-shot deterministic executor has
+    no run and therefore no contract to check. A context that is gated and carries
+    no approved contract is blocked — the check is fail-closed, never fail-open.
+    """
+    if context.stage is not Stage.CONSTRUCTION or not context.enforce_contract_entry:
+        return None
+    violation = contract_entry_violation(context.implementation_contract)
+    return violation.reason if violation is not None else None
 
 
 def budget_exhaustions(budget: BudgetSnapshot, *, now: datetime) -> list[LimitViolation]:

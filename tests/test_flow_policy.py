@@ -3,7 +3,9 @@
 Every DoD invariant lives here:
 
 - a change without an approved Implementation Contract never enters
-  construction;
+  construction — the gate is checked where construction is *entered*, before any
+  external effect (T-063), so it is attributed to Construction and never to the
+  stage that left it;
 - the effective risk class (declared, derived facts, route floor) is checked
   against the route band on *every* advancing action — stage advance, merge and
   release: R2+ never takes the short route (T-080, ADR-023 p.3);
@@ -233,27 +235,51 @@ _ESCALATION_POINTS: list[tuple[EscalationRule, Stage, NextAction]] = [
 ]
 
 
-# --- DoD: no entry into construction without an approved contract ---
+# --- DoD: the contract entry gate is attributed to Construction (T-016, T-063) ---
 
 
-def test_change_without_contract_cannot_enter_construction() -> None:
+def test_a_missing_contract_does_not_block_leaving_planning() -> None:
+    """T-063 (B2): the gate belongs to Construction, not to the outgoing stage.
+
+    Leaving planning is a plain advance even without a contract: the run enters
+    Construction's ``pending`` stage run and the gate fires when that attempt is
+    executed (``stages.checks.construction_entry_reason``). Blocking planning here
+    was the B2 defect — the retry then re-ran the completed planning, burning an
+    LLM run and minting a second change request.
+    """
     run = make_run()
     run.implementation_contract = None
     _advance_to(run, Stage.PLANNING)
     result = _result(Stage.PLANNING, ExecuteStageAction(next_stage=Stage.CONSTRUCTION), run.route)
-    stop = _blocked_stop(run, result)
-    violation = contract_entry_violation(None)
-    assert violation is not None
-    assert violation.reason == stop.reason
+
+    decision = apply_result(run, result)
+
+    assert not isinstance(decision.action, StopAction)
+    assert decision.stage is Stage.PLANNING
+    assert decision.stage_status is StageStatus.SUCCEEDED
+    assert decision.next_stage is Stage.CONSTRUCTION
+    assert run.status is RunStatus.RUNNING
+    planning = next(stage for stage in run.stages if stage.stage is Stage.PLANNING)
+    assert planning.status is StageStatus.SUCCEEDED
+    construction = run.stages[-1]
+    assert construction.stage is Stage.CONSTRUCTION
+    assert construction.status is StageStatus.PENDING
 
 
-def test_unapproved_contract_cannot_enter_construction() -> None:
+def test_an_unapproved_contract_does_not_block_leaving_planning() -> None:
+    """An unapproved contract is still an entry violation — but not of planning."""
     run = make_run()
     run.implementation_contract = make_contract().model_copy(update={"approval": None})
     _advance_to(run, Stage.PLANNING)
     result = _result(Stage.PLANNING, ExecuteStageAction(next_stage=Stage.CONSTRUCTION), run.route)
-    stop = _blocked_stop(run, result)
-    assert "not approved" in stop.reason
+
+    decision = apply_result(run, result)
+
+    assert not isinstance(decision.action, StopAction)
+    assert run.stages[-1].stage is Stage.CONSTRUCTION
+    violation = contract_entry_violation(run.implementation_contract)
+    assert violation is not None
+    assert "not approved" in violation.reason
 
 
 def test_approved_contract_enters_construction_and_finishes_route() -> None:
@@ -316,17 +342,24 @@ def test_low_risk_still_advances_on_the_quick_route() -> None:
     assert run.stages[-1].stage is Stage.PLANNING
 
 
-def test_an_unapproved_contract_is_reported_before_the_risk_band() -> None:
-    """Without an approval the run carries no risk class: the entry gate fires first."""
+def test_an_unapproved_contract_does_not_decide_the_risk_band() -> None:
+    """An unapproved contract carries no class, so it cannot fire the band (ADR-023 p.2).
+
+    The effective class ignores the declared class without an approval, so a
+    declared R2 nobody approved does not masquerade as a risk decision on the
+    quick route; the missing contract is caught at Construction entry instead.
+    """
     run = make_run(route=Route.QUICK)
     run.implementation_contract = make_contract().model_copy(
         update={"risk_class": RiskClass.R2, "approval": None}
     )
     _advance_to(run, Stage.PLANNING)
     result = _result(Stage.PLANNING, ExecuteStageAction(next_stage=Stage.CONSTRUCTION), run.route)
-    stop = _blocked_stop(run, result)
-    assert "not approved" in stop.reason
-    assert RiskClass.R2.value not in stop.reason
+
+    decision = apply_result(run, result)
+
+    assert not isinstance(decision.action, StopAction)
+    assert run.stages[-1].stage is Stage.CONSTRUCTION
 
 
 # --- DoD: the band is checked on the merge and release paths too (ADR-023 p.3) ---
@@ -617,10 +650,15 @@ def test_exhausted_autonomy_budget_blocks_next_advance() -> None:
     assert violation.reason in stop.reason
 
 
-def test_implementation_contract_unapproved_is_a_flow_rule() -> None:
-    """The unapproved-contract rule is the T-016 gate, reused as an escalation."""
-    approved = contract_entry_violation(make_contract())
-    assert approved is None
+def test_the_construction_entry_gate_accepts_only_an_approved_contract() -> None:
+    """The T-016 rule the executors' pre-flight applies where Construction is entered."""
+    assert contract_entry_violation(make_contract()) is None
+    missing = contract_entry_violation(None)
+    unapproved = contract_entry_violation(make_contract().model_copy(update={"approval": None}))
+    assert missing is not None
+    assert "no implementation contract" in missing.reason
+    assert unapproved is not None
+    assert "not approved" in unapproved.reason
 
 
 # --- escalations veto autonomous continuations only ---
