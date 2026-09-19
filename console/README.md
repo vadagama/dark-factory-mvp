@@ -2,14 +2,18 @@
 
 Operator web console of the Software Dark Factory (task T036, delivery per
 [ADR-021](../docs/adr/ADR-021-console-mvp-delivery.md); information
-architecture per ADR-037, milestone M1 — tasks T075/T076). Products are the
-index; each product and change shows the server-computed «Следующий шаг»
-(ADR-033); a new change is created from the product through an agent-assisted
-intake. The T036 screens (change card, gates/approvals, budgets, CI stages,
-settings) are kept and the service ones moved under `/service`.
+architecture per ADR-037: milestone M1 — tasks T075/T076, milestone M2 — the
+ChangeSet workspace, the requirements phase and the markdown editor, tasks
+T088–T090). Products are the index; each product and change shows the
+server-computed «Следующий шаг» (ADR-033); a new change is created from the
+product through an agent-assisted intake and then lives in the ChangeSet
+workspace (`/changes/:id`). The T036 screens (change card at `/changes/:id/card`,
+gates/approvals, budgets, CI stages, settings) are kept and the service ones
+moved under `/service`.
 
 Stack: **React 19 + TypeScript (strict) + Vite 8**, Radix primitives, plain CSS
-design tokens, `react-router` v7. No Tailwind, no react-query/axios (see
+design tokens, `react-router` v7, `react-markdown` + `remark-gfm` for the
+rendered document modes of the editor. No Tailwind, no react-query/axios (see
 "Deliberate simplifications").
 
 ## Run
@@ -49,7 +53,8 @@ Global navigation (ADR-037): `Продукты · Требует внимани�
 | `/` | Products: readiness badge, repository, number of changes, «Добавить продукт» form | `GET /products`, `GET /changes` (grouped by `product_id`); `POST /products` |
 | `/products/:id` | Product page: header, **NextStep**, «Обзор», «Изменения», «База», «Доставки»; «Новая фича», «Проверить репозиторий» | `GET /products/{id}`, `/products/{id}/guidance`, `/changes?product_id=`; `POST /products/{id}/validate` |
 | `/products/:id/new-change` | Intake (T076): free text → «Помоги сформулировать» → brief fields, scenario, spend limit, risk class → «Создать задачу» | `GET /products/{id}`; `POST /briefs/formulate`; `POST /changes` |
-| `/changes/:id` | Change card: **NextStep**, scenario/limit/product line, «Бриф» with inline editor, runs, stages, evidence, usage, blockers, stage chain (SC-007) | `GET /changes/{id}`, `/changes/{id}/guidance`, `/changes/{id}/trace`, `/runs/{id}`, `/runs/{id}/evidence`, `/runs/{id}/findings`; `PUT /changes/{id}/brief` |
+| `/changes/:id` | **ChangeSet workspace** (T088, ADR-037 p.4): top panel (title, id, current phase + state, budget fact/limit/forecast, blockers), left column of phases Ф0–Ф7 with state, open counts and iteration, centre tabs `Результат · Изменения · Проверки · История` (or the markdown editor of an opened artifact), collapsible right context panel (fragment discussion, comments, rework orders), bottom decision panel = **NextStep** with one CTA + the approval form | `GET /changes/{id}`, `/guidance`, `/approvals`, `/runs/{id}`, `/changes/{id}/questions`, `/comments`, `/rework-orders`, `/phase-gate?phase=`, `/artifacts`, `/artifacts/{path}`; `POST /changes/{id}/approvals`, `/questions/{qid}/answer`, `/comments`, `/comments/{cid}/close|reopen`, `/rework-orders`, `/artifact-views/{path}`; `PUT /artifacts/{path}`, `PUT|DELETE /artifact-drafts/{path}`; `GET /artifact-versions/{path}`, `/artifact-diff/{path}` |
+| `/changes/:id/card` | M1 change card: **NextStep**, scenario/limit/product line, «Бриф» with inline editor, runs, stages, evidence, usage, blockers, stage chain (SC-007) | `GET /changes/{id}`, `/changes/{id}/guidance`, `/changes/{id}/trace`, `/runs/{id}`, `/runs/{id}/evidence`, `/runs/{id}/findings`; `PUT /changes/{id}/brief` |
 | `/changes/:id/gates` | Gates, open blocker findings, approvals history, version-bound approval form | `GET /runs/{id}/gates`, `/runs/{id}/findings`, `/changes/{id}/approvals`; `POST /changes/{id}/approvals` |
 | `/changes` | Legacy flat changes list + minimal intake (no longer the index) | `GET /changes`, `GET /runs`; `POST /changes` |
 | `/attention` | Placeholder: «Inbox „Требует внимания“ появится в M5 (T116)» | — |
@@ -61,6 +66,95 @@ Global navigation (ADR-037): `Продукты · Требует внимани�
 
 `/budgets`, `/ci` and `/settings` redirect (`<Navigate replace>`) to their
 `/service/*` counterparts; unknown paths render the products page.
+
+### ChangeSet workspace (T088, ADR-037)
+
+`src/pages/ChangeSetPage.tsx`. The selected phase defaults to the phase of the
+server `Guidance` (`done` → the last column); the left column projects each
+phase's state from server facts only (`lib/artifacts.ts::phaseState`:
+`approved` / `decision` / `active` / `rework` / `passed` / `pending` from the
+guidance phase and the `phase-gate` read model) and shows the open
+questions/comments counts and the iteration (`rework_rounds_used`). Budget
+«факт» is the sum of the recorded run costs, «лимит» the intake limit,
+«прогноз» is honestly `—` until execution data exists (M4). Blockers are the
+`Guidance.blockers` count. No percentage of completion is rendered anywhere
+(ADR-037 p.6; the unit and e2e tests assert it).
+
+Phases: **Ф0 Инициатива** shows the brief (the M1 `BriefSection`), **Ф1
+Требования** is the T089 phase (below); Ф2–Ф7 are placeholders naming their
+milestone («появится в M3/M4/M5»). Tabs: «Результат» — the phase content;
+«Изменения» — the artifact tree (`GET /changes/{id}/artifacts`; `revision ===
+null` = no branch yet, distinct from an empty branch; 503 = the contour has no
+repository, shown as the server detail); «Проверки» — the `PhaseGate`
+(available/closed with every reason and its unblocking action, counts, rework
+rounds used of max, every approval with `current` / `stale` / `unbound`);
+«История» — decisions, rework orders, runs.
+
+The bottom decision panel renders **only** `Guidance` through `NextStep`.
+`lib/guidance.ts` maps the new server `api` strings: `POST
+/changes/{id}/approvals` → the approval form (version-bound to
+`phase_gate.current_revision`, outcome `approved` or an explicit `waived` with
+a mandatory reason; 409 shows the server detail and offers a reload), `POST
+/changes/{id}/rework-orders` → the rework form in the context panel, `GET
+/changes/{id}/questions?status=open` → scroll to the questions, `GET
+/changes/{id}/artifacts` → the «Изменения» tab. `POST /runs/{id}/withdraw`
+and run advance stay CLI until M4.
+
+### Requirements phase (T089, ADR-034)
+
+`src/components/RequirementsPhase.tsx` + `ContextPanel.tsx`. «Дельта
+требований» lists the `spec` artifacts of the change branch (the proposed
+change; the product baseline is what is already accepted, ADR-037 p.7) with
+their stable ids (`document.anchors`: frontmatter `id`, `REQ-*`/`AC-*`,
+heading slugs), open counts, a «Просмотрено» button (`POST
+/artifact-views/{path}` — a view mark, never an approval) and a link into the
+editor. Blocking questions are cards answered in one click: `choice` → one
+button per option, `text`/`number` → a small input + «Ответить». Assumptions
+are **not** a backend entity: a question with `blocking === false` is
+rendered as an assumption card with «Подтвердить» (answers the literal text
+`confirmed`; offered for `text` questions only, since a number or a choice
+cannot be "confirmed" literally), «Исправить» (free text) and «Варианты»
+(the options of a `choice`). Comments go through the context panel: artifact
++ anchor (or the whole document) + text → `POST /comments` with the document
+revision; `anchor_state === "detached"` is shown as «якорь потерян» with an
+explanation and is never re-attached; `addressed` is the agent's mark — the
+operator can «Закрыть» or «Переоткрыть», the `addressed` endpoint is never
+exposed as a button. «На доработку» opens a form (open comments + answered
+questions preselected, instruction) → `POST /rework-orders` bound to the tree
+revision; 409/422 show the server detail. Each order shows its status and,
+when finished, the agent summary «Что изменил / Что осталось» and the
+comments it claims to have addressed.
+
+### Markdown editor (T090, ADR-035)
+
+`src/components/MarkdownEditor.tsx`. Modes `Документ · Markdown · Чтение`.
+The single source of truth in the component is the raw `content` string:
+«Markdown» edits it in a textarea; «Документ» renders it with react-markdown
+(+GFM) and edits *only* the frontmatter through the properties panel —
+protected keys (`schema`, `id`, `type`, `product`, `change`) are read-only,
+editable scalar keys become fields whose values travel as `properties` in the
+PUT and are applied by the server (`apply_properties`); «Чтение» renders it
+read-only. No mode ever rewrites `content` (`lib/artifacts.ts::splitFrontmatter`
+only *reads* the body for rendering), so unknown constructs (`:::note`, HTML
+comments, `{#anchors}`, footnotes) survive verbatim and switching modes is a
+no-op on the text — `MarkdownEditor.test.tsx` proves the round-trip Документ →
+Markdown → Чтение → Markdown leaves the textarea value identical and sends
+nothing. Draft autosave (`PUT /artifact-drafts/{path}` with `base_revision` =
+the loaded revision) fires ~1.5 s after the last keystroke, only with a token,
+and the state is always visible («Не сохранено», «Сохраняю…», «Черновик
+сохранён hh:mm», «Не сохранено: <ошибка>»); on load an existing draft offers
+«Продолжить черновик» / «Отбросить» (DELETE). «Сохранить в git» is the
+explicit commit (`PUT /artifacts/{path}` with `base_revision`, optional
+message and property edits); a 409 shows the server detail and offers a
+reload — nothing is merged or overwritten. «История версий» lists
+`artifact-versions` and renders the `unified` diff of `artifact-diff` between
+two chosen revisions in a `<pre>`. Selecting text in Документ/Чтение offers
+«Комментировать»: the anchor is the first document anchor found *inside* the
+selection (`anchorForSelection`), else the whole document — never a guessed
+"nearest" element; the context panel composer is prefilled with the quote.
+A new revision remounts the editor (key), so the committed text becomes the
+source. Artifact paths contain slashes: `encodeArtifactPath` encodes each
+segment and keeps the `/` (server route `{path:path}`).
 
 ### NextStep (ADR-033)
 
@@ -105,18 +199,21 @@ console/
 │   ├── api/              # thin typed fetch client (client.ts), wire types (types.ts),
 │   │                     # token/localStorage store (token.ts), base URL (settings.ts), useAsync hook
 │   ├── components/       # Section/badges/Layout, Radix token dialog, NextStep, BriefSection,
-│   │                     # ProductForm, legacy IntakeForm
+│   │                     # ProductForm, legacy IntakeForm; M2: MarkdownEditor, RequirementsPhase,
+│   │                     # ContextPanel (comments + rework form), PhaseGatePanel, ApprovalForm
 │   ├── generated/        # meta.json — COMMITTED snapshot, generated from Python sources
-│   ├── lib/              # formatting, meta accessors, id helpers, guidance api parser, brief form helpers
-│   ├── pages/            # screens (react-router): products, product, intake, change card, gates,
-│   │                     # placeholders (attention/activity/service), budgets, CI stages, settings
+│   ├── lib/              # formatting, meta accessors, id helpers, guidance api parser, brief form helpers,
+│   │                     # artifacts.ts (phases, path encoding, frontmatter split, anchors, phase state)
+│   ├── pages/            # screens (react-router): products, product, intake, ChangeSet workspace,
+│   │                     # M1 change card, gates, placeholders (attention/activity/service), budgets,
+│   │                     # CI stages, settings
 │   └── test/             # vitest setup + shared fixtures / fetch stub
 └── tools/
     └── export_meta.py    # regenerates src/generated/meta.json (see below)
 ```
 
 **API client** (`src/api/client.ts`): plain `fetch`, no client libraries.
-Reads (GET) never carry the token; writes (POST/PUT) attach
+Reads (GET) never carry the token; writes (POST/PUT/DELETE) attach
 `Authorization: Bearer <token>` and an `Idempotency-Key` (UUID v4). One token
 store serves every scope (`changes:write`, `products:write`, `approvals:write`,
 `ci:write`); a missing scope surfaces as the server's 403 detail. Errors are
@@ -183,13 +280,25 @@ and the test runs in the plain pytest CI job.
   intake is `/products/:id/new-change`. Ids are generated client-side
   (`chg_<hex>`, `prd_<hex>` — the product id is editable), `source` is always
   `console`, `change_request`/`external_ref` are out of scope.
-- **What is empty and why (M1)**: «Требует внимания» has no inbox until M5
+- **What is empty and why (M1/M2)**: «Требует внимания» has no inbox until M5
   (T116) and «Активность» is out of the MVP scope — both say so instead of
   showing an empty list as "all clear". On the product page «База» shows only
-  `baseline_ref` (baseline documents come in M2) and «Доставки» only
-  `dev_env_ref` (delivery history comes in M5). The intake forecast has no
-  numbers before the first run. Run advance/withdraw are CLI-only until M4,
-  so the NextStep shows the CLI command for them.
+  `baseline_ref` and «Доставки» only `dev_env_ref` (delivery history comes in
+  M5). The intake forecast has no numbers before the first run and the
+  workspace budget «прогноз» stays `—` until M4. Run advance/withdraw are
+  CLI-only until M4, so the NextStep shows the CLI command for them. In the
+  workspace, phases Ф2–Ф7 are placeholders naming their milestone; the
+  artifact routes answer 503 on a contour without a repository and the
+  Console shows that detail instead of inventing documents.
+- **Phase gates are fetched per phase** (`GET /phase-gate?phase=` × 8) to fill
+  the left column; a failed one leaves that row without counts. Artifacts are
+  not polled (they are git reads): they are re-read after every write and on
+  the manual reload paths.
+- **Diff is rendered as the server's `unified` text** in a `<pre>`; a
+  side-by-side «Сравнение» mode is deferred by ADR-035 p.8.
+- **Selection anchors are found inside the selection only** — no DOM range
+  mapping to the source; the fallback is the whole document, which the
+  operator sees before posting.
 - **«Новая фича» on the product page** is a plain link to the intake; the API
   accepts a change for a non-ready product and the guidance then lists the
   blocker. Only when the server lists `POST /changes` as disabled is the

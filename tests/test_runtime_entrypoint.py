@@ -104,6 +104,7 @@ class FakeRuntime:
         self.ci_stage_toggles: Any = CiTogglesSentinel()
         self.ci_repository: Any = "small/pilot"
         self.provisioning: Any = ProvisioningSentinel()
+        self.repository: Any = None
         self.executor_calls = 0
         self.revision_calls = 0
         self.facts_calls = 0
@@ -309,6 +310,7 @@ def test_api_serve_assembles_the_runtime_and_passes_the_ci_bindings(
         "ci_repository": runtime.ci_repository,
         "provisioning": runtime.provisioning,
         "brief_formulator": runtime.formulator,
+        "repository": runtime.repository,
     }
     assert runtime.close_calls == 1, "the assembled adapters are released"
 
@@ -334,6 +336,7 @@ def test_api_serve_without_github_configuration_passes_absent_bindings(
         "ci_repository": None,
         "provisioning": None,
         "brief_formulator": None,
+        "repository": None,
     }
     assert runtime.close_calls == 1
 

@@ -70,6 +70,23 @@ _SKILLS: Final[Mapping[str, SkillManifest]] = {
             " layout: problem, scope and out-of-scope, requirements with acceptance"
             " criteria, and traceability from criteria to scenarios. Keep every"
             " statement testable; a criterion that cannot be checked is a defect."
+            " Layout (ADR-020/ADR-035): the ChangeSet lives under"
+            " .factory/changes/<year>/CHG-<slug>/ with intent.md, spec/delta.yaml"
+            " and one markdown file per requirement in spec/requirements/REQ-NNN-<slug>.md;"
+            " every requirement file starts with YAML frontmatter (schema, id, type,"
+            " title, product, status, change) and numbers its acceptance criteria"
+            " AC-1, AC-2, ... — these ids are the anchors the operator comments on,"
+            " so never renumber them in a rework round; edit the existing files in"
+            " place instead of creating new ones."
+            " When the discussion lists answers or comments, apply every answer to the"
+            " artifacts and address every comment; do not repeat a question that is"
+            " still open. When something blocks a testable statement, ask the operator"
+            " instead of guessing: end your reply with a fenced block labelled"
+            " `questions` holding a YAML list of {text, kind: choice|text|number,"
+            " options (choice only), anchor: '<path>#<AC-id>', blocking: true|false}."
+            " After a rework round also end with a fenced block labelled"
+            " `rework-summary` holding YAML {changed: [...], remaining: [...],"
+            " addressed_comments: [<comment ids>]}."
         ),
         stop_conditions=(
             "An acceptance criterion cannot be made testable.",

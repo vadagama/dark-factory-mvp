@@ -16,7 +16,17 @@ describe("parseGuidanceApi", () => {
     expect(parseGuidanceApi("PUT /changes/chg-1/brief", change)).toEqual({ kind: "edit_brief", changeId: "chg-1" });
     expect(parseGuidanceApi("GET /changes/chg-1", change)).toEqual({ kind: "open_change", changeId: "chg-1" });
     expect(parseGuidanceApi("GET /runs/run-1", change)).toEqual({ kind: "open_run", runId: "run-1" });
-    expect(parseGuidanceApi("POST /changes/chg-1/approvals", change)).toEqual({ kind: "open_gates", changeId: "chg-1" });
+    expect(parseGuidanceApi("POST /changes/chg-1/approvals", change)).toEqual({ kind: "approve_phase", changeId: "chg-1" });
+  });
+
+  it("maps the M2 workspace actions (approve, rework, questions, artifacts)", () => {
+    expect(parseGuidanceApi("POST /changes/chg-1/rework-orders", change)).toEqual({ kind: "rework", changeId: "chg-1" });
+    expect(parseGuidanceApi("GET /changes/chg-1/questions?status=open", change)).toEqual({
+      kind: "focus_questions",
+      changeId: "chg-1",
+    });
+    expect(parseGuidanceApi("GET /changes/chg-1/questions", change)).toEqual({ kind: "focus_questions", changeId: "chg-1" });
+    expect(parseGuidanceApi("GET /changes/chg-1/artifacts", change)).toEqual({ kind: "open_artifacts", changeId: "chg-1" });
   });
 
   it("returns null for actions the Console does not perform yet (CLI is the way)", () => {

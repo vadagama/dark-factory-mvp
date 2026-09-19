@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
+from dark_factory.changes.conversations import ReworkOrder
 from dark_factory.changes.enums import (
     ChangeRequestStatus,
     DecisionOutcome,
@@ -55,6 +56,7 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ChangeRequestRef
 from dark_factory.changes.run import Change, ChangeRun, StageResult
+from dark_factory.orchestration.conversations import plan_rework_order
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
 from dark_factory.orchestration.rework import ReviewPass, finding_signature, plan_rework
@@ -110,6 +112,22 @@ class GateObservation:
     merged: bool
     pipeline_status: str | None
     approvals: Sequence[Decision] = ()
+    rework_orders: Sequence[ReworkOrder] = ()
+    """The rework orders of the stage's phase in issue order (T081, ADR-034 p.3).
+
+    A trailing *pending* order is the operator's explicit send-back: on a
+    purely human-gated stage it resolves the wait into a rework round (or into
+    the escalation stop when the bounded loop refuses one). The history feeds
+    the loop's stop conditions; the store assembles it (``state.conversations``).
+    """
+
+
+def pending_rework_order(observation: GateObservation) -> ReworkOrder | None:
+    """The pending rework order of the observation, if the operator sent the work back."""
+    for order in reversed(list(observation.rework_orders)):
+        if order.is_pending:
+            return order
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +185,11 @@ def gate_resolved(
             route, stage, risk_class
         )
     if _is_purely_human_gated(route, stage, risk_class):
+        # The operator's explicit send-back (a pending rework order, ADR-034
+        # p.2) resolves the wait as much as the approval does: into a rework
+        # round of the stage instead of its successor (T081).
+        if pending_rework_order(observation) is not None:
+            return True
         return any(
             decision.outcome is DecisionOutcome.APPROVED
             and decision.gate in _human_gates(route, stage, risk_class)
@@ -278,6 +301,15 @@ def _resolve_human_gated(
     then advances past the stage; its R2+ control-point check weighs the same
     observed approvals against this SHA.
     """
+    if not observation.merged and pending_rework_order(observation) is not None:
+        return _resolve_rework_order(
+            run=run,
+            stage=stage,
+            observation=observation,
+            input_revision=input_revision,
+            attempt_number=attempt_number,
+            now=now,
+        )
     human_gates = sorted(_human_gates(run.route, stage, risk_class), key=lambda item: item.value)
     successor = route_profile(run.route).next_stage(stage)
     if successor is None:  # pragma: no cover - a human-gated stage always has a successor
@@ -313,6 +345,56 @@ def _resolve_human_gated(
         ],
         produced_at=now,
     )
+    return GateResolution(result=result, merge_context=None)
+
+
+def _resolve_rework_order(
+    *,
+    run: ChangeRun,
+    stage: Stage,
+    observation: GateObservation,
+    input_revision: str,
+    attempt_number: int,
+    now: datetime,
+) -> GateResolution:
+    """Resolve a human-gated wait into the rework round the operator asked for (T081).
+
+    The pending rework order is the operator's explicit send-back (ADR-034 p.2); the
+    bounded loop (``plan_rework_order`` → ``plan_rework``) decides whether one
+    more round may be spent — the run budget's counter, not the number of
+    comments (ADR-034 p.3). A refused round ends the attempt ``blocked`` with
+    the loop's reason: the escalation card of ADR-018 p.5. The flow then
+    spends the round (``_handle_rework``) and re-enters the stage — a new
+    operation at the revision the round advances.
+    """
+    decision = plan_rework_order(budget=run.budget, orders=observation.rework_orders)
+    if decision.outcome == "blocked":
+        result = StageResult(
+            stage=stage,
+            run_id=run.id,
+            change_id=run.change_id,
+            attempt_number=attempt_number,
+            input_revision=input_revision,
+            status=StageStatus.BLOCKED,
+            next_action=StopAction(outcome=StopOutcome.BLOCKED, reason=decision.reason),
+            produced_at=now,
+        )
+    else:
+        next_round = (
+            decision.round if decision.round is not None else run.budget.used_rework_rounds + 1
+        )
+        result = StageResult(
+            stage=stage,
+            run_id=run.id,
+            change_id=run.change_id,
+            attempt_number=attempt_number,
+            input_revision=input_revision,
+            status=StageStatus.FAILED,
+            next_action=ReworkAction(
+                round=next_round, max_rounds=decision.max_rounds, reason=decision.reason
+            ),
+            produced_at=now,
+        )
     return GateResolution(result=result, merge_context=None)
 
 

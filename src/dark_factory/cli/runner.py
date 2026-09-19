@@ -157,8 +157,14 @@ from dark_factory.orchestration.runner import (
     RunnerError,
     StageExecutor,
     advance_run,
+    next_stage,
 )
 from dark_factory.orchestration.state.change_store import ChangeRepository
+from dark_factory.orchestration.state.conversations import (
+    load_conversation_inputs,
+    record_stage_outcome,
+    with_store_facts,
+)
 from dark_factory.orchestration.state.engine import session_scope
 from dark_factory.orchestration.state.repositories import ContractConflictError, StateError
 from dark_factory.orchestration.state.run_store import (
@@ -603,17 +609,29 @@ def _advance_in_session(
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
     run_id, change = _resolve_run(session, store, args, revision_of=revision_of, contract=contract)
-    return advance_run(
+    # The discussion of the phase is a typed input of the attempt (T080, ADR-034
+    # p.5) and the store's decisions/rework orders join the observed facts
+    # (T081); what the advance did to the discussion is recorded in the same
+    # transaction, so a rollback leaves nothing half-applied.
+    run = store.load(run_id)
+    stage = next_stage(run) if run is not None else None
+    conversation = (
+        load_conversation_inputs(session, change.id, stage) if stage is not None else None
+    )
+    advance = advance_run(
         store=store,
         change=change,
         run_id=run_id,
         owner_id=owner_id,
         executor=executor,
         revision_of=revision_of,
-        gate_facts=gate_facts,
+        gate_facts=with_store_facts(gate_facts, session, change.id),
         release_facts=release_facts,
         now=now,
+        conversation=conversation,
     )
+    record_stage_outcome(session, advance, change_id=change.id)
+    return advance
 
 
 def _resolve_run(

@@ -20,7 +20,7 @@ from dark_factory.cli._common import (
 )
 from dark_factory.cli.main import EXIT_OK, ApiServeArgs
 from dark_factory.orchestration.intake import BriefFormulator
-from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
+from dark_factory.ports import CiStageTogglePort, RepositoryPort, RepositoryProvisioningPort
 
 _COMMAND: Final[str] = "api serve"
 """Subcommand name of the error reports (``factory api serve: ...``)."""
@@ -33,6 +33,7 @@ def run_api_serve_command(
     ci_repository: str | None = None,
     provisioning: RepositoryProvisioningPort | None = None,
     brief_formulator: BriefFormulator | None = None,
+    repository: RepositoryPort | None = None,
 ) -> int:
     """Serve the API until interrupted; fail fast with exit 2 on misconfiguration.
 
@@ -45,7 +46,9 @@ def run_api_serve_command(
     the repository-provisioning seam of product validation (T066, ADR-031): with
     ``None`` the endpoint refuses instead of inventing readiness. ``brief_formulator``
     is the harness-backed «Помоги сформулировать» seam (T072): with ``None`` the
-    endpoint answers an honest draft brief.
+    endpoint answers an honest draft brief. ``repository`` is the product
+    repository port of the document artifacts (T082-T086): with ``None`` the
+    ``/artifacts*`` endpoints answer 503.
     """
     database_url = os.environ.get(DATABASE_URL_ENV_VAR, "").strip()
     if not database_url:
@@ -60,6 +63,7 @@ def run_api_serve_command(
                 ci_repository=ci_repository,
                 provisioning=provisioning,
                 brief_formulator=brief_formulator,
+                repository=repository,
             )
             import uvicorn
 

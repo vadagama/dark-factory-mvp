@@ -29,13 +29,20 @@ import uuid
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dark_factory.changes.enums import BriefAuthor, ChangeSource
+from dark_factory.changes.conversations import Comment, Question, ReworkOrder
+from dark_factory.changes.enums import (
+    BriefAuthor,
+    ChangeSource,
+    DecisionOutcome,
+    Phase,
+    QuestionStatus,
+)
 from dark_factory.changes.intake import IntakeBrief, SpendLimit
 from dark_factory.changes.run import Change, ChangeRun
 from dark_factory.cli._common import (
@@ -43,30 +50,85 @@ from dark_factory.cli._common import (
     StateStoreUnreachableError,
     open_state_store,
     os_error_reason,
+    report_execution_error,
     report_invalid_input,
     report_state_store_unreachable,
 )
 from dark_factory.cli.guidance import render_guidance_text
-from dark_factory.cli.main import EXIT_OK, ChangeCreateArgs, ChangeStatusArgs
+from dark_factory.cli.main import (
+    EXIT_OK,
+    ArtifactAction,
+    ChangeAnswerArgs,
+    ChangeApproveArgs,
+    ChangeArtifactsArgs,
+    ChangeCommentArgs,
+    ChangeCreateArgs,
+    ChangeReworkArgs,
+    ChangeStatusArgs,
+)
+from dark_factory.orchestration.artifacts import (
+    ArtifactConflictError,
+    ArtifactNotFoundError,
+    ArtifactService,
+)
+from dark_factory.orchestration.conversations import apply_revision
+from dark_factory.orchestration.guidance import Guidance, phase_of_run
+from dark_factory.orchestration.phase_gate import PhaseGate, discussion_phase
 from dark_factory.orchestration.state.change_store import (
+    APPROVAL_RECORD_ACTION,
     CHANGE_INTAKE_ACTION,
     AuditRepository,
     ChangeRepository,
     ProductRepository,
 )
+from dark_factory.orchestration.state.conversation_ops import (
+    ConversationError,
+    add_comment,
+    answer_question,
+    issue_rework_order,
+    record_phase_decision,
+)
+from dark_factory.orchestration.state.conversation_store import (
+    ARTIFACT_EDIT_ACTION,
+    COMMENT_ADD_ACTION,
+    QUESTION_ANSWER_ACTION,
+    REWORK_ORDER_ACTION,
+    ArtifactDraftRepository,
+    ConversationRepository,
+)
 from dark_factory.orchestration.state.engine import session_scope
-from dark_factory.orchestration.state.guidance import build_change_guidance, latest_run
+from dark_factory.orchestration.state.guidance import (
+    build_change_guidance,
+    build_phase_gate,
+    latest_run,
+)
+
+if TYPE_CHECKING:
+    from dark_factory.ports import RepositoryPort
 
 __all__ = [
+    "REPOSITORY_UNCONFIGURED",
     "brief_from_args",
     "new_change_id",
     "render_change_text",
+    "render_discussion_text",
+    "render_gate_text",
+    "run_change_answer_command",
+    "run_change_approve_command",
+    "run_change_artifacts_command",
+    "run_change_comment_command",
     "run_change_create_command",
+    "run_change_rework_command",
     "run_change_status_command",
     "spend_limit_from_args",
 ]
 
 CHANGE_ID_PREFIX: Final[str] = "chg_"
+
+REPOSITORY_UNCONFIGURED: Final[str] = (
+    "the product repository is not configured in this contour (DARK_FACTORY_GITHUB_*), so"
+    " artifacts cannot be read or written"
+)
 
 
 class IntakeInputError(ValueError):
@@ -146,11 +208,22 @@ def run_change_create_command(
 
 
 def run_change_status_command(
-    args: ChangeStatusArgs, *, session_factory: sessionmaker[Session] | None = None
+    args: ChangeStatusArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
-    """Handle ``factory change status``; return the process exit code (T073)."""
+    """Handle ``factory change status``; return the process exit code (T073, T086).
+
+    Since M2 the report also lists the discussion of the current phase — open
+    and answered questions, open comments, the rework orders — and the gate
+    view (T087); ``repository`` binds them to the current revision.
+    """
     return _with_store(
-        "change status", args.json_output, session_factory, lambda factory: _status(factory, args)
+        "change status",
+        args.json_output,
+        session_factory,
+        lambda factory: _status(factory, args, _artifacts_of(repository)),
     )
 
 
@@ -232,7 +305,9 @@ def _create(
     return EXIT_OK
 
 
-def _status(factory: sessionmaker[Session], args: ChangeStatusArgs) -> int:
+def _status(
+    factory: sessionmaker[Session], args: ChangeStatusArgs, artifacts: ArtifactService | None
+) -> int:
     try:
         with session_scope(factory) as session:
             change = ChangeRepository(session).get(args.change_id)
@@ -243,7 +318,15 @@ def _status(factory: sessionmaker[Session], args: ChangeStatusArgs) -> int:
                     json_output=args.json_output,
                 )
             run = latest_run(session, change.id)
-            guidance = build_change_guidance(session, change)
+            conversation = ConversationRepository(session)
+            # The whole discussion of the change, every phase: the report is the
+            # operator's one place to see what is open.
+            questions = conversation.list_questions(change.id)
+            comments = conversation.list_comments(change.id)
+            orders = conversation.list_rework_orders(change.id)
+            phase = discussion_phase(run, phase_of_run(run))
+            gate = build_phase_gate(session, change, phase=phase, run=run, artifacts=artifacts)
+            guidance = build_change_guidance(session, change, artifacts=artifacts)
     except SQLAlchemyError:
         return report_state_store_unreachable("change status", json_output=args.json_output)
     if args.json_output:
@@ -252,17 +335,85 @@ def _status(factory: sessionmaker[Session], args: ChangeStatusArgs) -> int:
                 {
                     "change": change.model_dump(mode="json"),
                     "run": run.model_dump(mode="json") if run is not None else None,
+                    "questions": [q.model_dump(mode="json") for q in questions],
+                    "comments": [c.model_dump(mode="json") for c in comments],
+                    "rework_orders": [o.model_dump(mode="json") for o in orders],
+                    "phase_gate": gate.model_dump(mode="json"),
                     "guidance": guidance.model_dump(mode="json"),
                 }
             )
         )
     else:
         print(render_change_text(change, run))
+        discussion = render_discussion_text(questions, comments, orders)
+        if discussion:
+            print(discussion)
+        print(render_gate_text(gate))
         print(render_guidance_text(guidance))
     return EXIT_OK
 
 
 # --- rendering --------------------------------------------------------------------------
+
+
+def render_discussion_text(
+    questions: list[Question], comments: list[Comment], orders: list[ReworkOrder]
+) -> str:
+    """The discussion of the current phase as facts: questions, comments, rework orders."""
+    lines: list[str] = []
+    open_questions = [q for q in questions if q.status is QuestionStatus.OPEN]
+    if open_questions:
+        lines.append(f"questions open: {len(open_questions)}")
+        for question in open_questions:
+            where = (
+                f" [{question.anchor.artifact}"
+                + (f"#{question.anchor.anchor_id}" if question.anchor.anchor_id else "")
+                + "]"
+                if question.anchor is not None
+                else ""
+            )
+            options = f" options: {' | '.join(question.options)}" if question.options else ""
+            blocking = " (blocking)" if question.blocking else ""
+            lines.append(f"  {question.id}{blocking}{where}: {question.text}{options}")
+    answered = [q for q in questions if q.status is QuestionStatus.ANSWERED]
+    if answered:
+        lines.append(f"questions answered, not yet applied: {len(answered)}")
+    open_comments = [c for c in comments if c.is_open]
+    if open_comments:
+        lines.append(f"comments open: {len(open_comments)}")
+        for comment in open_comments:
+            where = comment.anchor.artifact + (
+                f"#{comment.anchor.anchor_id}" if comment.anchor.anchor_id else ""
+            )
+            lines.append(f"  {comment.id} [{where}] {comment.status.value}: {comment.body}")
+    for order in orders:
+        summary = ""
+        if order.summary is not None:
+            summary = (
+                f" changed: {len(order.summary.changed)}, remaining: {len(order.summary.remaining)}"
+            )
+        lines.append(
+            f"rework order {order.id}: {order.status.value}"
+            + (f" (round {order.round})" if order.round is not None else "")
+            + summary
+        )
+    return "\n".join(lines)
+
+
+def render_gate_text(gate: PhaseGate) -> str:
+    """The phase gate as one line plus its reasons and stale approvals (T087)."""
+    state = "available" if gate.available else "closed"
+    revision = gate.current_revision or "unknown"
+    lines = [
+        f"gate {gate.phase.value}: {state} (revision={revision},"
+        f" approved={'yes' if gate.approved else 'no'},"
+        f" rework={gate.rework_rounds_used}/{gate.rework_rounds_max})"
+    ]
+    lines.extend(f"  - {reason.what} — {reason.how}" for reason in gate.reasons)
+    stale = [view for view in gate.approvals if view.state == "stale"]
+    if stale:
+        lines.append(f"  stale approvals: {', '.join(view.decision_id for view in stale)}")
+    return "\n".join(lines)
 
 
 def render_change_text(change: Change, run: ChangeRun | None = None) -> str:
@@ -297,3 +448,428 @@ def render_change_text(change: Change, run: ChangeRun | None = None) -> str:
     else:
         lines.append("run: none")
     return "\n".join(lines)
+
+
+# --- M2: the discussion and the artifacts from the CLI (T086) ---------------------------
+#
+# ``change answer|comment|rework|approve`` are the operator's decisions of the
+# cycle «вопрос → ответ → правка → сводка → согласовать / на доработку» (plan
+# §6); ``change artifacts`` reads and writes the document artifacts (ADR-035).
+# The operations are the ones the API runs (``orchestration.state.
+# conversation_ops``, ``orchestration.artifacts``), so the two surfaces agree
+# (ADR-033 p.3); the ``repository`` seam is the product repository port the
+# composition root binds — without it revisions are unknown and the artifact
+# commands refuse (exit 2) instead of inventing a document.
+
+
+def _artifacts_of(repository: "RepositoryPort | None") -> ArtifactService | None:
+    return ArtifactService(repository) if repository is not None else None
+
+
+def _phase_for(session: Session, change: Change, requested: Phase | None) -> Phase:
+    if requested is not None:
+        return requested
+    run = latest_run(session, change.id)
+    return discussion_phase(run, phase_of_run(run))
+
+
+def _cli_audit(session: Session, action: str, resource_type: str, resource_id: str) -> None:
+    AuditRepository(session).append(
+        actor=CLI_ACTOR,
+        role=None,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        outcome="created",
+    )
+
+
+def _emit(json_output: bool, *, payload: dict[str, object], text: str, guidance: Guidance) -> int:
+    """Print the outcome plus the next step: JSON as one object, text as lines."""
+    if json_output:
+        print(json.dumps({**payload, "guidance": guidance.model_dump(mode="json")}))
+    else:
+        print(text)
+        print(render_guidance_text(guidance))
+    return EXIT_OK
+
+
+def _conversation_error(command: str, error: ConversationError, json_output: bool) -> int:
+    """A typed refusal of the shared operation is invalid input of the CLI (exit 2)."""
+    return report_invalid_input(command, str(error), json_output=json_output)
+
+
+def run_change_answer_command(
+    args: ChangeAnswerArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change answer``; return the process exit code (T086, ADR-034 p.1)."""
+    return _with_store(
+        "change answer",
+        args.json_output,
+        session_factory,
+        lambda factory: _answer(factory, args, _artifacts_of(repository)),
+    )
+
+
+def run_change_comment_command(
+    args: ChangeCommentArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change comment``; return the process exit code (T086, ADR-034 p.1)."""
+    return _with_store(
+        "change comment",
+        args.json_output,
+        session_factory,
+        lambda factory: _comment(factory, args, _artifacts_of(repository)),
+    )
+
+
+def run_change_rework_command(
+    args: ChangeReworkArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change rework``; return the process exit code (T086, ADR-034 p.3)."""
+    return _with_store(
+        "change rework",
+        args.json_output,
+        session_factory,
+        lambda factory: _rework(factory, args, _artifacts_of(repository)),
+    )
+
+
+def run_change_approve_command(
+    args: ChangeApproveArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change approve``; return the process exit code (T086/T087)."""
+    return _with_store(
+        "change approve",
+        args.json_output,
+        session_factory,
+        lambda factory: _approve(factory, args, _artifacts_of(repository)),
+    )
+
+
+def run_change_artifacts_command(
+    args: ChangeArtifactsArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change artifacts``; return the process exit code (T086, ADR-035).
+
+    Without the repository seam the command refuses before touching the store:
+    a document the factory cannot read is never shown (ADR-035 p.1).
+    """
+    if repository is None:
+        return report_invalid_input(
+            "change artifacts", REPOSITORY_UNCONFIGURED, json_output=args.json_output
+        )
+    if args.action is not ArtifactAction.LIST and not args.path:
+        return report_invalid_input(
+            "change artifacts", "--path is required for this action", json_output=args.json_output
+        )
+    return _with_store(
+        "change artifacts",
+        args.json_output,
+        session_factory,
+        lambda factory: _artifacts(factory, args, ArtifactService(repository)),
+    )
+
+
+def _load_change(session: Session, command: str, change_id: str, json_output: bool) -> Change | int:
+    change = ChangeRepository(session).get(change_id)
+    if change is None:
+        return report_invalid_input(
+            command, f"unknown change {change_id!r}", json_output=json_output
+        )
+    return change
+
+
+def _answer(
+    factory: sessionmaker[Session], args: ChangeAnswerArgs, artifacts: ArtifactService | None
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change answer", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            try:
+                question, created = answer_question(
+                    session,
+                    change,
+                    args.question_id,
+                    value=args.value,
+                    comment=args.comment,
+                    answered_by=CLI_ACTOR,
+                )
+            except ConversationError as error:
+                return _conversation_error("change answer", error, args.json_output)
+            _cli_audit(session, QUESTION_ANSWER_ACTION, "question", question.id)
+            guidance = build_change_guidance(session, change, artifacts=artifacts)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change answer", json_output=args.json_output)
+    verb = "answered" if created else "already answered (nothing was written)"
+    answer_value = question.answer.value if question.answer is not None else "-"
+    return _emit(
+        args.json_output,
+        payload={
+            "outcome": "answered" if created else "replayed",
+            "question": question.model_dump(mode="json"),
+        },
+        text=f"question {question.id}: {verb} — {answer_value}",
+        guidance=guidance,
+    )
+
+
+def _comment(
+    factory: sessionmaker[Session], args: ChangeCommentArgs, artifacts: ArtifactService | None
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change comment", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            stored, _created = add_comment(
+                session,
+                change,
+                phase=_phase_for(session, change, args.phase),
+                artifact=args.artifact,
+                anchor_id=args.anchor_id,
+                body=args.body,
+                author=CLI_ACTOR,
+                artifacts=artifacts,
+            )
+            _cli_audit(session, COMMENT_ADD_ACTION, "comment", stored.id)
+            guidance = build_change_guidance(session, change, artifacts=artifacts)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change comment", json_output=args.json_output)
+    where = stored.anchor.artifact + (
+        f"#{stored.anchor.anchor_id}" if stored.anchor.anchor_id else ""
+    )
+    revision = stored.anchor.revision or "unbound"
+    return _emit(
+        args.json_output,
+        payload={"outcome": "created", "comment": stored.model_dump(mode="json")},
+        text=f"comment {stored.id}: {where} @ {revision} — {stored.body}",
+        guidance=guidance,
+    )
+
+
+def _rework(
+    factory: sessionmaker[Session], args: ChangeReworkArgs, artifacts: ArtifactService | None
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change rework", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            try:
+                order, created = issue_rework_order(
+                    session,
+                    change,
+                    phase=_phase_for(session, change, args.phase),
+                    comment_ids=args.comment_ids,
+                    question_ids=args.question_ids,
+                    instruction=args.instruction,
+                    issued_by=CLI_ACTOR,
+                    actor_role=None,
+                    artifacts=artifacts,
+                )
+            except ConversationError as error:
+                return _conversation_error("change rework", error, args.json_output)
+            _cli_audit(session, REWORK_ORDER_ACTION, "rework_order", order.id)
+            guidance = build_change_guidance(session, change, artifacts=artifacts)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change rework", json_output=args.json_output)
+    return _emit(
+        args.json_output,
+        payload={
+            "outcome": "created" if created else "replayed",
+            "rework_order": order.model_dump(mode="json"),
+        },
+        text=(
+            f"rework order {order.id}: {order.status.value} (phase={order.phase.value},"
+            f" comments={len(order.comment_ids)}, questions={len(order.question_ids)})"
+        ),
+        guidance=guidance,
+    )
+
+
+def _approve(
+    factory: sessionmaker[Session], args: ChangeApproveArgs, artifacts: ArtifactService | None
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change approve", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            try:
+                decision, gate = record_phase_decision(
+                    session,
+                    change,
+                    phase=_phase_for(session, change, args.phase),
+                    outcome=DecisionOutcome.WAIVED if args.waive else DecisionOutcome.APPROVED,
+                    subject_revision=args.revision,
+                    comment=args.comment,
+                    actor_role=None,
+                    artifacts=artifacts,
+                )
+            except ConversationError as error:
+                return _conversation_error("change approve", error, args.json_output)
+            _cli_audit(session, APPROVAL_RECORD_ACTION, "change", change.id)
+            guidance = build_change_guidance(session, change, artifacts=artifacts)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change approve", json_output=args.json_output)
+    return _emit(
+        args.json_output,
+        payload={
+            "outcome": "created",
+            "decision": decision.model_dump(mode="json"),
+            "phase_gate": gate.model_dump(mode="json"),
+        },
+        text=(
+            f"decision {decision.id}: {decision.outcome.value} {decision.gate.value}"
+            f" @ {decision.commit_sha} (phase={gate.phase.value})"
+        ),
+        guidance=guidance,
+    )
+
+
+def _read_content(source: str) -> str:
+    try:
+        return sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    except OSError as error:
+        raise IntakeInputError(f"cannot read the content: {os_error_reason(error)}") from error
+
+
+def _artifacts(
+    factory: sessionmaker[Session], args: ChangeArtifactsArgs, service: ArtifactService
+) -> int:
+    command = "change artifacts"
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, command, args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            match args.action:
+                case ArtifactAction.LIST:
+                    tree = service.tree(change)
+                    if args.json_output:
+                        print(json.dumps(tree.model_dump(mode="json")))
+                    elif not tree.exists:
+                        print(f"change {change.id}: no branch yet ({tree.branch})")
+                    elif not tree.nodes:
+                        print(f"change {change.id}: {tree.branch} @ {tree.revision} — no artifacts")
+                    else:
+                        print(f"change {change.id}: {tree.branch} @ {tree.revision}")
+                        print("\n".join(f"{node.kind.value:7} {node.path}" for node in tree.nodes))
+                    return EXIT_OK
+                case ArtifactAction.SHOW:
+                    document = service.get(change, args.path or "", revision=args.revision)
+                    if args.json_output:
+                        print(json.dumps(document.model_dump(mode="json")))
+                    else:
+                        sys.stdout.write(document.content)
+                        if not document.content.endswith("\n"):
+                            sys.stdout.write("\n")
+                    return EXIT_OK
+                case ArtifactAction.VERSIONS:
+                    versions = service.versions(change, args.path or "")
+                    if args.json_output:
+                        print(json.dumps([v.model_dump(mode="json") for v in versions]))
+                    elif versions:
+                        print(
+                            "\n".join(
+                                f"{v.revision} {v.message.splitlines()[0] if v.message else ''}"
+                                for v in versions
+                            )
+                        )
+                    else:
+                        print(f"{args.path}: no revisions on the change branch")
+                    return EXIT_OK
+                case ArtifactAction.DIFF:
+                    if not args.from_revision or not args.to_revision:
+                        return report_invalid_input(
+                            command,
+                            "--from and --to are required for diff",
+                            json_output=args.json_output,
+                        )
+                    diff = service.diff(
+                        change,
+                        args.path or "",
+                        from_revision=args.from_revision,
+                        to_revision=args.to_revision,
+                    )
+                    if args.json_output:
+                        print(json.dumps(diff.model_dump(mode="json")))
+                    else:
+                        sys.stdout.write(diff.unified or f"{args.path}: no differences\n")
+                    return EXIT_OK
+                case ArtifactAction.EDIT:
+                    if not args.file:
+                        return report_invalid_input(
+                            command, "--file is required for edit", json_output=args.json_output
+                        )
+                    content = _read_content(args.file)
+                    written = service.write(
+                        change,
+                        args.path or "",
+                        content,
+                        base_revision=args.base_revision,
+                        actor=CLI_ACTOR,
+                    )
+                    ArtifactDraftRepository(session).delete(change.id, args.path or "")
+                    conversation = ConversationRepository(session)
+                    effects = apply_revision(
+                        conversation.list_questions(change.id, artifact=args.path),
+                        conversation.list_comments(change.id, artifact=args.path),
+                        {args.path or "": content},
+                    )
+                    for question in effects.stale_questions:
+                        conversation.save_question(question)
+                    _cli_audit(
+                        session, ARTIFACT_EDIT_ACTION, "artifact", f"{change.id}:{args.path}"
+                    )
+                    guidance = build_change_guidance(session, change, artifacts=service)
+                    created = written.revision != written.previous_revision
+                    stale_ids = ", ".join(q.id for q in effects.stale_questions)
+                    detached_ids = ", ".join(c.id for c in effects.detached_comments)
+                    text = (
+                        f"{written.path}: {'committed' if created else 'unchanged'}"
+                        f" {written.revision} (was {written.previous_revision})"
+                    )
+                    if stale_ids:
+                        text += f"; stale questions: {stale_ids}"
+                    if detached_ids:
+                        text += f"; detached comments: {detached_ids}"
+                    return _emit(
+                        args.json_output,
+                        payload={
+                            "outcome": "created" if created else "unchanged",
+                            "path": written.path,
+                            "revision": written.revision,
+                            "previous_revision": written.previous_revision,
+                            "stale_questions": [q.id for q in effects.stale_questions],
+                            "detached_comments": [c.id for c in effects.detached_comments],
+                        },
+                        text=text,
+                        guidance=guidance,
+                    )
+    except IntakeInputError as error:
+        return report_invalid_input(command, str(error), json_output=args.json_output)
+    except ArtifactNotFoundError as error:
+        return report_invalid_input(command, str(error), json_output=args.json_output)
+    except ArtifactConflictError as error:
+        return report_execution_error(command, str(error), json_output=args.json_output)
+    except SQLAlchemyError:
+        return report_state_store_unreachable(command, json_output=args.json_output)

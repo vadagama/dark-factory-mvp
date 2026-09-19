@@ -19,9 +19,9 @@ import type { ChangeCard, Guidance } from "../api/types";
 
 function renderPage(): void {
   render(
-    <MemoryRouter initialEntries={["/changes/chg_demo_001"]}>
+    <MemoryRouter initialEntries={["/changes/chg_demo_001/card"]}>
       <Routes>
-        <Route path="/changes/:changeId" element={<ChangeCardPage />} />
+        <Route path="/changes/:changeId/card" element={<ChangeCardPage />} />
       </Routes>
     </MemoryRouter>,
   );

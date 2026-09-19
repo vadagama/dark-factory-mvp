@@ -82,8 +82,12 @@ export function ChangeCardPage() {
       case "open_run":
         reloadAll();
         return;
-      case "open_gates":
-        navigate(`/changes/${encodeURIComponent(action.changeId)}/gates`);
+      case "approve_phase":
+      case "rework":
+      case "focus_questions":
+      case "open_artifacts":
+        // The decision lives in the ChangeSet workspace (T088); the card is the legacy view.
+        navigate(`/changes/${encodeURIComponent(action.changeId)}`);
         return;
       case "new_change":
         navigate(

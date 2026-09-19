@@ -55,6 +55,7 @@ from dark_factory.agents.profiles.manifest import AgentProfile
 from dark_factory.agents.profiles.registry import get_profile
 from dark_factory.agents.skills.manifest import SkillManifest
 from dark_factory.agents.skills.registry import get_skill
+from dark_factory.changes.conversations import QuestionDraft, ReworkSummary
 from dark_factory.changes.enums import ChangeRequestStatus, Role, Stage, StageStatus, StopOutcome
 from dark_factory.changes.keys import effect_key, operation_key
 from dark_factory.changes.next_action import (
@@ -64,6 +65,10 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change, StageResult
+from dark_factory.orchestration.conversations import (
+    parse_agent_conversation_output,
+    render_conversation_inputs,
+)
 from dark_factory.orchestration.stages.checks import (
     construction_entry_reason,
     pending_gate_results,
@@ -275,8 +280,17 @@ class AgentStageExecutor:
                 usage=agent_result.usage,
             )
         artifacts, change_request = published
+        # The agent's structured blocks (T078/T081): questions for the operator
+        # and the rework summary; a malformed entry is reported, never invented.
+        conversation = parse_agent_conversation_output(agent_result.output)
         return self._waiting(
-            context, artifacts=artifacts, change_request=change_request, usage=agent_result.usage
+            context,
+            artifacts=artifacts,
+            change_request=change_request,
+            usage=agent_result.usage,
+            questions=conversation.questions,
+            rework_summary=conversation.rework_summary,
+            conversation_errors=conversation.errors,
         )
 
     async def _publish(
@@ -399,6 +413,19 @@ class AgentStageExecutor:
         ]
         if context.change.description:
             lines.append(f"Description: {context.change.description}")
+        brief = context.change.brief
+        if brief is not None and brief.is_complete:
+            lines.append(f"Problem: {brief.problem}")
+            lines.append(f"Goal: {brief.goal}")
+            for constraint in brief.constraints:
+                lines.append(f"Constraint: {constraint}")
+            for item in brief.out_of_scope:
+                lines.append(f"Out of scope: {item}")
+        if context.conversation is not None and not context.conversation.is_empty:
+            # Typed inputs of the discussion (ADR-034 p.5): data, not prompt tricks.
+            lines.extend(
+                ["", "Discussion so far:", render_conversation_inputs(context.conversation)]
+            )
         return "\n".join(lines)
 
     def _span(self, context: StageContext, profile: AgentProfile) -> AbstractContextManager[object]:
@@ -420,6 +447,9 @@ class AgentStageExecutor:
         artifacts: Sequence[ArtifactRef],
         change_request: ChangeRequestRef,
         usage: Usage | None = None,
+        questions: Sequence[QuestionDraft] = (),
+        rework_summary: ReworkSummary | None = None,
+        conversation_errors: Sequence[str] = (),
     ) -> StageResult:
         """The stage produced its work and parks on its external wait (FR-009, SC-004).
 
@@ -455,6 +485,9 @@ class AgentStageExecutor:
             next_action=action,
             artifacts=list(artifacts),
             usage=usage,
+            questions=questions,
+            rework_summary=rework_summary,
+            conversation_errors=conversation_errors,
         )
 
     def _blocked(
@@ -481,6 +514,9 @@ class AgentStageExecutor:
         next_action: StopAction | WaitForCIAction | WaitForInputAction,
         artifacts: Sequence[ArtifactRef] = (),
         usage: Usage | None = None,
+        questions: Sequence[QuestionDraft] = (),
+        rework_summary: ReworkSummary | None = None,
+        conversation_errors: Sequence[str] = (),
     ) -> StageResult:
         """StageResult skeleton: identity from the context, gates pending (FR-009).
 
@@ -499,6 +535,9 @@ class AgentStageExecutor:
             artifacts=list(artifacts),
             gate_results=pending_gate_results(context.required_gates),
             usage=usage,
+            questions=list(questions),
+            rework_summary=rework_summary,
+            conversation_errors=list(conversation_errors),
         )
 
     def _branch(self, context: StageContext) -> str:

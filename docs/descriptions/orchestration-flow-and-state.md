@@ -314,6 +314,18 @@ State-specific enum-ы: `EffectStatus` (`planned`, `in_progress`, `succeeded`, `
 
 `orchestration/intake.py` (T072) — «Помоги сформулировать»: `BriefFormulator(harness)` шлёт роли `product` один `TaskEnvelope` (`run_id="intake"`, стадия `specification`, без инструментов) с инструкцией вернуть один JSON-объект из четырёх полей и разбирает ответ в `IntakeBrief`; недоступный/отказавший/сбойный harness или ответ не-бриф → черновик с `error` (текст исключения не эхоится — только тип, ADR-009), исходный текст всегда сохраняется в `source_text`.
 
+### 11.2. Обсуждение и документы (T078–T087, ADR-034/ADR-035)
+
+`conversation_store.py` — репозитории домена обсуждения (`changes/conversations.py`): `ConversationRepository` (вопросы `Question`, замечания `Comment`, поручения `ReworkOrder`; добавление идемпотентно по id, `save_*` заменяет документ, списки фильтруются по фазе/статусу/артефакту), `ArtifactDraftRepository` (один черновик автосейва на артефакт, upsert/delete — ADR-035 п.4) и `ArtifactViewRepository` (отметки «просмотрено» по ревизии — отдельная таблица, чтобы просмотр нельзя было прочитать как согласование, ADR-034 п.2). Таблицы `question`, `comment`, `rework_order`, `artifact_draft`, `artifact_view` — миграция `0006_conversations`, FK на `change` с каскадом.
+
+`conversation_ops.py` — операторские операции, общие для API и CLI (ADR-033 п.3): `answer_question` (проверка ответа по типу вопроса), `add_comment` (якорь привязывается к голове ветки), `issue_rework_order` (одно поручение на фазу одновременно; в той же транзакции — version-bound `rejected` по гейту фазы), `record_phase_decision` (согласование/пропуск через прекондиции гейта T087 и проверку ревизии). Типизированные отказы — `ConversationNotFoundError`/`ConversationConflictError`/`ConversationInputError`.
+
+`conversations.py` — сборка для драйвера: `load_conversation_inputs` (typed-входы попытки — `ConversationInputs`, ADR-034 п.5), `with_store_facts` (решения store, привязанные к наблюдённой голове CR, и поручения фазы дополняют `GateObservation`), `record_stage_outcome` (после продвижения: вопросы агента из `StageResult.questions` под детерминированными id, `pending → in_progress` при `ReworkAction`, `in_progress → done` со сводкой и `addressed` замечаний при человеческом ожидании, `escalated` при `blocked`). Семантика — `orchestration/conversations.py` (staleness, якоря, разбор структурных блоков агента, `plan_rework_order` через `plan_rework`) и `orchestration/phase_gate.py` (прекондиции гейта); поверхность над git — `orchestration/artifacts.py`.
+
+### 6.3.1. Доработка по поручению оператора (T081, ADR-034 п.3)
+
+Human-gated стадия (например, `specification`) паркуется в `waiting`; наблюдение (`stages/gates.py`) с *pending* `ReworkOrder` в `GateObservation.rework_orders` резолвит ожидание не в `ExecuteStage`, а в `ReworkAction(round=used+1)` (или в `StopAction(blocked)` с причиной цикла, когда `plan_rework_order` отказывает: исчерпан лимит, поручение на той же ревизии, что предыдущее, повтор того же набора замечаний). Flow применяет `_handle_rework` как раньше: тратит раунд бюджета run, стадия остаётся в `failed` и переоткрывается следующей попыткой на новой ревизии. Счётчик — `budget.used_rework_rounds`, а не число замечаний.
+
 ## 12. `stage_results.py`: durable результаты попыток (T035, FR-014, ADR-006 п.3/п.4)
 
 `StageResultRepository` — публичный write API неизменяемых `StageResult`:

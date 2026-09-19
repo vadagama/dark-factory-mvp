@@ -14,6 +14,7 @@ import pytest
 from dark_factory.changes.enums import (
     BriefAuthor,
     Gate,
+    Phase,
     ProductStatus,
     Provider,
     RunStatus,
@@ -47,6 +48,7 @@ from dark_factory.orchestration.guidance import (
     product_guidance,
     spend_forecast,
 )
+from dark_factory.orchestration.phase_gate import ApprovalView, GateReason, PhaseGate
 from tests.changes_factories import make_change, make_product
 
 COMPLETE_BRIEF = IntakeBrief(problem="login is slow", goal="p95 < 300 ms")
@@ -390,3 +392,116 @@ def test_spend_forecast_is_the_remaining_limit() -> None:
     run = _run(RunStatus.RUNNING, budget=BudgetSnapshot(cost_used=Decimal("4.25")))
     assert spend_forecast(change, run) == Decimal("15.75")
     assert spend_forecast(_change(spend_limit=None), run) is None
+
+
+# --- phase gate (T087) -----------------------------------------------------------------
+
+
+def _gate(**overrides: object) -> PhaseGate:
+    fields: dict[str, object] = {
+        "change_id": "chg-001",
+        "phase": Phase.REQUIREMENTS,
+        "gate": Gate.SPECIFICATION,
+        "available": True,
+        "current_revision": "r2",
+    }
+    fields.update(overrides)
+    return PhaseGate.model_validate(fields)
+
+
+def _waiting_run() -> ChangeRun:
+    return _run(RunStatus.WAITING, stage_status=StageStatus.WAITING)
+
+
+def test_an_available_gate_renders_the_approval_with_the_send_back_as_secondary() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=WaitForInputAction(reason="spec produced"),
+        phase_gate=_gate(open_comments=1),
+    )
+    _holds_the_rules(guidance)
+    assert guidance.headline == "Фаза «Требования» готова к согласованию"
+    assert guidance.primary.label == "Согласовать требования"
+    assert guidance.primary.enabled
+    assert guidance.primary.cli == "factory change approve --id chg-001 --phase requirements"
+    assert guidance.secondary[0].label == "На доработку"
+    assert "открытых замечаний: 1" in guidance.why
+
+
+def test_blocking_questions_close_the_gate_and_lead_to_the_questions() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=RequestApprovalAction(gate=Gate.SPECIFICATION),
+        phase_gate=_gate(
+            available=False,
+            reasons=(
+                GateReason(what="Блокирующих вопросов без ответа: 2 (q1, q2)", how="Ответьте"),
+            ),
+            blocking_questions=2,
+            open_questions=2,
+        ),
+    )
+    _holds_the_rules(guidance)
+    assert guidance.headline == "Фаза «Требования»: нужно решение, гейт пока закрыт"
+    assert guidance.primary.label == "Ответить на вопросы"
+    assert guidance.primary.api == "GET /changes/chg-001/questions?status=open"
+    assert guidance.blockers[0].what.startswith("Блокирующих вопросов")
+    assert guidance.blockers[0].who is GuidanceActor.OPERATOR
+    assert "Согласовать" not in [action.label for action in guidance.secondary]
+
+
+def test_a_closed_gate_without_questions_keeps_the_approval_visible_but_disabled() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=RequestApprovalAction(gate=Gate.SPECIFICATION),
+        phase_gate=_gate(
+            available=False,
+            reasons=(
+                GateReason(what="Отправлено на доработку: раунд ещё не запущен", how="Запустите"),
+            ),
+            rework_pending=True,
+        ),
+    )
+    _holds_the_rules(guidance)
+    assert guidance.primary.label == "Согласовать требования"
+    assert not guidance.primary.enabled
+    assert guidance.primary.reason == "Отправлено на доработку: раунд ещё не запущен"
+
+
+def test_a_current_approval_moves_on_and_a_stale_one_is_counted() -> None:
+    approved = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=RequestApprovalAction(gate=Gate.SPECIFICATION),
+        phase_gate=_gate(
+            approved=True,
+            approvals=(
+                ApprovalView(decision_id="d1", outcome="approved", revision="r1", state="stale"),
+                ApprovalView(decision_id="d2", outcome="approved", revision="r2", state="current"),
+            ),
+        ),
+    )
+    _holds_the_rules(approved)
+    assert approved.headline == "Фаза «Требования» согласована на текущей ревизии"
+    assert approved.primary.label == "Продолжить после согласования"
+    assert "прежних согласований неактуально: 1" in approved.why
+
+
+def test_a_running_rework_round_names_itself_on_a_running_run() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_run(RunStatus.RUNNING, stage_status=StageStatus.IN_PROGRESS),
+        phase_gate=_gate(available=False, rework_in_progress=True, rework_rounds_used=1),
+    )
+    _holds_the_rules(guidance)
+    assert guidance.headline == "Доработка «Требования»: раунд 1 из 3"
+    assert guidance.primary.label == "Выполнить раунд доработки"
+    assert guidance.primary.cli == "factory run advance --change-id chg-001"

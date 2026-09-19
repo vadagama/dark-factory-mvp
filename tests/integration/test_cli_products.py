@@ -23,12 +23,14 @@ from dark_factory.cli.main import (
     EXIT_INVALID_INPUT,
     EXIT_OK,
     ProductAddArgs,
+    ProductBootstrapArgs,
     ProductListArgs,
     ProductShowArgs,
     ProductValidateArgs,
 )
 from dark_factory.orchestration.state.change_store import (
     PRODUCT_ADD_ACTION,
+    PRODUCT_BOOTSTRAP_ACTION,
     PRODUCT_VALIDATE_ACTION,
 )
 from dark_factory.orchestration.state.engine import session_scope
@@ -204,3 +206,41 @@ def test_unknown_product_is_invalid_input(
     assert code == EXIT_INVALID_INPUT
     assert _out(capsys) == {"error": "invalid_input", "detail": "unknown product 'prd-missing'"}
     assert _audit(session_factory) == []
+
+
+def test_bootstrap_applies_the_baseline_and_replays(
+    session_factory: sessionmaker[Session], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        products_module.run_product_add_command(_add_args(), session_factory=session_factory)
+        == EXIT_OK
+    )
+    provisioning = FakeRepositoryProvisioning()
+    provisioning.seed(REPOSITORY, "empty")
+    args = ProductBootstrapArgs(product_id=PRODUCT_ID, packs=(), json_output=True)
+
+    code = products_module.run_product_bootstrap_command(
+        args, provisioning=provisioning, session_factory=session_factory
+    )
+
+    assert code == EXIT_OK
+    first = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert first["result"]["applied_packs"][0]["name"] == "product-baseline"
+    code = products_module.run_product_bootstrap_command(
+        args, provisioning=provisioning, session_factory=session_factory
+    )
+    assert code == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["result"]["revision"] == first["result"]["revision"]
+    with session_scope(session_factory) as session:
+        actions = (
+            session.execute(
+                select(AuditLogEntry.action).where(AuditLogEntry.resource_id == PRODUCT_ID)
+            )
+            .scalars()
+            .all()
+        )
+    assert actions.count(PRODUCT_BOOTSTRAP_ACTION) == 2
+    assert (
+        products_module.run_product_bootstrap_command(args, session_factory=session_factory)
+        == EXIT_INVALID_INPUT
+    )

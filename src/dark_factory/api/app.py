@@ -18,12 +18,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dark_factory.api.auth import ApiTokenStore
 from dark_factory.api.dto import ErrorBody
+from dark_factory.api.routes_artifacts import create_artifacts_router
 from dark_factory.api.routes_changes import create_changes_router
 from dark_factory.api.routes_ci import create_ci_router
+from dark_factory.api.routes_conversations import create_conversations_router
 from dark_factory.api.routes_products import create_products_router
 from dark_factory.api.routes_runs import create_runs_router
+from dark_factory.orchestration.artifacts import ArtifactService
 from dark_factory.orchestration.intake import BriefFormulator
-from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
+from dark_factory.orchestration.stages.agent import DEFAULT_BRANCH_PREFIX
+from dark_factory.ports import CiStageTogglePort, RepositoryPort, RepositoryProvisioningPort
 
 API_PREFIX: Final[str] = "/api/v1"
 
@@ -90,6 +94,8 @@ def create_app(
     ci_repository: str | None = None,
     provisioning: RepositoryProvisioningPort | None = None,
     brief_formulator: BriefFormulator | None = None,
+    repository: RepositoryPort | None = None,
+    branch_prefix: str = DEFAULT_BRANCH_PREFIX,
 ) -> FastAPI:
     """Build the API app over the given session factory and token store.
 
@@ -105,7 +111,11 @@ def create_app(
     ``POST /products/{id}/validate`` refuses with 503 instead of inventing a
     readiness the factory cannot observe. ``brief_formulator`` is the
     harness-backed «Помоги сформулировать» seam (T072): with ``None`` the
-    ``POST /briefs/formulate`` endpoint answers an honest draft.
+    ``POST /briefs/formulate`` endpoint answers an honest draft. ``repository``
+    is the product repository port of the document artifacts (T082-T086,
+    ADR-035): with ``None`` the ``/artifacts*`` endpoints answer 503, the
+    discussion endpoints work without revisions and every approval reads as
+    unbound — nothing is shown that the factory cannot read.
     """
     token_store = tokens if tokens is not None else ApiTokenStore.from_env()
     session_dependency = create_session_dependency(session_factory)
@@ -118,9 +128,18 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.token_store = token_store
     app.include_router(create_runs_router(session_dependency, token_store), prefix=API_PREFIX)
+    artifacts = (
+        ArtifactService(repository, branch_prefix=branch_prefix) if repository is not None else None
+    )
     app.include_router(
-        create_changes_router(session_dependency, token_store, brief_formulator),
+        create_changes_router(session_dependency, token_store, brief_formulator, artifacts),
         prefix=API_PREFIX,
+    )
+    app.include_router(
+        create_conversations_router(session_dependency, token_store, artifacts), prefix=API_PREFIX
+    )
+    app.include_router(
+        create_artifacts_router(session_dependency, token_store, artifacts), prefix=API_PREFIX
     )
     app.include_router(
         create_products_router(session_dependency, token_store, provisioning), prefix=API_PREFIX

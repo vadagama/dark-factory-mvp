@@ -515,6 +515,10 @@ stateDiagram-v2
 | Central OKF             | Федеративный knowledge graph           |
 | Dark Factory Console    | Единый пользовательский интерфейс      |
 
+### 15.1. Документы-артефакты в интерфейсе (ADR-035, M2)
+
+Фабрика **не хранит** содержимое артефактов ChangeSet в своей БД: `orchestration/artifacts.py` читает дерево `.factory/changes/**` ветки изменения (`factory/<slug(change_id)>`), документ на ревизии, ревизии пути и diff через методы чтения `RepositoryPort` (`read_file`, `list_tree`, `list_commits`), а правка из API/CLI/Console становится одним коммитом через `publish_commit` (конфликт по `base_revision` не разрешается молча). Frontmatter отдаётся как свойства документа; `schema`, `id`, `type`, `product`, `change` защищены от правки через интерфейс. В БД фабрики живут только обсуждение (вопросы, замечания с якорем `artifact + anchor_id + revision`, поручения), черновик автосейва (`artifact_draft`, вне git) и отметки «просмотрено»; новая ревизия делает прежние согласования неактуальными (read-model гейта фазы), а не удаляет их.
+
 ## 16. Связанные документы
 
 - Решение о принятии модели — [ADR-020](adr/ADR-020-native-sdd-core.md)

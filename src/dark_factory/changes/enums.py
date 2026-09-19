@@ -313,3 +313,85 @@ class EscalationRule(StrEnum):
     AUTONOMY_BUDGET_EXHAUSTED = "autonomy_budget_exhausted"
     UI_UNVERIFIABLE = "ui_unverifiable"
     IRREVERSIBLE_OPERATION = "irreversible_operation"
+
+
+class Phase(StrEnum):
+    """User-facing phase of a ChangeSet (ADR-032): a projection over ``Stage``.
+
+    The eight operator phases F0..F8 plus ``done``. ``Stage`` is the executable
+    model and does not change; the phase is what the operator navigates by and
+    what a question, a comment or a rework order is bound to (ADR-034 p.1).
+    Wire values are stable: they travel in ``Guidance`` and in the discussion
+    entities.
+    """
+
+    INITIATIVE = "initiative"
+    REQUIREMENTS = "requirements"
+    ARCHITECTURE = "architecture"
+    INTERFACE = "interface"
+    PLAN = "plan"
+    EXECUTION = "execution"
+    DEMONSTRATION = "demonstration"
+    DELIVERY = "delivery"
+    DONE = "done"
+
+
+class AnswerKind(StrEnum):
+    """Answer type of an agent question (ADR-034 p.1): one of a few choices, text or a number."""
+
+    CHOICE = "choice"
+    TEXT = "text"
+    NUMBER = "number"
+
+
+class QuestionStatus(StrEnum):
+    """Lifecycle of an agent question (ADR-034 p.1): ``open → answered → resolved | stale``.
+
+    ``answered`` — the operator gave the answer, the agent has not consumed it
+    yet; ``resolved`` — the answer was taken into a new revision of the
+    artifact; ``stale`` — the fragment the question was about is gone or the
+    artifact moved on before an answer, so the question no longer applies.
+    """
+
+    OPEN = "open"
+    ANSWERED = "answered"
+    RESOLVED = "resolved"
+    STALE = "stale"
+
+
+class CommentStatus(StrEnum):
+    """Lifecycle of an operator comment (ADR-034 p.2).
+
+    ``addressed`` is the agent's "fixed" mark: ready for the operator's
+    re-check, **not** closed — only the operator closes (``closed``).
+    """
+
+    OPEN = "open"
+    ADDRESSED = "addressed"
+    CLOSED = "closed"
+
+
+class AnchorState(StrEnum):
+    """Whether a comment's anchor still resolves in the current artifact revision (ADR-034 p.1).
+
+    A read-model value: ``detached`` is shown explicitly and the comment is
+    never re-attached to another element.
+    """
+
+    ATTACHED = "attached"
+    DETACHED = "detached"
+
+
+class ReworkOrderStatus(StrEnum):
+    """Lifecycle of a rework order (ADR-034 p.3).
+
+    ``pending`` — the operator sent it (the "rework" action), no agent round has
+    started; ``in_progress`` — a rework round of the stage is executing it;
+    ``done`` — the agent reported its summary; ``escalated`` — the rework
+    limit or another stop condition ended the loop before it was done.
+    """
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+    ESCALATED = "escalated"

@@ -29,6 +29,8 @@ from dark_factory.api.auth import (
     require_write,
 )
 from dark_factory.api.dto import (
+    ProductBootstrapRequest,
+    ProductBootstrapView,
     ProductCreateRequest,
     ProductValidateRequest,
     ProductValidationView,
@@ -37,18 +39,20 @@ from dark_factory.changes.product import Product
 from dark_factory.orchestration.guidance import Guidance
 from dark_factory.orchestration.products import (
     PROVISIONING_UNCONFIGURED_DETAIL,
+    bootstrap_baseline,
     observe_repository,
     record_validation,
 )
 from dark_factory.orchestration.state.change_store import (
     PRODUCT_ADD_ACTION,
+    PRODUCT_BOOTSTRAP_ACTION,
     PRODUCT_VALIDATE_ACTION,
     AuditRepository,
     ProductRepository,
 )
 from dark_factory.orchestration.state.guidance import build_product_guidance
 from dark_factory.orchestration.state.repositories import StateConflictError
-from dark_factory.ports import RepositoryProvisioningPort
+from dark_factory.ports import ProvisioningOperationUnsupportedError, RepositoryProvisioningPort
 
 __all__ = ["PROVISIONING_UNCONFIGURED_DETAIL", "create_products_router"]
 
@@ -168,5 +172,36 @@ def create_products_router(
             raise HTTPException(status_code=409, detail="state_revision mismatch") from None
         _audit(token, PRODUCT_VALIDATE_ACTION, product_id, "created", idempotency_key, session)
         return ProductValidationView(**product.model_dump(), validation=validation)
+
+    @router.post("/products/{product_id}/bootstrap", response_model=ProductBootstrapView)
+    def bootstrap_product(
+        token: ProductTokenDep,
+        session: SessionDep,
+        product_id: str,
+        body: ProductBootstrapRequest | None = None,
+        idempotency_key: IdempotencyKey = None,
+    ) -> ProductBootstrapView:
+        """Apply the baseline packs to the product repository (T069/ADR-031 p.3, M2 intake).
+
+        The operator's «Подготовить baseline»: an empty or baseline-less
+        repository gets its ``.factory/`` skeleton as one commit on the default
+        branch, replay-safe by ``Idempotency-Key``. 503 without a provisioning
+        port, 409 when the bound adapter cannot perform a bootstrap (the
+        operator-prepared local mirror is read-only, ADR-031 p.2) — the factory
+        never reports a baseline it did not create (ADR-031 p.6).
+        """
+        product = ProductRepository(session).get(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail=f"Product {product_id!r} does not exist")
+        if provisioning is None:
+            raise HTTPException(status_code=503, detail=PROVISIONING_UNCONFIGURED_DETAIL)
+        packs = body.packs if body is not None and body.packs else ["product-baseline"]
+        key = idempotency_key or f"bootstrap:{product_id}:{','.join(packs)}"
+        try:
+            result = bootstrap_baseline(provisioning, product, packs=packs, idempotency_key=key)
+        except ProvisioningOperationUnsupportedError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        _audit(token, PRODUCT_BOOTSTRAP_ACTION, product_id, "created", idempotency_key, session)
+        return ProductBootstrapView(product=product, result=result)
 
     return router

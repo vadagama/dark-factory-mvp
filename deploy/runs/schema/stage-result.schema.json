@@ -1,5 +1,54 @@
 {
   "$defs": {
+    "AnswerKind": {
+      "description": "Answer type of an agent question (ADR-034 p.1): one of a few choices, text or a number.",
+      "enum": [
+        "choice",
+        "text",
+        "number"
+      ],
+      "title": "AnswerKind",
+      "type": "string"
+    },
+    "ArtifactAnchor": {
+      "description": "Where in which artifact a question or a comment points (ADR-034 p.1).\n\n``artifact`` is the path of the document inside the ChangeSet tree,\n``anchor_id`` the stable id of the element (a frontmatter ``id``, a\nrequirement/criterion id such as ``REQ-001``/``AC-2``, or a heading slug)\nand ``revision`` the artifact revision the anchor was made against. Whether\nthe anchor still resolves is a read-model fact computed against the current\nrevision (``orchestration.conversations.anchor_state``), never stored.",
+      "properties": {
+        "anchor_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor Id"
+        },
+        "artifact": {
+          "minLength": 1,
+          "title": "Artifact",
+          "type": "string"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "title": "ArtifactAnchor",
+      "type": "object"
+    },
     "ArtifactRef": {
       "description": "Reference to a produced artifact: type, URI, revision, hash, producer (hld-mvp 5).",
       "properties": {
@@ -518,6 +567,49 @@
       "title": "Provider",
       "type": "string"
     },
+    "QuestionDraft": {
+      "description": "A question as the agent states it, before it is a stored entity (T078).\n\nThe executor parses drafts out of the agent's structured output\n(``orchestration.conversations.parse_agent_conversation_output``) and the\nrunner stores them as :class:`Question`\\ s bound to the change, the run and\nthe phase of the stage. Additive to ``StageResult`` (schema version stays 1).",
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactAnchor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "blocking": {
+          "default": true,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/AnswerKind",
+          "default": "text"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "QuestionDraft",
+      "type": "object"
+    },
     "ReleaseAction": {
       "description": "Proceed with release to the target environment (dev in MVP).",
       "properties": {
@@ -761,6 +853,37 @@
       "title": "ReworkAction",
       "type": "object"
     },
+    "ReworkSummary": {
+      "description": "The agent's report after a rework round: what changed, what remains (ADR-034).\n\n``addressed_comment_ids`` names the comments the agent claims to have\nhandled; the store moves those to ``addressed`` \u2014 never to ``closed``.",
+      "properties": {
+        "addressed_comment_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Addressed Comment Ids",
+          "type": "array"
+        },
+        "changed": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Changed",
+          "type": "array"
+        },
+        "remaining": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Remaining",
+          "type": "array"
+        }
+      },
+      "title": "ReworkSummary",
+      "type": "object"
+    },
     "Role": {
       "description": "Agent role catalog (ADR-007).",
       "enum": [
@@ -996,6 +1119,14 @@
       "title": "Change Id",
       "type": "string"
     },
+    "conversation_errors": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Conversation Errors",
+      "type": "array"
+    },
     "escalations": {
       "default": [],
       "items": {
@@ -1087,10 +1218,29 @@
       "title": "Produced At",
       "type": "string"
     },
+    "questions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/QuestionDraft"
+      },
+      "title": "Questions",
+      "type": "array"
+    },
     "release": {
       "anyOf": [
         {
           "$ref": "#/$defs/ReleaseEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rework_summary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReworkSummary"
         },
         {
           "type": "null"

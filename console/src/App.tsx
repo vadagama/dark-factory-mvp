@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router";
 import { Layout } from "./components/Layout";
 import { BudgetsPage } from "./pages/BudgetsPage";
 import { ChangeCardPage } from "./pages/ChangeCardPage";
+import { ChangeSetPage } from "./pages/ChangeSetPage";
 import { ChangesListPage } from "./pages/ChangesListPage";
 import { CiStagesPage } from "./pages/CiStagesPage";
 import { GatesPage } from "./pages/GatesPage";
@@ -18,6 +19,8 @@ import { SettingsPage } from "./pages/SettingsPage";
  *
  * ADR-037 IA (M1): products are the index; the service screens moved under
  * /service and the old paths redirect so bookmarks keep working.
+ * M2 (T088): /changes/:id is the ChangeSet workspace; the M1 change card
+ * stays reachable at /changes/:id/card.
  */
 export function App() {
   return (
@@ -27,7 +30,8 @@ export function App() {
         <Route path="products/:productId" element={<ProductPage />} />
         <Route path="products/:productId/new-change" element={<IntakePage />} />
         <Route path="changes" element={<ChangesListPage />} />
-        <Route path="changes/:changeId" element={<ChangeCardPage />} />
+        <Route path="changes/:changeId" element={<ChangeSetPage />} />
+        <Route path="changes/:changeId/card" element={<ChangeCardPage />} />
         <Route path="changes/:changeId/gates" element={<GatesPage />} />
         <Route path="attention" element={<AttentionPage />} />
         <Route path="activity" element={<ActivityPage />} />

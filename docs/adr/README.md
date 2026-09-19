@@ -64,7 +64,7 @@
 | [ADR-032](ADR-032-phase-projection.md) | Phase projection over Flow stages | принято |
 | [ADR-033](ADR-033-operator-guidance.md) | Operator guidance as a server-computed read model | принято |
 | [ADR-034](ADR-034-conversations-and-rework-orders.md) | Conversations — questions, comments and rework orders | принято |
-| [ADR-035](ADR-035-document-artifacts-git-source-of-truth.md) | Document artifacts — git as the source of truth, revisions and drafts | принято с условиями |
+| [ADR-035](ADR-035-document-artifacts-git-source-of-truth.md) | Document artifacts — git as the source of truth, revisions and drafts | принято |
 | [ADR-036](ADR-036-merge-assistant.md) | Merge assistant — human-initiated merge from the console (уточняет ADR-011) | принято с условиями |
 | [ADR-037](ADR-037-console-changeset-workspace-ia.md) | Console IA and the ChangeSet workspace | принято с условиями |
 | [ADR-038](ADR-038-fold-flows-rules-ci-into-orchestration.md) | Пакеты `flows`, `rules` и `ci` входят в `orchestration` | принято |

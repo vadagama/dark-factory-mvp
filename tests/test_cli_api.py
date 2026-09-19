@@ -37,7 +37,7 @@ def test_api_serve_forwards_every_seam_to_create_app(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv(DATABASE_URL_ENV_VAR, "postgresql+psycopg://x:y@localhost/db")
     monkeypatch.setattr(api_module, "open_state_store", lambda url: _Store())
     monkeypatch.setattr(api_module, "create_app", _create_app)
-    provisioning, toggles, formulator = object(), object(), object()
+    provisioning, toggles, formulator, repository = object(), object(), object(), object()
 
     with pytest.raises(_Stop):
         api_module.run_api_serve_command(
@@ -46,6 +46,7 @@ def test_api_serve_forwards_every_seam_to_create_app(monkeypatch: pytest.MonkeyP
             ci_repository="org/repo",
             provisioning=cast("Any", provisioning),
             brief_formulator=cast("Any", formulator),
+            repository=cast("Any", repository),
         )
 
     assert seen["session_factory"] is factory
@@ -53,6 +54,7 @@ def test_api_serve_forwards_every_seam_to_create_app(monkeypatch: pytest.MonkeyP
     assert seen["ci_repository"] == "org/repo"
     assert seen["provisioning"] is provisioning
     assert seen["brief_formulator"] is formulator
+    assert seen["repository"] is repository
 
 
 def test_api_serve_without_a_database_url_is_invalid_input(

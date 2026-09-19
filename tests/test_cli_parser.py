@@ -8,16 +8,24 @@ from pathlib import Path
 
 import pytest
 
-from dark_factory.changes.enums import Provider, RiskClass, Route, Scenario, Stage
+from dark_factory.changes.enums import Phase, Provider, RiskClass, Route, Scenario, Stage
 from dark_factory.cli.main import (
+    EXIT_INVALID_INPUT,
     ApiServeArgs,
+    ArtifactAction,
+    ChangeAnswerArgs,
+    ChangeApproveArgs,
+    ChangeArtifactsArgs,
+    ChangeCommentArgs,
     ChangeCreateArgs,
+    ChangeReworkArgs,
     ChangeStatusArgs,
     DoctorArgs,
     OutboxDispatchArgs,
     OutboxReplayArgs,
     OutboxSkipArgs,
     ProductAddArgs,
+    ProductBootstrapArgs,
     ProductListArgs,
     ProductShowArgs,
     ProductValidateArgs,
@@ -744,3 +752,153 @@ def test_python_dash_m_invocation_exits_with_code_2() -> None:
     assert result.returncode == 2
     assert result.stdout == '{"error": "not_implemented", "command": "stage resume"}\n'
     assert result.stderr == ""
+
+
+# --- M2 discussion and artifact commands (T086) ------------------------------------------
+
+
+def test_change_answer_comment_rework_parse_options() -> None:
+    assert parse_command(
+        ["change", "answer", "--id", "chg_1", "--question", "q_1", "--value", "half up", "--json"]
+    ) == ChangeAnswerArgs(
+        change_id="chg_1", question_id="q_1", value="half up", comment=None, json_output=True
+    )
+    assert parse_command(
+        [
+            "change",
+            "comment",
+            "--id",
+            "chg_1",
+            "--artifact",
+            "spec/requirements/REQ-001.md",
+            "--anchor",
+            "AC-2",
+            "--body",
+            "too vague",
+            "--phase",
+            "requirements",
+        ]
+    ) == ChangeCommentArgs(
+        change_id="chg_1",
+        artifact="spec/requirements/REQ-001.md",
+        anchor_id="AC-2",
+        body="too vague",
+        phase=Phase.REQUIREMENTS,
+        json_output=False,
+    )
+    assert parse_command(
+        [
+            "change",
+            "rework",
+            "--id",
+            "chg_1",
+            "--comment",
+            "cmt_1",
+            "--comment",
+            "cmt_2",
+            "--question",
+            "q_1",
+            "--instruction",
+            "tighten",
+        ]
+    ) == ChangeReworkArgs(
+        change_id="chg_1",
+        phase=None,
+        comment_ids=("cmt_1", "cmt_2"),
+        question_ids=("q_1",),
+        instruction="tighten",
+        json_output=False,
+    )
+
+
+def test_change_approve_and_artifacts_parse_options() -> None:
+    assert parse_command(
+        [
+            "change",
+            "approve",
+            "--id",
+            "chg_1",
+            "--phase",
+            "requirements",
+            "--waive",
+            "--comment",
+            "no UI",
+        ]
+    ) == ChangeApproveArgs(
+        change_id="chg_1",
+        phase=Phase.REQUIREMENTS,
+        waive=True,
+        comment="no UI",
+        revision=None,
+        json_output=False,
+    )
+    assert parse_command(
+        [
+            "change",
+            "artifacts",
+            "diff",
+            "--id",
+            "chg_1",
+            "--path",
+            "spec/x.md",
+            "--from",
+            "r1",
+            "--to",
+            "r2",
+            "--json",
+        ]
+    ) == ChangeArtifactsArgs(
+        change_id="chg_1",
+        action=ArtifactAction.DIFF,
+        path="spec/x.md",
+        revision=None,
+        from_revision="r1",
+        to_revision="r2",
+        file=None,
+        base_revision=None,
+        json_output=True,
+    )
+    assert parse_command(
+        [
+            "change",
+            "artifacts",
+            "edit",
+            "--id",
+            "chg_1",
+            "--path",
+            "spec/x.md",
+            "--file",
+            "-",
+            "--base-revision",
+            "r1",
+        ]
+    ) == ChangeArtifactsArgs(
+        change_id="chg_1",
+        action=ArtifactAction.EDIT,
+        path="spec/x.md",
+        revision=None,
+        from_revision=None,
+        to_revision=None,
+        file="-",
+        base_revision="r1",
+        json_output=False,
+    )
+    assert parse_command(
+        ["product", "bootstrap", "--id", "prd-1", "--pack", "product-baseline"]
+    ) == (ProductBootstrapArgs(product_id="prd-1", packs=("product-baseline",), json_output=False))
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["change", "answer", "--id", "chg_1", "--question", "q_1"],
+        ["change", "comment", "--id", "chg_1", "--artifact", "spec/x.md"],
+        ["change", "approve", "--id", "chg_1", "--phase", "not-a-phase"],
+        ["change", "artifacts", "rename", "--id", "chg_1"],
+        ["product", "bootstrap"],
+    ],
+)
+def test_m2_commands_reject_invalid_input(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        parse_command(argv)
+    assert excinfo.value.code == EXIT_INVALID_INPUT

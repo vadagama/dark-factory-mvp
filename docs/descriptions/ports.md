@@ -65,6 +65,9 @@ flowchart TB
 get_revision(repository, ref) -> str
 ensure_branch(repository, branch, *, from_revision, idempotency_key) -> str
 publish_commit(repository, branch, changes, /, *, message, idempotency_key) -> str
+read_file(repository, ref, path) -> bytes
+list_tree(repository, ref, *, prefix="") -> Sequence[str]
+list_commits(repository, ref, *, path=None) -> Sequence[CommitInfo]
 # --- MergeRequestPort ---
 open(request, *, idempotency_key) -> ChangeRequestRef
 find_existing(repository, change_id) -> ChangeRequestRef | None
@@ -75,6 +78,8 @@ status(repository, ref) -> PipelineStatus
 ```
 
 `get_revision` возвращает SHA/revision ref; `ensure_branch` идемпотентно обеспечивает ветку от заданной revision и возвращает head. `publish_commit` публикует правки агентной стадии (TD-024): коммит и push — **один** внешний эффект с одним ключом (ADR-006 p.3); единица переноса — файловое множество (`path → bytes`), не дифф, а `WorkspaceHandle` в сигнатуре нет — SCM-адаптер не читает workspace, значения собираются через `ExecutionPort.collect_changes` и передаются по значению. Идемпотентность — replay-dedup по ключу с lookup-first по невидимому маркеру в commit message (переживает холодный адаптер); пустой `changes` — `ValueError` («нет изменений» — решение стадии), отсутствующая ветка — `KeyError`; возвращённый SHA — ревизия коммита, её стадия несёт как `head_sha` change request. `OpenChangeRequest` содержит repository, factory `change_id`, source/target branches, title/description и `head_sha`; `change_id` — ключ дедупликации через `find_existing`. Безопасный merge требует `expected_sha`: при другом head адаптер отказывает с `HeadMismatchError`, не выполняя merge. `PipelinePort` наблюдает CI pipeline; документированный словарь статусов — `queued | in_progress | success | failure | canceled`, но поле имеет тип `str`, поэтому DTO сам этот набор не валидирует.
+
+Три метода чтения (`read_file`, `list_tree`, `list_commits`; T082, ADR-035) — read-модель документов-артефактов: git — источник истины, поэтому фабрика читает документ из репозитория на ревизии вместо копии в БД. Без `idempotency_key` — чтение не минтует эффекта (FR-017); отсутствующий ref или путь — `KeyError`, отсутствующий префикс или путь без коммитов — пустая последовательность; `list_commits` возвращает `CommitInfo(sha, message, author?, authored_at?)` новыми первыми. `GitHubRepository` реализует их через contents API, recursive trees API дерева головы и commits API с фильтром `path`; `FakeRepository` резолвит имя ветки или известный SHA. Потребитель — `orchestration/artifacts.py` (`ArtifactService`: дерево `.factory/changes/**` ветки изменения, документ, ревизии, diff, write-through через `publish_commit` с детекцией конфликта по `base_revision`).
 
 ```mermaid
 sequenceDiagram

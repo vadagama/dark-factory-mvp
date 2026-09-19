@@ -15,6 +15,7 @@ messages, and the Git data API (trees, commit objects, ref updates) behind
 ``publish_commit``.
 """
 
+import base64
 import json
 import re
 from collections.abc import Sequence
@@ -242,6 +243,10 @@ class GitHubApiEmulator:
             return self._check_runs_route(ref)
         if route.startswith("commits/"):
             return self._commit_route(route.removeprefix("commits/"))
+        if route.startswith("contents/") and method == "GET":
+            return self._contents_route(route.removeprefix("contents/"), request.url.params)
+        if route.startswith("git/trees/") and method == "GET":
+            return self._git_tree_route(route.removeprefix("git/trees/"))
         if route.startswith("git/ref/heads/"):
             return self._git_ref_route(route.removeprefix("git/ref/heads/"))
         if route == "git/refs" and method == "POST":
@@ -286,6 +291,7 @@ class GitHubApiEmulator:
 
     def _commits_list(self, params: httpx2.QueryParams) -> httpx2.Response:
         ref = params.get("sha") or "main"
+        path = params.get("path")
         head = self._resolve_ref(ref)
         if head is None:
             return _json_response(404, {"message": "No commit found for SHA: " + ref})
@@ -293,9 +299,54 @@ class GitHubApiEmulator:
         current: str | None = head
         while current is not None and current in self.commits:
             commit = self.commits[current]
-            commits.append(self._commit_json(commit))
+            if path is None or self._touches(commit, path):
+                commits.append(self._commit_json(commit))
             current = commit.parents[0] if commit.parents else None
         return _json_response(200, commits)
+
+    def _touches(self, commit: _Commit, path: str) -> bool:
+        """Whether ``commit`` changed ``path`` against its first parent (the ``path`` filter)."""
+        after = self.trees.get(commit.tree, {}).get(path)
+        parent = self.commits.get(commit.parents[0]) if commit.parents else None
+        before = self.trees.get(parent.tree, {}).get(path) if parent is not None else None
+        return after != before
+
+    def _contents_route(self, path: str, params: httpx2.QueryParams) -> httpx2.Response:
+        """``GET /repos/{slug}/contents/{path}?ref=`` — one file as base64 (the contents API)."""
+        ref = params.get("ref") or "main"
+        sha = self._resolve_ref(ref)
+        commit = self.commits.get(sha) if sha is not None else None
+        if sha is None or commit is None:
+            return _json_response(404, {"message": "Not Found"})
+        files = self.trees.get(commit.tree, {})
+        if path not in files:
+            return _json_response(404, {"message": "Not Found"})
+        return _json_response(
+            200,
+            {
+                "type": "file",
+                "path": path,
+                "encoding": "base64",
+                "content": base64.b64encode(files[path]).decode("ascii"),
+                "sha": sha,
+            },
+        )
+
+    def _git_tree_route(self, tree_sha: str) -> httpx2.Response:
+        """``GET /repos/{slug}/git/trees/{sha}?recursive=1`` — every blob of the tree."""
+        files = self.trees.get(tree_sha)
+        if files is None:
+            return _json_response(404, {"message": "Not Found"})
+        return _json_response(
+            200,
+            {
+                "sha": tree_sha,
+                "tree": [
+                    {"path": path, "type": "blob", "mode": "100644"} for path in sorted(files)
+                ],
+                "truncated": False,
+            },
+        )
 
     def _commit_json(self, commit: _Commit) -> dict[str, Any]:
         return {
