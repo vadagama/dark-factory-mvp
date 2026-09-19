@@ -479,6 +479,7 @@ def advance_run(
         budget=run.budget,
         attempt_number=attempt_number,
         risk_class=_effective_risk_class(run),
+        implementation_contract=run.implementation_contract,
     )
     result = stage_executor(context)
     decision = apply_result(

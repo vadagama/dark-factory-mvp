@@ -40,6 +40,7 @@ from dark_factory.orchestration.stages.checks import (
     budget_findings,
     budget_stop_reason,
     change_request_missing,
+    construction_entry_reason,
     pending_gate_results,
 )
 from dark_factory.orchestration.stages.context import StageContext
@@ -65,8 +66,12 @@ def run_deterministic_stage(
 ) -> StageResult:
     """Aggregate the machine checks into the StageResult of one attempt.
 
-    Decision order: limit exhaustion wins and ends the attempt ``blocked``
-    with the violation reasons (SC-006); an ``awaiting_decision`` budget check
+    Decision order: entering Construction without an approved Implementation
+    Contract (when the context is run-backed and gated) stops the attempt first —
+    the entry precondition of ADR-018 p.3, attributed to Construction itself
+    (T-063), so the attempt ends ``blocked`` before any external effect; limit
+    exhaustion wins next and ends the attempt ``blocked`` with the violation
+    reasons (SC-006); an ``awaiting_decision`` budget check
     (T-062) blocks the same way with its diagnostics and a blocker finding per
     triggered limit; otherwise the attempt ends ``waiting`` (FR-009: gate
     execution is out of scope here) with the required-but-unevaluated machine
@@ -80,6 +85,15 @@ def run_deterministic_stage(
     """
     reference_now = now if now is not None else datetime.now(UTC)
     gate_results = pending_gate_results(context.required_gates)
+    entry_reason = construction_entry_reason(context)
+    if entry_reason is not None:
+        return _result(
+            context,
+            status=StageStatus.BLOCKED,
+            next_action=StopAction(outcome=StopOutcome.BLOCKED, reason=entry_reason),
+            gate_results=gate_results,
+            produced_at=reference_now,
+        )
     violations = budget_exhaustions(context.budget, now=reference_now)
     if violations:
         return _result(
