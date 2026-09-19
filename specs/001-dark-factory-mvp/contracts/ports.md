@@ -212,6 +212,18 @@ class ExecutionPort(Protocol):
 
 Реальный адаптер (T-092, TD-022) — изолированные git-worktree. Источник кода — подготовленное оператором локальное git-зеркало (`DARK_FACTORY_WORKSPACE_MIRROR_ROOT`, раскладка `<mirror_root>/<provider>/<slug>`; тот же паттерн operator-prepared checkout, что и `DARK_FACTORY_RUNS_ROOT`): сеть и провайдерские креды воркспейсу не нужны, клонирование с провайдера — non-goal MVP (T-091). `workspace_id` детерминирован по `idempotency_key` (читаемый slug + sha256-префикс ключа), поэтому replay — в том числе после холодного рестарта — адресует тот же каталог: живой worktree переиспользуется как есть (правки агента переживают повтор), повреждённый или удалённый пересоздаётся от закреплённой ревизии — replay всегда сходится к рабочему workspace и не минтует второй. `collect_changes` возвращает дельту относительно закреплённой ревизии (`git status --porcelain=v1 -z` против HEAD worktree, закреплённого на запрошенной ревизии): изменённые и новые файлы; удаления пропускаются — не представимы в файловом множестве (TD-024). `run_command` исполняет `argv` без шелла, с таймаутом и ограничением захвата вывода; ошибки git — value-free `WorkspaceError` (ADR-009), путь вне workspace — `UnsafeWorkspacePath`.
 
+## RepositoryProvisioningPort
+
+```python
+@runtime_checkable
+class RepositoryProvisioningPort(Protocol):
+    async def validate(self, repository: RepositoryRef, /) -> RepositoryValidation: ...
+    async def ensure_mirror(self, repository: RepositoryRef, /, *, idempotency_key: str) -> MirrorRef: ...
+    async def bootstrap_baseline(self, repository: RepositoryRef, /, *, packs: Sequence[str], idempotency_key: str) -> BaselineBootstrapResult: ...
+```
+
+Подготовка репозитория продукта до того, как его коснётся стадия агента (T067–T069, ADR-031 p.1). Два адаптера за одним портом (p.2): `LocalMirror` — операторское локальное зеркало (T067), `ProviderClone` — клон с провайдера на installation-токене GitHub App, без PAT (T068). `validate` — read-only проба без ключа и без мутаций (p.5): `UNAVAILABLE` (зеркало или доступ недоступны), `EMPTY` (unborn HEAD — штатный случай, p.4: baseline его и создаст), `BASELINE_ABSENT`/`BASELINE_CURRENT`/`BASELINE_STALE`; недоступность репозитория — evidence (p.6), а не исключение. `ensure_mirror` — replay-дедуп по ключу, отсутствующий репозиторий — `KeyError` (404 = отсутствует); `bootstrap_baseline` — применение паков (T069) с replay-дедупом и evidence в результате, а адаптер, который этой возможности не имеет, бросает `ProvisioningOperationUnsupportedError` с именем операции — молчаливый success запрещён (p.6). Реализация T067 — `LocalMirror` + `FakeRepositoryProvisioning`.
+
 ## Порты, вводимые позже (не авансом)
 
 - `KnowledgePort`, `ExecutionPort` — T-012 (формализованы выше как контракты; реализация — фейки P0; у `ExecutionPort` с T-092 есть и реальный worktree-адаптер).
