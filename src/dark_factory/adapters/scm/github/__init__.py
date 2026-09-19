@@ -37,6 +37,7 @@ from dark_factory.adapters.scm.github.pipelines import GitHubPipelines
 from dark_factory.adapters.scm.github.provisioning import (
     BASELINE_PATH,
     MIRROR_ROOT_ENV_VAR,
+    PACKS_ROOT_ENV_VAR,
     ProviderClone,
     ProviderCloneConfig,
 )
@@ -66,6 +67,7 @@ __all__ = [
     GITHUB_WORKFLOW_ID_ENV_VAR,
     "IDEMPOTENCY_MARKER_TEMPLATE",
     "MIRROR_ROOT_ENV_VAR",
+    "PACKS_ROOT_ENV_VAR",
     "GitHubAPIError",
     "GitHubAdapter",
     "GitHubAppAuth",

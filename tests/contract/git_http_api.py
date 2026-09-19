@@ -12,12 +12,23 @@ The states a test can seed are the vocabulary ``RepositoryProvisioningPort.valid
 distinguishes (ADR-031 p.4): ``unavailable`` (no repository at all), ``empty`` (a bare
 repository with an unborn HEAD), ``baseline_absent`` (a commit without
 ``.factory/product``) and ``baseline_current`` (a commit with it). ``seed`` returns the
-head sha, or ``None`` for a state that has no revision.
+head sha, or ``None`` for a state that has no revision. Two further seeds exist for the
+bootstrap suite (T069): ``baseline_ignored`` (a commit whose ``.gitignore`` hides
+``.factory/``) and ``baseline_partial`` (a commit with a skeleton but no
+``.factory/product``, so a matching payload stages nothing).
 
 ``require_auth=False`` serves the same repositories without a token. A test that only
 checks where a mirror lands needs it: the execution adapter fetches a mirror's
 ``origin`` without credentials by design (ADR-009), so the remote it can pull from is a
 credential-free one. The authenticated path stays covered by the default mode.
+
+Every seeded bare repository allows authenticated ``git push`` over HTTP
+(``http.receivepack=true``), so the bootstrap path of ``ProviderClone`` (T069) can
+land its first commit on an ``empty`` repository through the same server. The
+handler sets ``REMOTE_USER``, which is what ``git http-backend`` requires to accept
+an authenticated receive-pack. ``reject_push`` turns that off for one repository, so a
+test can make the push fail while the clone keeps working — the provider-failure shape
+the bootstrap must recover from (T069).
 """
 
 import base64
@@ -54,8 +65,16 @@ _STATE_FILES: Final[Mapping[str, Mapping[str, bytes]]] = {
         "docs/note.md": b"note\n",
         ".factory/product/product.yaml": b"name: pilot\n",
     },
+    "baseline_ignored": {".gitignore": b".factory/\n", "docs/note.md": b"note\n"},
+    "baseline_partial": {".factory/README.md": b"partial\n"},
 }
-"""Tree of each state that has commits; ``.factory/product`` is the ADR-020 baseline."""
+"""Tree of each state that has commits.
+
+``baseline_absent``/``baseline_current`` are the ADR-031 p.4 vocabulary
+(``.factory/product`` is the ADR-020 baseline); ``baseline_ignored`` and
+``baseline_partial`` are the bootstrap-specific shapes T069 pins: a repository that
+hides ``.factory/`` from git, and one that carries a skeleton without the baseline.
+"""
 
 
 def _run_git(*argv: str, cwd: Path | None = None, check: bool = True) -> str:
@@ -225,6 +244,9 @@ class GitHttpEmulator:
         if state == "unavailable":
             return None
         _run_git("init", "--quiet", "--bare", "-b", DEFAULT_BRANCH, str(bare))
+        # The bootstrap path pushes the first baseline commit over the same HTTP
+        # transport, so the seeded bare repository accepts authenticated receive-pack.
+        _run_git("config", "http.receivepack", "true", cwd=bare)
         if state == "empty":
             return None
         _run_git("init", "--quiet", "-b", DEFAULT_BRANCH, str(work))
@@ -244,6 +266,19 @@ class GitHttpEmulator:
         )
         shutil.rmtree(work, ignore_errors=True)
         return revision
+
+    def reject_push(self, repository: RepositoryRef) -> None:
+        """Make the seeded repository refuse receive-pack: a provider that takes no push.
+
+        The clone and the reads keep working, so the bootstrap lands its commit locally
+        and the push is refused — the state a transient provider failure leaves behind
+        (T069). ``allow_push`` restores what ``seed`` configures.
+        """
+        _run_git("config", "http.receivepack", "false", cwd=self._repository_path(repository))
+
+    def allow_push(self, repository: RepositoryRef) -> None:
+        """Accept authenticated receive-pack again, as ``seed`` leaves a repository."""
+        _run_git("config", "http.receivepack", "true", cwd=self._repository_path(repository))
 
     def close(self) -> None:
         """Stop the server and delete the temporary project root."""

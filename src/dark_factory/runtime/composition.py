@@ -21,6 +21,11 @@ Optional pieces stay absent rather than degrading silently:
   operator-prepared local mirror, because cloning from a provider with
   credentials is a non-goal of the MVP (T-091 pods). An explicitly injected
   ``execution`` wins over the environment, like ``token_provider``/``transport``.
+- provisioning follows the same rule as the rest: a complete
+  ``DARK_FACTORY_GITHUB_*`` with a mirror root selects ``ProviderClone`` (the clone
+  on the App installation token, which can apply baseline packs, T069/ADR-031 p.3);
+  the same mirror root without App credentials keeps ``LocalMirror`` (the
+  operator-prepared mirror); without either the provisioning port is absent.
 
 A configuration that is set must also be valid — fail-closed, because a silent
 fallback would hide a typo: telemetry raises on an unknown exporter or a
@@ -36,7 +41,13 @@ from typing import Any, Final
 
 from dark_factory.adapters.harness import HarnessConfig, PydanticAIHarness
 from dark_factory.adapters.provisioning import LocalMirror, LocalMirrorConfig
-from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, TokenProvider
+from dark_factory.adapters.scm.github import (
+    GitHubAdapter,
+    GitHubConfig,
+    ProviderClone,
+    ProviderCloneConfig,
+    TokenProvider,
+)
 from dark_factory.adapters.scm.github.config import DEFAULT_API_BASE_URL
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter, TelemetryConfig
 from dark_factory.agents.profiles.manifest import AgentProfile
@@ -159,8 +170,9 @@ class Runtime:
     harness_config: HarnessConfig | None = None
     execution: ExecutionPort | None = None
     provisioning: RepositoryProvisioningPort | None = None
-    """Repository-provisioning port of product validation (T066, ADR-031);
-    ``None`` while no mirror root is configured."""
+    """Repository-provisioning port of product validation (T066, ADR-031):
+    ``ProviderClone`` when the App credentials and the mirror root are configured,
+    otherwise ``LocalMirror``; ``None`` while no mirror root is configured."""
     descriptions: PrDescriptionRenderer | None = None
     """Renderer of change-request bodies; ``None`` lets the executor fall back
     to the packaged default template (``templates/pr-description.md``)."""
@@ -344,8 +356,17 @@ def build_runtime(
     if execution is None:
         workspace_config = WorktreeExecutionConfig.from_env(env)
         execution = None if workspace_config is None else WorktreeExecution(workspace_config)
-    provisioning_config = LocalMirrorConfig.from_env(env)
-    provisioning = None if provisioning_config is None else LocalMirror(provisioning_config)
+    provisioning_config = ProviderCloneConfig.from_env(env)
+    if provisioning_config is not None:
+        # The App credentials make the provider clone available: it is the adapter
+        # that clones from the provider and applies baseline packs (T069), so it
+        # wins over the operator-prepared mirror of the same contour (ADR-031 p.2).
+        provisioning: RepositoryProvisioningPort | None = ProviderClone(
+            provisioning_config, token_provider=token_provider, transport=transport
+        )
+    else:
+        mirror_config = LocalMirrorConfig.from_env(env)
+        provisioning = None if mirror_config is None else LocalMirror(mirror_config)
     return Runtime(
         telemetry=telemetry,
         github=github,

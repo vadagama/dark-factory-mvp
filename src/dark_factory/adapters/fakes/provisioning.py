@@ -43,6 +43,7 @@ class FakeRepositoryProvisioning(RepositoryProvisioningPort):
         self._revisions: dict[str, str | None] = {}
         self._mirrors: dict[str, MirrorRef] = {}
         self._bootstraps: dict[str, BaselineBootstrapResult] = {}
+        self._baseline_packs: dict[str, tuple[AppliedPack, ...]] = {}
 
     def seed(
         self,
@@ -55,6 +56,9 @@ class FakeRepositoryProvisioning(RepositoryProvisioningPort):
         """Materialise one repository state; returns its head revision (``None`` if none)."""
         resolved = RepositoryState(state)
         key = _key(repository)
+        # A seeded repository is the operator's, not a bootstrap's: nothing records
+        # applied packs until a bootstrap creates the baseline itself.
+        self._baseline_packs.pop(key, None)
         self._states[key] = resolved
         if resolved is RepositoryState.UNAVAILABLE:
             self._branches[key] = None
@@ -98,14 +102,33 @@ class FakeRepositoryProvisioning(RepositoryProvisioningPort):
     async def bootstrap_baseline(
         self, repository: RepositoryRef, /, *, packs: Sequence[str], idempotency_key: str
     ) -> BaselineBootstrapResult:
+        """Apply ``packs`` and record the revision they left, replay-dedup by key.
+
+        Applying a baseline to an empty or baseline-less repository creates it, moves
+        the seeded state to ``BASELINE_CURRENT`` and records the packs that produced
+        it; a repository whose baseline is already current stages nothing and reports
+        those recorded packs — never the request, and nothing when the baseline was
+        seeded rather than bootstrapped. A new key never mints a second effect (T069,
+        ADR-031 p.6).
+        """
         cached = self._bootstraps.get(idempotency_key)
         if cached is not None:
             return cached
-        applied = tuple(AppliedPack(name=name, version=DEFAULT_PACK_VERSION) for name in packs)
+        if not packs:
+            raise ValueError("bootstrap_baseline requires at least one pack")
+        key = _key(repository)
+        revision = self._revisions.get(key)
+        if revision is None or self._states.get(key) is not RepositoryState.BASELINE_CURRENT:
+            revision = f"baseline-{len(self._bootstraps) + 1}"
+            self._states[key] = RepositoryState.BASELINE_CURRENT
+            self._revisions[key] = revision
+            self._baseline_packs[key] = tuple(
+                AppliedPack(name=name, version=DEFAULT_PACK_VERSION) for name in packs
+            )
         result = BaselineBootstrapResult(
             repository=repository,
-            revision=f"baseline-{len(self._bootstraps) + 1}",
-            applied_packs=applied,
+            revision=revision,
+            applied_packs=self._baseline_packs.get(key, ()),
         )
         self._bootstraps[idempotency_key] = result
         return result
