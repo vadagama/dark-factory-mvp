@@ -14,6 +14,7 @@ transactional SQL and raise explicit errors. Cross-cutting guarantees:
 """
 
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast
 
@@ -387,6 +388,30 @@ def ensure_effect(
     return external_ref
 
 
+@dataclass(frozen=True, slots=True)
+class OutboxEventDraft:
+    """The event a caller publishes, before the outbox assigns its sequence (ADR-016 p.1).
+
+    A value object over the columns of :class:`OutboxEvent` the caller decides.
+    ``sequence`` is the outbox's own (monotonic per aggregate) and
+    ``occurred_at`` the row default, so neither is here; ``stage`` is the
+    domain enum and the row stores its value.
+    """
+
+    event_id: str
+    event_type: str
+    change_id: str
+    run_id: str
+    aggregate_id: str
+    aggregate_version: int
+    stage: Stage | None = None
+    event_version: int = 1
+    correlation_id: str | None = None
+    causation_id: str | None = None
+    artifact_refs: Sequence[dict[str, Any]] = ()
+    payload: dict[str, Any] | None = None
+
+
 class OutboxRepository:
     """Transactional outbox writer (ADR-016 p.1/p.5)."""
 
@@ -400,38 +425,26 @@ class OutboxRepository:
         ).scalar_one_or_none()
         return int(current or 0) + 1
 
-    def publish(
-        self,
-        *,
-        event_id: str,
-        event_type: str,
-        change_id: str,
-        run_id: str,
-        aggregate_id: str,
-        aggregate_version: int,
-        stage: Stage | None = None,
-        event_version: int = 1,
-        correlation_id: str | None = None,
-        causation_id: str | None = None,
-        artifact_refs: Sequence[dict[str, Any]] = (),
-        payload: dict[str, Any] | None = None,
-        consumers: Iterable[str] = (),
-    ) -> OutboxEvent:
-        """Append an event and its per-consumer deliveries inside the caller's transaction."""
+    def publish(self, draft: OutboxEventDraft, *, consumers: Iterable[str] = ()) -> OutboxEvent:
+        """Append an event and its per-consumer deliveries inside the caller's transaction.
+
+        The outbox assigns the per-aggregate ``sequence`` (ADR-016 p.1); one
+        ``pending`` :class:`EventDelivery` row is written per consumer.
+        """
         event = OutboxEvent(
-            event_id=event_id,
-            event_type=event_type,
-            event_version=event_version,
-            change_id=change_id,
-            run_id=run_id,
-            stage=stage.value if stage is not None else None,
-            aggregate_id=aggregate_id,
-            aggregate_version=aggregate_version,
-            correlation_id=correlation_id,
-            causation_id=causation_id,
-            artifact_refs=list(artifact_refs),
-            payload=dict(payload or {}),
-            sequence=self.next_sequence(aggregate_id),
+            event_id=draft.event_id,
+            event_type=draft.event_type,
+            event_version=draft.event_version,
+            change_id=draft.change_id,
+            run_id=draft.run_id,
+            stage=draft.stage.value if draft.stage is not None else None,
+            aggregate_id=draft.aggregate_id,
+            aggregate_version=draft.aggregate_version,
+            correlation_id=draft.correlation_id,
+            causation_id=draft.causation_id,
+            artifact_refs=list(draft.artifact_refs),
+            payload=dict(draft.payload or {}),
+            sequence=self.next_sequence(draft.aggregate_id),
         )
         self._session.add(event)
         # Flush the event first: deliveries carry a foreign key to it, and being
@@ -440,7 +453,7 @@ class OutboxRepository:
         for consumer in consumers:
             self._session.add(
                 EventDelivery(
-                    event_id=event_id,
+                    event_id=draft.event_id,
                     consumer_id=consumer,
                     status=DeliveryStatus.PENDING.value,
                 )

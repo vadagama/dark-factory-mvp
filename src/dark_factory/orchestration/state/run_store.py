@@ -83,6 +83,7 @@ from dark_factory.orchestration.state.repositories import (
     ContractConflictError,
     ExecutionRepository,
     LeaseRepository,
+    OutboxEventDraft,
     OutboxRepository,
     StateError,
 )
@@ -610,27 +611,29 @@ class RunStore:
         # reports the revision the domain reached, never a lower one.
         execution.state_revision = max(execution.state_revision, run.state_revision)
         self._outbox.publish(
-            event_id=_stage_completed_event_id(
-                open_stage.attempt_id,
-                supersede_status=(
-                    result.status.value if outcome is RecordOutcome.SUPERSEDED else None
+            OutboxEventDraft(
+                event_id=_stage_completed_event_id(
+                    open_stage.attempt_id,
+                    supersede_status=(
+                        result.status.value if outcome is RecordOutcome.SUPERSEDED else None
+                    ),
                 ),
+                event_type=EventType.RUN_STAGE_COMPLETED.value,
+                change_id=run.change_id,
+                run_id=run.id,
+                aggregate_id=run.id,
+                aggregate_version=execution.state_revision,
+                stage=result.stage,
+                causation_id=open_stage.attempt_id,
+                payload={
+                    "attempt_number": result.attempt_number,
+                    "result_status": result.status.value,
+                    "stage_status": decision.stage_status.value,
+                    "run_status": decision.run_status.value,
+                    "next_action": decision.action.type,
+                    "next_stage": decision.next_stage.value if decision.next_stage else None,
+                },
             ),
-            event_type=EventType.RUN_STAGE_COMPLETED.value,
-            change_id=run.change_id,
-            run_id=run.id,
-            aggregate_id=run.id,
-            aggregate_version=execution.state_revision,
-            stage=result.stage,
-            causation_id=open_stage.attempt_id,
-            payload={
-                "attempt_number": result.attempt_number,
-                "result_status": result.status.value,
-                "stage_status": decision.stage_status.value,
-                "run_status": decision.run_status.value,
-                "next_action": decision.action.type,
-                "next_stage": decision.next_stage.value if decision.next_stage else None,
-            },
             consumers=consumers,
         )
         return True

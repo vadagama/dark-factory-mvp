@@ -61,7 +61,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from dark_factory.changes.enums import RiskClass, RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import RunStatus, Stage, StageStatus
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
     RETRYABLE_STAGE_STATUSES,
@@ -259,6 +259,137 @@ class RunAdvance:
     decision: FlowDecision | None
 
 
+@dataclass(frozen=True, slots=True)
+class AttemptIdentity:
+    """Identity of the physical attempt one advance executes, fixed under the lease.
+
+    Every field is re-derived from the run **after** the lease is acquired
+    (ADR-024, условие 2 приёмки S2): ``attempt_number`` and ``input_revision``
+    key the logical operation and its physical attempt (ADR-006 p.3/p.7),
+    ``owner_id`` and ``fencing_token`` are the lease every write is fenced by
+    (ADR-006 p.6). The resume and the persist paths take this object instead
+    of the six values one by one, so an identity can never travel half-stale.
+    """
+
+    run: ChangeRun
+    stage: Stage
+    attempt_number: int
+    input_revision: str
+    owner_id: str
+    fencing_token: int
+
+
+@dataclass(frozen=True, slots=True)
+class OpenedAttempt:
+    """What opening the physical attempt captured and persisting needs again.
+
+    ``expected_revision`` is the run's optimistic revision *before* the advance
+    moved it to ``running`` (ADR-006 p.4); ``known_stage_runs`` are the stage
+    runs the run had before the flow decided, so the successor stages the
+    decision created can be told apart (``_created_stages``).
+    """
+
+    open_stage: OpenStage
+    expected_revision: int
+    known_stage_runs: tuple[StageRun, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WaitResolution:
+    """Final result of a waiting attempt plus the facts observed with it (T-092 S3/S4).
+
+    ``merge_context``, when set, replaces the caller's: the merge facts of
+    this attempt are the ones just observed. ``approvals`` are folded into the
+    caller's ``human_decisions`` for the flow's control-point checks (T-080)
+    and the merge authorization (ADR-011 p.2). The release path observes
+    neither, so both stay empty and the caller's facts pass through unchanged.
+    """
+
+    result: StageResult
+    merge_context: MergeRequestContext | None = None
+    approvals: Sequence[Decision] = ()
+
+
+class WaitResolver(Protocol):
+    """Turns a resolved observation into the final result of the waiting attempt.
+
+    The strategy of :func:`_resume`: only the pure builder differs per stage
+    kind (``stages.gates`` for the machine gates, ``stages.release`` for the
+    release stage); re-opening the attempt, deciding the transition and
+    persisting are one path.
+    """
+
+    def __call__(
+        self,
+        identity: AttemptIdentity,
+        *,
+        change: Change,
+        history: Sequence[StageResult],
+        now: datetime,
+    ) -> WaitResolution: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _GateWaitResolver:
+    """Machine-gate strategy (T-092 S3): ``stages.gates`` builds the resolution."""
+
+    checkpoint: StageResult
+    observation: GateObservation
+
+    def __call__(
+        self,
+        identity: AttemptIdentity,
+        *,
+        change: Change,
+        history: Sequence[StageResult],
+        now: datetime,
+    ) -> WaitResolution:
+        resolution = build_gate_resolution(
+            run=identity.run,
+            stage=identity.stage,
+            change=change,
+            checkpoint=self.checkpoint,
+            observation=self.observation,
+            input_revision=identity.input_revision,
+            attempt_number=identity.attempt_number,
+            history=history,
+            now=now,
+        )
+        return WaitResolution(
+            result=resolution.result,
+            merge_context=resolution.merge_context,
+            approvals=self.observation.approvals,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ReleaseWaitResolver:
+    """Release-stage strategy (T-092 S4): ``stages.release`` builds the resolution."""
+
+    checkpoint: StageResult
+    observation: ReleaseObservation
+
+    def __call__(
+        self,
+        identity: AttemptIdentity,
+        *,
+        change: Change,
+        history: Sequence[StageResult],
+        now: datetime,
+    ) -> WaitResolution:
+        return WaitResolution(
+            result=build_release_resolution(
+                run=identity.run,
+                change=change,
+                checkpoint=self.checkpoint,
+                observation=self.observation,
+                input_revision=identity.input_revision,
+                attempt_number=identity.attempt_number,
+                now=now,
+            )
+        )
+
+
 def next_stage(run: ChangeRun) -> Stage | None:
     """Stage the run must execute next: the first non-terminal one on its route.
 
@@ -369,21 +500,23 @@ def advance_run(
     attempt_number = _attempt_number(run, stage)
     input_revision = _pinned_revision(store, run, stage, change, revision_of)
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
-    if committed is not None and not (
+    if (
+        committed is not None
         # Fast replay (ADR-024 p.3): a committed result of the operation is
         # authoritative and a repeat is inert — no lease row, no attempt, no
         # mutation of any kind. The one exception is a ``waiting`` checkpoint
         # whose external wait the observed facts resolve (T-092 S3/S4): the
         # observation is read-only, so it is taken before the lease to avoid
         # leasing a run whose wait is still parked.
-        _external_wait_resolved(
+        and _resolved_wait(
             committed,
-            stage=stage,
             run=run,
+            stage=stage,
             change=change,
             gate_facts=gate_facts,
             release_facts=release_facts,
         )
+        is None
     ):
         return _replay(committed, stage=stage)
 
@@ -396,80 +529,46 @@ def advance_run(
     stage = _next_stage_to_execute(run)
     attempt_number = _attempt_number(run, stage)
     input_revision = _pinned_revision(store, run, stage, change, revision_of)
+    identity = AttemptIdentity(
+        run=run,
+        stage=stage,
+        attempt_number=attempt_number,
+        input_revision=input_revision,
+        owner_id=owner_id,
+        fencing_token=fencing_token,
+    )
     committed = _committed_result(store, run, stage, attempt_number, input_revision)
     if committed is not None:
         # Re-observed under the lease: the run may have changed and the facts
         # with it. A waiting result is not final, so another writer cannot have
         # superseded it with a final outcome — a committed non-waiting result
         # below is a concurrent *completion* and is replayed, as before.
-        observation = (
-            gate_facts(run, stage, change)
-            if gate_facts is not None
-            and committed.status is StageStatus.WAITING
-            and stage is not Stage.RELEASE
-            else None
-        )
-        if observation is not None and gate_resolved(
-            observation,
+        resolve = _resolved_wait(
+            committed,
+            run=run,
             stage=stage,
-            route=run.route,
-            risk_class=_effective_risk_class(run),
-        ):
-            return _resume_waiting(
+            change=change,
+            gate_facts=gate_facts,
+            release_facts=release_facts,
+        )
+        if resolve is not None:
+            return _resume(
                 store=store,
-                run=run,
+                identity=identity,
                 change=change,
-                stage=stage,
-                checkpoint=committed,
-                observation=observation,
-                attempt_number=attempt_number,
-                input_revision=input_revision,
-                owner_id=owner_id,
-                fencing_token=fencing_token,
+                resolve=resolve,
                 merge_context=merge_context,
                 human_decisions=human_decisions,
                 revision_of=revision_of,
                 now=reference_now,
             )
-        if (
-            committed.status is StageStatus.WAITING
-            and stage is Stage.RELEASE
-            and release_facts is not None
-        ):
-            release_observation = release_facts(run, stage, change)
-            if release_observation is not None and release_resolved(release_observation):
-                return _resume_release_waiting(
-                    store=store,
-                    run=run,
-                    change=change,
-                    stage=stage,
-                    checkpoint=committed,
-                    observation=release_observation,
-                    attempt_number=attempt_number,
-                    input_revision=input_revision,
-                    owner_id=owner_id,
-                    fencing_token=fencing_token,
-                    merge_context=merge_context,
-                    human_decisions=human_decisions,
-                    revision_of=revision_of,
-                    now=reference_now,
-                )
         # A concurrent advance committed the very attempt in the window above:
         # the committed result is authoritative, nothing of this advance is
         # written, and the lease is released instead of left behind.
         store.release_lease(run_id=run.id, owner_id=owner_id, fencing_token=fencing_token)
         return _replay(committed, stage=stage)
 
-    expected_revision = run.state_revision
-    if run.status is not RunStatus.RUNNING:
-        run.apply_status(RunStatus.RUNNING)
-    open_stage = store.open_attempt(
-        run=run,
-        stage=stage,
-        input_revision=input_revision,
-        attempt_number=attempt_number,
-    )
-    known_stage_runs = tuple(run.stages)
+    opened = _open_attempt(store, identity)
     context = build_context(
         change=change,
         stage=stage,
@@ -478,7 +577,7 @@ def advance_run(
         input_revision=input_revision,
         budget=run.budget,
         attempt_number=attempt_number,
-        risk_class=_effective_risk_class(run),
+        risk_class=effective_change_risk_class(run.implementation_contract, run.route),
         implementation_contract=run.implementation_contract,
     )
     result = stage_executor(context)
@@ -492,33 +591,69 @@ def advance_run(
     )
     return _persist_and_report(
         store=store,
-        run=run,
+        identity=identity,
+        opened=opened,
         change=change,
-        stage=stage,
         result=result,
         decision=decision,
-        open_stage=open_stage,
-        known_stage_runs=known_stage_runs,
-        expected_revision=expected_revision,
-        fencing_token=fencing_token,
-        owner_id=owner_id,
         revision_of=revision_of,
         now=reference_now,
     )
 
 
-def _resume_waiting(
+def _resolved_wait(
+    checkpoint: StageResult,
+    *,
+    run: ChangeRun,
+    stage: Stage,
+    change: Change,
+    gate_facts: FactsProvider | None,
+    release_facts: ReleaseFactsProvider | None,
+) -> WaitResolver | None:
+    """The strategy that resolves the checkpoint's external wait, or ``None`` (read-only).
+
+    Only a ``waiting`` checkpoint can resolve, and the facts are per stage
+    kind (T-092 S3/S4): the release stage resolves only through release facts
+    (the driver never leases a run whose release wait is parked on pipeline
+    observations — ``gate_resolved`` refuses them for the release stage),
+    every other stage resolves through the gate facts. ``None`` observations
+    and absent providers resolve nothing. The gate resolution weighs the
+    *effective* risk class of the run — declared, derived facts and the route
+    floor, the same derivation the flow applies on every transition (T-080,
+    ADR-023 p.2) — or a risk-widened human gate (``ui``, R2 ``planning``)
+    could be resolved against a different gate set than the flow checks
+    (ADR-029 p.3). The observation is taken twice per resumed advance — once
+    before the lease to decide whether it is worth taking, once re-derived
+    under it — which is why the providers must be read-only.
+    """
+    if checkpoint.status is not StageStatus.WAITING:
+        return None
+    if stage is Stage.RELEASE:
+        if release_facts is None:
+            return None
+        release_observation = release_facts(run, stage, change)
+        if release_observation is None or not release_resolved(release_observation):
+            return None
+        return _ReleaseWaitResolver(checkpoint=checkpoint, observation=release_observation)
+    if gate_facts is None:
+        return None
+    gate_observation = gate_facts(run, stage, change)
+    if gate_observation is None or not gate_resolved(
+        gate_observation,
+        stage=stage,
+        route=run.route,
+        risk_class=effective_change_risk_class(run.implementation_contract, run.route),
+    ):
+        return None
+    return _GateWaitResolver(checkpoint=checkpoint, observation=gate_observation)
+
+
+def _resume(
     *,
     store: RunStorePort,
-    run: ChangeRun,
+    identity: AttemptIdentity,
     change: Change,
-    stage: Stage,
-    checkpoint: StageResult,
-    observation: GateObservation,
-    attempt_number: int,
-    input_revision: str,
-    owner_id: str,
-    fencing_token: int,
+    resolve: WaitResolver,
     merge_context: MergeRequestContext | None,
     human_decisions: Sequence[Decision],
     revision_of: RevisionResolver | None,
@@ -526,194 +661,80 @@ def _resume_waiting(
 ) -> RunAdvance:
     """Resolve a waiting attempt's external wait and persist the whole decision.
 
-    The resolution belongs to the waiting attempt (T-092 S3, ADR-006 p.8): the
-    same attempt number and the same pinned input revision re-open the physical
-    attempt the checkpoint parked (``RunStore.open_attempt``), the pure builder
-    (``stages.gates``) turns the observation into the final result of that
-    attempt, and ``apply_result`` decides the transition with the observed
-    approvals folded into ``human_decisions`` (T-080, ADR-011 p.2). A merge
-    context observed with the resolution replaces the caller's: the merge facts
-    of this attempt are the ones just observed. Persist, lease release and the
-    lost-race fallback are the normal path's (ADR-006 p.8).
+    The resolution belongs to the waiting attempt (T-092 S3/S4, ADR-006 p.8):
+    the same attempt number and the same pinned input revision re-open the
+    physical attempt the checkpoint parked (``RunStore.open_attempt``), the
+    stage kind's pure builder (``resolve``) turns the observation into the
+    final result of that attempt, and ``apply_result`` decides the transition.
+    For the machine gates (``stages.gates``) the observed approvals are folded
+    into ``human_decisions`` (T-080, ADR-011 p.2) and a merge context observed
+    with the resolution replaces the caller's: the merge facts of this attempt
+    are the ones just observed. For the release stage (``stages.release``,
+    ADR-024 §7 S4) ``released`` succeeds the stage — the flow then completes
+    the run through the release action — and a failed verification blocks it
+    with the rollback signal; there are no merge facts and no observed
+    approvals on that path, so the caller's pass through unchanged. Persist,
+    lease release and the lost-race fallback are the normal path's
+    (ADR-006 p.8).
     """
-    expected_revision = run.state_revision
-    if run.status is not RunStatus.RUNNING:
-        run.apply_status(RunStatus.RUNNING)
-    open_stage = store.open_attempt(
-        run=run,
-        stage=stage,
-        input_revision=input_revision,
-        attempt_number=attempt_number,
-    )
-    known_stage_runs = tuple(run.stages)
-    history = store.load_history(run.id)
-    resolution = build_gate_resolution(
-        run=run,
-        stage=stage,
-        change=change,
-        checkpoint=checkpoint,
-        observation=observation,
-        input_revision=input_revision,
-        attempt_number=attempt_number,
-        history=history,
-        now=now,
-    )
-    result = resolution.result
+    opened = _open_attempt(store, identity)
+    history = store.load_history(identity.run.id)
+    resolution = resolve(identity, change=change, history=history, now=now)
     decision = apply_result(
-        run,
-        result,
+        identity.run,
+        resolution.result,
         history=history,
         now=now,
         merge_context=(
             resolution.merge_context if resolution.merge_context is not None else merge_context
         ),
-        human_decisions=(*human_decisions, *observation.approvals),
+        human_decisions=(*human_decisions, *resolution.approvals),
     )
     return _persist_and_report(
         store=store,
-        run=run,
+        identity=identity,
+        opened=opened,
         change=change,
-        stage=stage,
-        result=result,
+        result=resolution.result,
         decision=decision,
-        open_stage=open_stage,
-        known_stage_runs=known_stage_runs,
-        expected_revision=expected_revision,
-        fencing_token=fencing_token,
-        owner_id=owner_id,
         revision_of=revision_of,
         now=now,
     )
 
 
-def _external_wait_resolved(
-    checkpoint: StageResult,
-    *,
-    stage: Stage,
-    run: ChangeRun,
-    change: Change,
-    gate_facts: FactsProvider | None,
-    release_facts: ReleaseFactsProvider | None,
-) -> bool:
-    """Whether the observed facts resolve the checkpoint's external wait (read-only).
+def _open_attempt(store: RunStorePort, identity: AttemptIdentity) -> OpenedAttempt:
+    """Open the physical attempt of ``identity`` and capture what persisting needs.
 
-    Only a ``waiting`` checkpoint can resolve, and the facts are per stage
-    kind (T-092 S3/S4): the release stage resolves only through release facts
-    (the driver never leases a run whose release wait is parked on pipeline
-    observations — ``gate_resolved`` refuses them for the release stage),
-    every other stage resolves through the gate facts. ``None`` observations
-    and absent providers resolve nothing.
+    The run's optimistic revision is captured *before* the advance moves it to
+    ``running`` (a resumed or retried run is parked on another status), and
+    the attempt row the store inserts is the durable guard that no second
+    writer executes the same attempt (ADR-006 p.3).
     """
-    if checkpoint.status is not StageStatus.WAITING:
-        return False
-    if stage is Stage.RELEASE:
-        return release_facts is not None and release_resolved(release_facts(run, stage, change))
-    return gate_facts is not None and gate_resolved(
-        gate_facts(run, stage, change),
-        stage=stage,
-        route=run.route,
-        risk_class=_effective_risk_class(run),
-    )
-
-
-def _effective_risk_class(run: ChangeRun) -> RiskClass:
-    """Effective risk class of the run: declared, derived facts and the route floor.
-
-    The same derivation the flow applies on every transition (T-080, ADR-023
-    p.2): the gate resolution must weigh the human gate set of the same class,
-    or a risk-widened human gate (``ui``, R2 ``planning``) could be resolved
-    against a different set than the flow checks (ADR-029 p.3).
-    """
-    return effective_change_risk_class(run.implementation_contract, run.route)
-
-
-def _resume_release_waiting(
-    *,
-    store: RunStorePort,
-    run: ChangeRun,
-    change: Change,
-    stage: Stage,
-    checkpoint: StageResult,
-    observation: ReleaseObservation,
-    attempt_number: int,
-    input_revision: str,
-    owner_id: str,
-    fencing_token: int,
-    merge_context: MergeRequestContext | None,
-    human_decisions: Sequence[Decision],
-    revision_of: RevisionResolver | None,
-    now: datetime,
-) -> RunAdvance:
-    """Resolve a waiting release attempt's external wait and persist the decision (S4).
-
-    The release counterpart of :func:`_resume_waiting` (T-092 S4, ADR-024
-    §7 S4): the same attempt number and the same pinned input revision re-open
-    the physical attempt the checkpoint parked, and the pure builder
-    (``stages.release``) turns the observation into the final result of that
-    attempt — ``released`` succeeds the stage (the flow then completes the run
-    through the release action) and a failed verification blocks it with the
-    rollback signal. There are no merge facts and no observed approvals on
-    this path: the caller's merge context and human decisions pass through
-    unchanged. Persist, lease release and the lost-race fallback are the
-    normal path's (ADR-006 p.8).
-    """
+    run = identity.run
     expected_revision = run.state_revision
     if run.status is not RunStatus.RUNNING:
         run.apply_status(RunStatus.RUNNING)
     open_stage = store.open_attempt(
         run=run,
-        stage=stage,
-        input_revision=input_revision,
-        attempt_number=attempt_number,
+        stage=identity.stage,
+        input_revision=identity.input_revision,
+        attempt_number=identity.attempt_number,
     )
-    known_stage_runs = tuple(run.stages)
-    result = build_release_resolution(
-        run=run,
-        change=change,
-        checkpoint=checkpoint,
-        observation=observation,
-        input_revision=input_revision,
-        attempt_number=attempt_number,
-        now=now,
-    )
-    decision = apply_result(
-        run,
-        result,
-        history=store.load_history(run.id),
-        now=now,
-        merge_context=merge_context,
-        human_decisions=human_decisions,
-    )
-    return _persist_and_report(
-        store=store,
-        run=run,
-        change=change,
-        stage=stage,
-        result=result,
-        decision=decision,
+    return OpenedAttempt(
         open_stage=open_stage,
-        known_stage_runs=known_stage_runs,
         expected_revision=expected_revision,
-        fencing_token=fencing_token,
-        owner_id=owner_id,
-        revision_of=revision_of,
-        now=now,
+        known_stage_runs=tuple(run.stages),
     )
 
 
 def _persist_and_report(
     *,
     store: RunStorePort,
-    run: ChangeRun,
+    identity: AttemptIdentity,
+    opened: OpenedAttempt,
     change: Change,
-    stage: Stage,
     result: StageResult,
     decision: FlowDecision,
-    open_stage: OpenStage,
-    known_stage_runs: tuple[StageRun, ...],
-    expected_revision: int,
-    fencing_token: int,
-    owner_id: str,
     revision_of: RevisionResolver | None,
     now: datetime,
 ) -> RunAdvance:
@@ -727,20 +748,29 @@ def _persist_and_report(
     authoritative and the advance reports it instead of an advance (ADR-024
     p.3).
     """
+    run = identity.run
+    stage = identity.stage
     created_stages = _created_stages(
-        store, run, known=known_stage_runs, executed=stage, change=change, revision_of=revision_of
+        store,
+        run,
+        known=opened.known_stage_runs,
+        executed=stage,
+        change=change,
+        revision_of=revision_of,
     )
     persisted = store.persist_decision(
         run=run,
         result=result,
         decision=decision,
-        open_stage=open_stage,
+        open_stage=opened.open_stage,
         created_stages=created_stages,
-        expected_revision=expected_revision,
-        fencing_token=fencing_token,
+        expected_revision=opened.expected_revision,
+        fencing_token=identity.fencing_token,
         now=now,
     )
-    store.release_lease(run_id=run.id, owner_id=owner_id, fencing_token=fencing_token)
+    store.release_lease(
+        run_id=run.id, owner_id=identity.owner_id, fencing_token=identity.fencing_token
+    )
     if not persisted:
         committed = _committed_result(
             store, run, stage, result.attempt_number, result.input_revision or ""
