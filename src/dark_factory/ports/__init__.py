@@ -55,7 +55,12 @@ from dark_factory.ports.context import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
-from dark_factory.ports.errors import HeadMismatchError, PortError, RunNotFoundError
+from dark_factory.ports.errors import (
+    HeadMismatchError,
+    PortError,
+    ProvisioningOperationUnsupportedError,
+    RunNotFoundError,
+)
 from dark_factory.ports.events import DomainEvent, EventType
 from dark_factory.ports.protocols import (
     ArtifactStorePort,
@@ -69,10 +74,18 @@ from dark_factory.ports.protocols import (
     PipelinePort,
     ReconciliationService,
     RepositoryPort,
+    RepositoryProvisioningPort,
     SDDPort,
     TelemetryPort,
     TrackerPort,
     WorkflowEnginePort,
+)
+from dark_factory.ports.provisioning import (
+    AppliedPack,
+    BaselineBootstrapResult,
+    MirrorRef,
+    RepositoryState,
+    RepositoryValidation,
 )
 from dark_factory.ports.reconciliation import ReconcileDesired, ReconcileObserved, ReconcileResult
 
@@ -81,9 +94,11 @@ __all__ = [
     "CONTEXT_SCHEMA_VERSION",
     "AgentResult",
     "AgentSchemaVersion",
+    "AppliedPack",
     "ArtifactRef",
     "ArtifactSpec",
     "ArtifactStorePort",
+    "BaselineBootstrapResult",
     "BaselineMismatchError",
     "CIPort",
     "Change",
@@ -112,17 +127,22 @@ __all__ = [
     "HealthStatus",
     "KnowledgePort",
     "MergeRequestPort",
+    "MirrorRef",
     "OpenChangeRequest",
     "PipelinePort",
     "PipelineStatus",
     "PortError",
     "Provider",
+    "ProvisioningOperationUnsupportedError",
     "ReconcileDesired",
     "ReconcileObserved",
     "ReconcileResult",
     "ReconciliationService",
     "RepositoryPort",
+    "RepositoryProvisioningPort",
     "RepositoryRef",
+    "RepositoryState",
+    "RepositoryValidation",
     "RequirementsSnapshot",
     "ReviewObservation",
     "RiskClass",

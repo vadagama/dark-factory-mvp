@@ -11,6 +11,7 @@ from dark_factory.adapters.fakes.events import FakeEventPublisher
 from dark_factory.adapters.fakes.execution import FakeExecution
 from dark_factory.adapters.fakes.harness import FakeHarness
 from dark_factory.adapters.fakes.knowledge import FakeKnowledge
+from dark_factory.adapters.fakes.provisioning import FakeRepositoryProvisioning
 from dark_factory.adapters.fakes.scm import FakeMergeRequests, FakePipelines, FakeRepository
 from dark_factory.adapters.fakes.telemetry import FakeTelemetry
 from dark_factory.adapters.fakes.tracker import FakeTracker
@@ -27,6 +28,7 @@ __all__ = [
     "FakePipelines",
     "FakeReconciliationService",
     "FakeRepository",
+    "FakeRepositoryProvisioning",
     "FakeTelemetry",
     "FakeTracker",
     "FakeWorkflowEngine",

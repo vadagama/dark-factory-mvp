@@ -47,10 +47,11 @@ flowchart TB
 
 | Файл | Назначение |
 |---|---|
-| `protocols.py` | Четырнадцать runtime-checkable Protocol |
+| `protocols.py` | Шестнадцать runtime-checkable Protocol |
 | `agents.py` | Версионированные `TaskEnvelope`, `AgentResult` |
 | `common.py` | Общие provider-neutral DTO и функция `stage_gate()` |
 | `context.py` | DTO для `KnowledgePort`/`ExecutionPort` (T-012) |
+| `provisioning.py` | DTO провижининга репозитория: `RepositoryValidation`, `MirrorRef`, `BaselineBootstrapResult`, `AppliedPack` (T067, ADR-031) |
 | `reconciliation.py` / `events.py` | Desired/observed/result reconcile; типы событий и immutable event envelope |
 | `errors.py` / `__init__.py` | Нормализованные port-level ошибки; публичный фасад слоя |
 
@@ -220,6 +221,16 @@ apply_delta(change_id, *, expected_revision) -> str
 
 `SDDPort` — жизненный цикл ChangeSet над product baseline, Native SDD Core (ADR-020 p.8). Адаптеры: `NativeChangeSetAdapter` (основной), `SpecKitAdapter` (bootstrap-импорт legacy-артефактов `specs/`), `OpenSpecAdapter` (compatibility import/export). Все три реализуют Protocol **структурно** из `dark_factory.context.sdd` и не импортируют `dark_factory.ports` — runtime-checkable валидация работает и без этого импорта. `apply_delta` оптимистична: `expected_revision` закрепляет baseline, расхождение — `BaselineMismatchError` с expected/actual.
 
+### 3.9. `RepositoryProvisioningPort`
+
+```python
+validate(repository) -> RepositoryValidation
+ensure_mirror(repository, *, idempotency_key) -> MirrorRef
+bootstrap_baseline(repository, *, packs, idempotency_key) -> BaselineBootstrapResult
+```
+
+Подготовка репозитория продукта до того, как его коснётся стадия агента (T067–T069, ADR-031). Два адаптера за одним портом (ADR-031 p.2): `LocalMirror` — операторское локальное зеркало под `DARK_FACTORY_WORKSPACE_MIRROR_ROOT` (раскладка `<root>/<provider>/<slug>` — та же, что у `WorktreeExecution`; T067) и `ProviderClone` — клон с провайдера на installation-токене GitHub App без PAT (T068). `validate` — read-only проба без ключа и без мутаций (p.5): `UNAVAILABLE`, `EMPTY` (unborn HEAD — штатный случай), `BASELINE_ABSENT`/`BASELINE_CURRENT`/`BASELINE_STALE` по наличию `.factory/product` (ADR-020) в HEAD. `ensure_mirror` — replay-дедуп по ключу, отсутствующий репозиторий — `KeyError`. `bootstrap_baseline` — применение паков (T069) с replay-дедупом и evidence в результате; адаптер без этой возможности бросает `ProvisioningOperationUnsupportedError` с именем операции, а не сообщает о невыполненном bootstrap (p.6). Реализация T067 — `LocalMirror` + `FakeRepositoryProvisioning`; согласие раскладки с `WorktreeExecution` пинится `tests/test_adapters_provisioning.py` (адаптер не может импортировать ядро мимо `dark_factory.ports`).
+
 ## 4. DTO
 
 ### 4.1. Agent contract
@@ -265,6 +276,17 @@ apply_delta(change_id, *, expected_revision) -> str
 
 `DomainEvent` содержит event ID/type/version/time; change/run/stage; aggregate ID/version; correlation/causation IDs; artifact refs; payload. `EventType` (девять значений): `change.intaken`, `run.started`, `run.stage_completed`, `run.status_changed`, `gate.evaluated`, `approval.recorded`, `merge.completed`, `release.completed`, `usage.recorded`. Ordering гарантируется не глобально, а только внутри одного `aggregate_id` через outbox sequence — разные aggregates одного run общего порядка не имеют.
 
+### 4.6. Provisioning DTO
+
+| DTO | Поля |
+|---|---|
+| `RepositoryValidation` | `repository`, `state: RepositoryState`, `default_branch?`, `head_revision?` |
+| `MirrorRef` | `repository`, `location`, `default_branch?`, `head_revision?` |
+| `AppliedPack` | `name`, `version` |
+| `BaselineBootstrapResult` | `repository`, `revision`, `applied_packs: tuple[AppliedPack, ...]` |
+
+`RepositoryState` — `StrEnum`: `unavailable`, `empty`, `baseline_absent`, `baseline_current`, `baseline_stale`. Все модели frozen; `RepositoryValidation` — read-only снимок (ADR-031 p.5), `BaselineBootstrapResult` — evidence провижининга (p.6).
+
 ## 5. Ошибки
 
 Текущие иерархии (GitHub-адаптер дополняет PortError-иерархию собственным `GitHubAPIError`):
@@ -274,6 +296,7 @@ RuntimeError
 └── PortError
     ├── HeadMismatchError
     ├── RunNotFoundError
+    ├── ProvisioningOperationUnsupportedError
     └── GitHubAPIError          (только adapters/scm/github/client.py)
 
 Exception
@@ -288,6 +311,7 @@ Exception
 |---|---|
 | `HeadMismatchError` | Merge запросил устаревший expected SHA |
 | `RunNotFoundError` | Workflow engine не знает run ID |
+| `ProvisioningOperationUnsupportedError` | Адаптер провижининга не умеет операцию (несёт `operation`); сообщать о невыполненном bootstrap запрещено (ADR-031 p.6) |
 | `ChangeNotFoundError` | Нет ChangeSet с запрошенным id под factory root |
 | `BaselineMismatchError` | Baseline на диске не совпал с ожидаемой ревизией; несёт expected/actual |
 
@@ -351,7 +375,8 @@ State-changing операции используют один из четырё�
 ## 11. Где искать проверки
 
 - `tests/test_import_boundaries.py` — правила A/B/C направления зависимостей;
-- `tests/contract/` — четырнадцать сюит, по одной на каждый Protocol (от `test_repository_port.py` до `test_sdd_port.py`, включая `test_ci_port.py`, `test_knowledge_port.py`, `test_execution_port.py`): единый поведенческий контракт fake/production adapters;
+- `tests/contract/` — пятнадцать сюит (по одной на Protocol с поведенческим контрактом; от `test_repository_port.py` до `test_sdd_port.py`, включая `test_ci_port.py`, `test_knowledge_port.py`, `test_execution_port.py`, `test_repository_provisioning_port.py`): единый поведенческий контракт fake/production adapters;
+- `tests/test_adapters_provisioning.py` — `LocalMirror` и `WorktreeExecution` читают один корень зеркала и одну раскладку (пин против дрейфа, ADR-031 p.2);
 - `tests/contract/plane_api.py` — in-memory эмулятор Plane REST API, которым сюита `test_tracker_port.py` параметризована `fake | plane`;
 - `tests/test_plane_tracker_adapter.py`, `tests/test_plane_webhook.py` — маппинг задачи, запись комментарием, guard webhook (все негативные сценарии);
 - `tests/test_telemetry_otlp_adapter.py` — восстановление цепочки трасс `change → … → deployment`, usage-корреляция, политика экспорта и изоляция сбоя экспортёра;

@@ -18,6 +18,7 @@ markers), and the OTel binding decodes the exporter it was built with.
 """
 
 import asyncio
+import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -39,10 +40,12 @@ from dark_factory.adapters.fakes import (
     FakePipelines,
     FakeReconciliationService,
     FakeRepository,
+    FakeRepositoryProvisioning,
     FakeTelemetry,
     FakeTracker,
     FakeWorkflowEngine,
 )
+from dark_factory.adapters.provisioning import LocalMirror, LocalMirrorConfig
 from dark_factory.adapters.scm.github import GitHubAdapter, GitHubConfig, StaticTokenProvider
 from dark_factory.adapters.telemetry import (
     USAGE_ATTRIBUTE_PREFIX,
@@ -75,6 +78,7 @@ from dark_factory.ports import (
     Provider,
     ReconciliationService,
     RepositoryPort,
+    RepositoryProvisioningPort,
     RepositoryRef,
     RiskClass,
     RunStatus,
@@ -176,6 +180,23 @@ class _ExecutionBinding(NamedTuple):
     make_state_fail: Callable[[WorkspaceHandle], None]
     seed_file: Callable[[WorkspaceHandle, str, bytes], None]
     make_request: Callable[[], WorkspaceRequest]
+
+
+class _ProvisioningBinding(NamedTuple):
+    """RepositoryProvisioningPort plus the seeded repository states of one binding.
+
+    Provisioning is the port whose validation result *is* the observable state
+    (ADR-031 p.4), so the binding owns the seeder: a test materialises the state it
+    asserts (absent mirror, empty repository, commits without/with a baseline) and
+    the port must report it. ``supports_bootstrap`` states the capability split of
+    ADR-031 p.2 explicitly — the fake applies packs, ``LocalMirror`` does not (T069)
+    and must fail loudly instead of reporting a bootstrap it did not perform.
+    """
+
+    port: RepositoryProvisioningPort
+    repository: RepositoryRef
+    supports_bootstrap: bool
+    seed: Callable[[str], str | None]
 
 
 def _tracked_change() -> Change:
@@ -560,6 +581,26 @@ def evidence_workspace(execution_binding: _ExecutionBinding) -> WorkspaceHandle:
     return handle
 
 
+@pytest.fixture(params=["fake", "local_mirror"])
+def provisioning_binding(request: pytest.FixtureRequest, tmp_path: Path) -> _ProvisioningBinding:
+    """RepositoryProvisioningPort bound to the fake and the local-mirror adapter (T067)."""
+    if request.param == "local_mirror":
+        mirror_root = tmp_path / "provisioning-mirror"
+        return _ProvisioningBinding(
+            port=LocalMirror(LocalMirrorConfig(mirror_root=mirror_root)),
+            repository=PRODUCT,
+            supports_bootstrap=False,
+            seed=lambda state: _seed_local_mirror(mirror_root, PRODUCT, state),
+        )
+    fake = FakeRepositoryProvisioning()
+    return _ProvisioningBinding(
+        port=fake,
+        repository=PRODUCT,
+        supports_bootstrap=True,
+        seed=lambda state: fake.seed(PRODUCT, state),
+    )
+
+
 def _seeded_mirror(tmp_path: Path) -> str:
     """An operator-prepared local mirror of ``PRODUCT``; returns its HEAD sha."""
     source = tmp_path / "mirror" / "github" / "small" / "pilot"
@@ -590,6 +631,41 @@ def _git(cwd: Path, *argv: str) -> str:
         text=True,
     )
     return process.stdout
+
+
+def _seed_local_mirror(mirror_root: Path, repository: RepositoryRef, state: str) -> str | None:
+    """Materialise one repository state under ``mirror_root``; returns its head sha.
+
+    ``unavailable`` leaves no mirror at all, ``empty`` is an unborn HEAD, and the
+    two baseline states commit a tree with or without ``.factory/product``
+    (ADR-031 p.4, ADR-020).
+    """
+    path = mirror_root / repository.provider.value / repository.slug
+    if path.exists():
+        shutil.rmtree(path)
+    if state == "unavailable":
+        return None
+    path.mkdir(parents=True)
+    _git(path, "init", "-b", "main")
+    if state == "empty":
+        return None
+    (path / "docs").mkdir()
+    (path / "docs" / "note.md").write_bytes(b"note\n")
+    if state == "baseline_current":
+        (path / ".factory" / "product").mkdir(parents=True)
+        (path / ".factory" / "product" / "product.yaml").write_bytes(b"name: pilot\n")
+    _git(path, "add", ".")
+    _git(
+        path,
+        "-c",
+        "user.email=factory@example.com",
+        "-c",
+        "user.name=Dark Factory",
+        "commit",
+        "-m",
+        "seed",
+    )
+    return _git(path, "rev-parse", "HEAD").strip()
 
 
 def _worktree_seed_file(port: WorktreeExecution) -> Callable[[WorkspaceHandle, str, bytes], None]:
