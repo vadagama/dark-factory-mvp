@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from dark_factory.changes.enums import DecisionOutcome, DecisionSource, Gate, ProductStatus, Role
 from dark_factory.changes.findings import Decision
+from dark_factory.changes.intake import IntakeBrief
 from dark_factory.changes.product import Product
 from dark_factory.changes.run import Change
 from dark_factory.orchestration.state.models import (
@@ -32,6 +33,7 @@ from dark_factory.orchestration.state.models import (
 from dark_factory.orchestration.state.repositories import StateConflictError
 
 CHANGE_INTAKE_ACTION: str = "change.intake"
+CHANGE_BRIEF_ACTION: str = "change.brief"
 PRODUCT_ADD_ACTION: str = "product.add"
 PRODUCT_VALIDATE_ACTION: str = "product.validate"
 APPROVAL_RECORD_ACTION: str = "approval.record"
@@ -126,14 +128,32 @@ class ChangeRepository:
         ).scalar_one_or_none()
         return _change_from_row(row) if row is not None else None
 
-    def list(self, *, limit: int = 50, offset: int = 0) -> list[Change]:
-        rows = self._session.execute(
-            select(ChangeRow)
-            .order_by(ChangeRow.created_at, ChangeRow.id)
-            .limit(limit)
-            .offset(offset)
-        ).scalars()
+    def list(
+        self, *, limit: int = 50, offset: int = 0, product_id: str | None = None
+    ) -> list[Change]:
+        """Changes in intake order; ``product_id`` narrows to one product (T071, ADR-030 p.2)."""
+        stmt = select(ChangeRow).order_by(ChangeRow.created_at, ChangeRow.id)
+        if product_id is not None:
+            stmt = stmt.where(ChangeRow.product_id == product_id)
+        rows = self._session.execute(stmt.limit(limit).offset(offset)).scalars()
         return [_change_from_row(row) for row in rows]
+
+    def update_brief(self, change_id: str, brief: IntakeBrief) -> Change:
+        """Replace the brief of one change (T071/T072).
+
+        The brief lives in the change document (``payload``); the denormalized
+        columns and ``state_revision`` are untouched — the revision counts
+        version-bound decisions (ADR-009 p.7) and the Console derives it from
+        them, so an intake edit must not move it. An unknown change raises
+        ``StateConflictError`` like every store write on a missing row.
+        """
+        row = self._session.get(ChangeRow, change_id, with_for_update=True)
+        if row is None:
+            raise StateConflictError(f"change {change_id!r} does not exist")
+        change = _change_from_row(row).model_copy(update={"brief": brief})
+        row.payload = change.model_dump(mode="json")
+        self._session.flush()
+        return change
 
 
 class ProductRepository:

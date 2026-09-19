@@ -19,6 +19,7 @@ from dark_factory.cli._common import (
     report_state_store_unreachable,
 )
 from dark_factory.cli.main import EXIT_OK, ApiServeArgs
+from dark_factory.orchestration.intake import BriefFormulator
 from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
 
 _COMMAND: Final[str] = "api serve"
@@ -31,6 +32,7 @@ def run_api_serve_command(
     ci_toggles: CiStageTogglePort | None = None,
     ci_repository: str | None = None,
     provisioning: RepositoryProvisioningPort | None = None,
+    brief_formulator: BriefFormulator | None = None,
 ) -> int:
     """Serve the API until interrupted; fail fast with exit 2 on misconfiguration.
 
@@ -41,7 +43,9 @@ def run_api_serve_command(
     then serve the catalog as unavailable, which is exactly the behaviour of
     the runtime-free path (``python -m dark_factory.cli``). ``provisioning`` is
     the repository-provisioning seam of product validation (T066, ADR-031): with
-    ``None`` the endpoint refuses instead of inventing readiness.
+    ``None`` the endpoint refuses instead of inventing readiness. ``brief_formulator``
+    is the harness-backed «Помоги сформулировать» seam (T072): with ``None`` the
+    endpoint answers an honest draft brief.
     """
     database_url = os.environ.get(DATABASE_URL_ENV_VAR, "").strip()
     if not database_url:
@@ -54,6 +58,8 @@ def run_api_serve_command(
                 session_factory,
                 ci_toggles=ci_toggles,
                 ci_repository=ci_repository,
+                provisioning=provisioning,
+                brief_formulator=brief_formulator,
             )
             import uvicorn
 

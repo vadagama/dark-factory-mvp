@@ -37,11 +37,20 @@ def _test_database_url() -> str:
     return url
 
 
-def _upgrade(database_url: str) -> None:
+def alembic_config(database_url: str) -> Config:
+    """Alembic config of the test database; shared by the schema and reversibility tests.
+
+    ``ConfigParser`` interpolates ``%``, so a URL-encoded password (``%2F``) must
+    be escaped or the option parser rejects the URL.
+    """
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(config, "head")
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+    return config
+
+
+def _upgrade(database_url: str) -> None:
+    command.upgrade(alembic_config(database_url), "head")
 
 
 @pytest.fixture(scope="session")

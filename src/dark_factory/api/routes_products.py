@@ -34,6 +34,7 @@ from dark_factory.api.dto import (
     ProductValidationView,
 )
 from dark_factory.changes.product import Product
+from dark_factory.orchestration.guidance import Guidance
 from dark_factory.orchestration.products import (
     PROVISIONING_UNCONFIGURED_DETAIL,
     observe_repository,
@@ -45,6 +46,7 @@ from dark_factory.orchestration.state.change_store import (
     AuditRepository,
     ProductRepository,
 )
+from dark_factory.orchestration.state.guidance import build_product_guidance
 from dark_factory.orchestration.state.repositories import StateConflictError
 from dark_factory.ports import RepositoryProvisioningPort
 
@@ -96,6 +98,14 @@ def create_products_router(
         if product is None:
             raise HTTPException(status_code=404, detail=f"Product {product_id!r} does not exist")
         return product
+
+    @router.get("/products/{product_id}/guidance", response_model=Guidance)
+    def get_product_guidance(product_id: str, session: SessionDep) -> Guidance:
+        """The operator's next step for the product (T074, ADR-033) — a read model."""
+        product = ProductRepository(session).get(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail=f"Product {product_id!r} does not exist")
+        return build_product_guidance(session, product)
 
     @router.post("/products", status_code=201, response_model=Product)
     def create_product(

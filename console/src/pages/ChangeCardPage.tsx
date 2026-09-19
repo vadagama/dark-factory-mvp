@@ -1,12 +1,21 @@
-import { useMemo } from "react";
-import { Link, useParams } from "react-router";
+import { useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router";
 import { createApiClient } from "../api/client";
 import { POLL_MS, useAsync } from "../api/hooks";
+import { BriefSection } from "../components/BriefSection";
+import { NextStep } from "../components/NextStep";
 import { EmptyState, ErrorState, LoadingState, Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
+import { TokenDialog } from "../components/TokenDialog";
 import { formatCost, formatDateTime, formatNumber, formatProduct, formatStage, formatTime } from "../lib/format";
+import type { ConsoleAction } from "../lib/guidance";
 import { statusTone } from "../lib/statusTone";
-import type { Evidence, Finding, RunCard } from "../api/types";
+import type { Evidence, Finding, IntakeBrief, RunCard, Scenario, SpendLimit } from "../api/types";
+
+const SCENARIO_LABELS: Record<Scenario, string> = {
+  specs_only: "только спецификации — до согласования требований/архитектуры/UI",
+  full: "полный — до доставки в dev",
+};
 
 /** Per-run payload shown on the card: usage, gates, evidence, open blockers. */
 interface RunDetails {
@@ -29,6 +38,10 @@ interface ChangeDetailModel {
     productSlug: string;
     riskClass: string;
     createdAt: string;
+    productId: string | null;
+    brief: IntakeBrief | null;
+    scenario: Scenario;
+    spendLimit: SpendLimit | null;
   };
   trace: {
     runId: string;
@@ -40,6 +53,51 @@ interface ChangeDetailModel {
 export function ChangeCardPage() {
   const { changeId = "" } = useParams();
   const api = useMemo(() => createApiClient(), []);
+  const navigate = useNavigate();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const problemRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // The next step is its own read model (T074): polled next to the card so a
+  // brief edit or a run transition shows up without a manual reload.
+  const guidance = useAsync(() => api.getChangeGuidance(changeId), [changeId, reloadNonce], { pollMs: POLL_MS });
+
+  const reloadAll = () => {
+    setReloadNonce((value) => value + 1);
+  };
+
+  const perform = (action: ConsoleAction) => {
+    switch (action.kind) {
+      case "edit_brief": {
+        const field = problemRef.current;
+        if (field) {
+          if (typeof field.scrollIntoView === "function") {
+            field.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+          field.focus();
+        }
+        return;
+      }
+      case "open_change":
+      case "open_run":
+        reloadAll();
+        return;
+      case "open_gates":
+        navigate(`/changes/${encodeURIComponent(action.changeId)}/gates`);
+        return;
+      case "new_change":
+        navigate(
+          state.data?.change.productId
+            ? `/products/${encodeURIComponent(state.data.change.productId)}/new-change`
+            : "/",
+        );
+        return;
+      case "validate_product":
+      case "reload_product":
+        navigate(`/products/${encodeURIComponent(action.productId)}`);
+        return;
+    }
+  };
 
   const state = useAsync<ChangeDetailModel>(async () => {
     const card = await api.getChange(changeId);
@@ -68,6 +126,10 @@ export function ChangeCardPage() {
         productSlug: card.product.slug,
         riskClass: card.risk_class,
         createdAt: card.created_at,
+        productId: card.product_id,
+        brief: card.brief,
+        scenario: card.scenario,
+        spendLimit: card.spend_limit,
       },
       runs: runDetails,
       trace: trace.runs.map((runTrace) => ({
@@ -82,10 +144,17 @@ export function ChangeCardPage() {
         })),
       })),
     };
-  }, [changeId], { pollMs: POLL_MS });
+  }, [changeId, reloadNonce], { pollMs: POLL_MS });
 
   return (
     <>
+      {guidance.data ? <NextStep guidance={guidance.data} onPerform={perform} /> : null}
+      {guidance.error && !guidance.data ? (
+        <Section title="Следующий шаг">
+          <ErrorState message={guidance.error.detail} />
+        </Section>
+      ) : null}
+
       <Section title="Изменение">
         {state.updatedAt !== null ? (
           <p className="muted" data-testid="updated-at">
@@ -111,6 +180,26 @@ export function ChangeCardPage() {
               <span className="muted">создано: {formatDateTime(state.data.change.createdAt)}</span>
               <span className="muted">решений: {state.data.decisionsCount}</span>
             </div>
+            <div className="row" data-testid="change-intake-line">
+              <span className="muted">сценарий: {SCENARIO_LABELS[state.data.change.scenario] ?? state.data.change.scenario}</span>
+              <span className="muted">
+                лимит:{" "}
+                {state.data.change.spendLimit
+                  ? `${state.data.change.spendLimit.cost_budget_usd} USD${
+                      state.data.change.spendLimit.token_budget !== null
+                        ? `, ${formatNumber(state.data.change.spendLimit.token_budget)} токенов`
+                        : ""
+                    }`
+                  : "не задан"}
+              </span>
+              {state.data.change.productId ? (
+                <Link to={`/products/${encodeURIComponent(state.data.change.productId)}`} className="mono">
+                  продукт: {state.data.change.productId}
+                </Link>
+              ) : (
+                <span className="muted">продукт: не привязан</span>
+              )}
+            </div>
             <div className="row">
               <Link to={`/changes/${encodeURIComponent(state.data.changeId)}/gates`} className="button">
                 Гейты и согласования
@@ -119,6 +208,16 @@ export function ChangeCardPage() {
           </div>
         ) : null}
       </Section>
+
+      {state.data ? (
+        <BriefSection
+          changeId={state.data.changeId}
+          brief={state.data.change.brief}
+          onSaved={reloadAll}
+          onTokenRequired={() => setDialogOpen(true)}
+          problemRef={problemRef}
+        />
+      ) : null}
 
       {state.data && state.data.runs.length === 0 ? (
         <Section title="Прогоны">
@@ -253,6 +352,7 @@ export function ChangeCardPage() {
           ))}
         </Section>
       ) : null}
+      <TokenDialog open={dialogOpen} onOpenChange={setDialogOpen} />
     </>
   );
 }

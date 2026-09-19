@@ -1,9 +1,12 @@
 # Dark Factory Console
 
 Operator web console of the Software Dark Factory (task T036, delivery per
-[ADR-021](../docs/adr/ADR-021-console-mvp-delivery.md)). Six screens over the
-T035 API: changes list, change card, gates/approvals, budgets/limits, CI stage
-toggles, settings/profiles.
+[ADR-021](../docs/adr/ADR-021-console-mvp-delivery.md); information
+architecture per ADR-037, milestone M1 — tasks T075/T076). Products are the
+index; each product and change shows the server-computed «Следующий шаг»
+(ADR-033); a new change is created from the product through an agent-assisted
+intake. The T036 screens (change card, gates/approvals, budgets, CI stages,
+settings) are kept and the service ones moved under `/service`.
 
 Stack: **React 19 + TypeScript (strict) + Vite 8**, Radix primitives, plain CSS
 design tokens, `react-router` v7. No Tailwind, no react-query/axios (see
@@ -39,14 +42,59 @@ API or database needed. First run needs a browser:
 
 ## Screens
 
+Global navigation (ADR-037): `Продукты · Требует внимания · Активность · Служебное`.
+
 | Route | Screen | Data |
 |---|---|---|
-| `/` | Changes list + intake form | `GET /changes`, `GET /runs`; intake: `POST /changes` |
-| `/changes/:id` | Change card: runs, stages, evidence, usage, blockers, stage chain (SC-007) | `GET /changes/{id}`, `/changes/{id}/trace`, `/runs/{id}`, `/runs/{id}/evidence`, `/runs/{id}/findings` |
+| `/` | Products: readiness badge, repository, number of changes, «Добавить продукт» form | `GET /products`, `GET /changes` (grouped by `product_id`); `POST /products` |
+| `/products/:id` | Product page: header, **NextStep**, «Обзор», «Изменения», «База», «Доставки»; «Новая фича», «Проверить репозиторий» | `GET /products/{id}`, `/products/{id}/guidance`, `/changes?product_id=`; `POST /products/{id}/validate` |
+| `/products/:id/new-change` | Intake (T076): free text → «Помоги сформулировать» → brief fields, scenario, spend limit, risk class → «Создать задачу» | `GET /products/{id}`; `POST /briefs/formulate`; `POST /changes` |
+| `/changes/:id` | Change card: **NextStep**, scenario/limit/product line, «Бриф» with inline editor, runs, stages, evidence, usage, blockers, stage chain (SC-007) | `GET /changes/{id}`, `/changes/{id}/guidance`, `/changes/{id}/trace`, `/runs/{id}`, `/runs/{id}/evidence`, `/runs/{id}/findings`; `PUT /changes/{id}/brief` |
 | `/changes/:id/gates` | Gates, open blocker findings, approvals history, version-bound approval form | `GET /runs/{id}/gates`, `/runs/{id}/findings`, `/changes/{id}/approvals`; `POST /changes/{id}/approvals` |
-| `/budgets` | Configured limits vs actual usage | limits from `src/generated/meta.json`; usage from `GET /runs` + `GET /runs/{id}` |
-| `/ci` | Этапы CI: on/off switches for the factory CI stages (T058/ADR-026) | `GET /ci/stages`; `PUT /ci/stages/{job}` |
-| `/settings` | Operator token, API base URL, factory mode, role profiles | localStorage + `meta.json` |
+| `/changes` | Legacy flat changes list + minimal intake (no longer the index) | `GET /changes`, `GET /runs`; `POST /changes` |
+| `/attention` | Placeholder: «Inbox „Требует внимания“ появится в M5 (T116)» | — |
+| `/activity` | Placeholder: «Лента активности вне объёма MVP» | — |
+| `/service` | Service landing with links to the three screens below | — |
+| `/service/budgets` | Configured limits vs actual usage | limits from `src/generated/meta.json`; usage from `GET /runs` + `GET /runs/{id}` |
+| `/service/ci` | Этапы CI: on/off switches for the factory CI stages (T058/ADR-026) | `GET /ci/stages`; `PUT /ci/stages/{job}` |
+| `/service/settings` | Operator token, API base URL, factory mode, role profiles | localStorage + `meta.json` |
+
+`/budgets`, `/ci` and `/settings` redirect (`<Navigate replace>`) to their
+`/service/*` counterparts; unknown paths render the products page.
+
+### NextStep (ADR-033)
+
+`src/components/NextStep.tsx` renders a `Guidance` read model exactly as the
+server computed it: headline, why, **one** primary action with the server's
+label, secondary actions (label + CLI/API hint), blockers as
+`what — снимает: <оператор/агент/CI/фабрика/внешняя система> — как: how`, and
+`after`. The Console has no "next step" logic of its own: `lib/guidance.ts`
+only parses the server's `api` string. When it names something the Console
+can do (`POST /products/{id}/validate`, `POST /changes`,
+`PUT /changes/{id}/brief`, `GET /products/{id}`, `GET /changes/{id}`,
+`GET /runs/{id}`, `POST /changes/{id}/approvals`) the primary is a button that
+performs it (validate, navigate to the intake, focus the brief editor, reload,
+open the gates); otherwise the server's `cli` command is shown in a `<code>`
+block under «в CLI:» — run advance/withdraw come to the Console in M4. A
+disabled primary keeps its label and shows the server `reason`. No percentage
+progress is ever rendered.
+
+### Intake (T071/T072/T076)
+
+The operator describes the intent in free text and presses «Помоги
+сформулировать» → `POST /briefs/formulate`. The four brief fields (problem,
+goal, constraints, out_of_scope — the last two one-per-line) are filled from
+the answer and stay editable; `source_text` is kept. When the agent harness is
+not configured or fails, the API still answers 200 with a `draft` brief and a
+human-readable `error`: the Console shows «Бриф остался черновиком: <error>»
+and the operator fills the fields by hand (T072 DoD). `formulated_by` is
+`agent` only while the agent's wording is untouched, `operator` otherwise
+(`lib/brief.ts`). Scenario (`specs_only` / `full`), a required positive USD
+limit and an optional token limit go into `scenario` / `spend_limit`; the
+forecast block honestly says «Прогноз расхода появится после первого прогона;
+лимит: N USD» — there is no forecast data before a run and none is invented.
+Submit is `POST /changes` with `product_id`, `product` (the product's
+repository), `brief`, `scenario`, `spend_limit`, `source: "console"`.
 
 ## Architecture
 
@@ -56,10 +104,12 @@ console/
 ├── src/
 │   ├── api/              # thin typed fetch client (client.ts), wire types (types.ts),
 │   │                     # token/localStorage store (token.ts), base URL (settings.ts), useAsync hook
-│   ├── components/       # Section/badges/Layout, Radix token dialog, intake form
+│   ├── components/       # Section/badges/Layout, Radix token dialog, NextStep, BriefSection,
+│   │                     # ProductForm, legacy IntakeForm
 │   ├── generated/        # meta.json — COMMITTED snapshot, generated from Python sources
-│   ├── lib/              # formatting, meta accessors, id helpers
-│   ├── pages/            # six screens (react-router)
+│   ├── lib/              # formatting, meta accessors, id helpers, guidance api parser, brief form helpers
+│   ├── pages/            # screens (react-router): products, product, intake, change card, gates,
+│   │                     # placeholders (attention/activity/service), budgets, CI stages, settings
 │   └── test/             # vitest setup + shared fixtures / fetch stub
 └── tools/
     └── export_meta.py    # regenerates src/generated/meta.json (see below)
@@ -67,7 +117,9 @@ console/
 
 **API client** (`src/api/client.ts`): plain `fetch`, no client libraries.
 Reads (GET) never carry the token; writes (POST/PUT) attach
-`Authorization: Bearer <token>` and an `Idempotency-Key` (UUID v4). Errors are
+`Authorization: Bearer <token>` and an `Idempotency-Key` (UUID v4). One token
+store serves every scope (`changes:write`, `products:write`, `approvals:write`,
+`ci:write`); a missing scope surfaces as the server's 403 detail. Errors are
 RFC 7807-like bodies surfaced as `ApiError` with `isUnauthorized` (401),
 `isForbidden` (403) and `isStateRevisionConflict` (409) helpers. Wire types in
 `src/api/types.ts` mirror the domain pydantic models of `src/dark_factory/`
@@ -83,7 +135,9 @@ same Idempotency-Key (a 409 means nothing was written).
 **Token model** (ADR-021 p.4): the operator token lives only in
 `localStorage`, entered on the settings screen (masked input, masked display —
 only the last 4 chars are shown). It is never logged, never put in URLs, and
-attached only to POST requests. Losing the cache is acceptable by design
+attached only to write requests. Every mutating form is fail-closed: without
+a token the fieldset is disabled with a hint, and a button that needs the
+token opens the token dialog instead of firing a request. Losing the cache is acceptable by design
 (SC-008): the only loss is the token itself.
 
 **Factory mode / profiles**: rendered from the committed `meta.json` snapshot.
@@ -124,9 +178,25 @@ and the test runs in the plain pytest CI job.
 - **`meta.json` snapshot** is a generated copy of Python state, refreshed
   manually (guarded by the drift test). Acceptable tech debt until a live
   config endpoint exists.
-- **Intake is minimal**: title, provider/slug, risk class, description; the
-  change id is generated client-side (`chg_<hex>`), `source` is always
+- **Legacy intake at `/changes`** stays minimal (title, provider/slug, risk
+  class, description; no product, no brief, `scenario: "full"`); the real
+  intake is `/products/:id/new-change`. Ids are generated client-side
+  (`chg_<hex>`, `prd_<hex>` — the product id is editable), `source` is always
   `console`, `change_request`/`external_ref` are out of scope.
+- **What is empty and why (M1)**: «Требует внимания» has no inbox until M5
+  (T116) and «Активность» is out of the MVP scope — both say so instead of
+  showing an empty list as "all clear". On the product page «База» shows only
+  `baseline_ref` (baseline documents come in M2) and «Доставки» only
+  `dev_env_ref` (delivery history comes in M5). The intake forecast has no
+  numbers before the first run. Run advance/withdraw are CLI-only until M4,
+  so the NextStep shows the CLI command for them.
+- **«Новая фича» on the product page** is a plain link to the intake; the API
+  accepts a change for a non-ready product and the guidance then lists the
+  blocker. Only when the server lists `POST /changes` as disabled is the
+  button rendered disabled with the server `reason`.
+- **Brief editor remounts on a server-side brief change** (component key):
+  after a successful save the reloaded card becomes the editor's new initial
+  value; the success notice lives in the parent section so it survives.
 - **Approval form resets on card reload** (the `expected_state_revision` field
   is re-derived from the fresh card via a component key).
 - **E2E fixtures are inline TypeScript** (`e2e/fixtures/api.ts`) instead of

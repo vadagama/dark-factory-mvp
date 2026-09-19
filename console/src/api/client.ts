@@ -11,7 +11,31 @@
  * "state_revision mismatch" (`isStateRevisionConflict`).
  */
 
-import type { ApprovalRequest, Change, ChangeCard, ChangeTrace, CiStage, CiStages, Decision, Evidence, Finding, FindingSeverity, FindingStatus, GateResult, RunCard, RunSummary, RunTrace, StageResult, ErrorBody } from "./types";
+import type {
+  ApprovalRequest,
+  BriefFormulateRequest,
+  Change,
+  ChangeCard,
+  ChangeTrace,
+  CiStage,
+  CiStages,
+  Decision,
+  ErrorBody,
+  Evidence,
+  Finding,
+  FindingSeverity,
+  FindingStatus,
+  GateResult,
+  Guidance,
+  IntakeBrief,
+  Product,
+  ProductCreateRequest,
+  ProductValidationView,
+  RunCard,
+  RunSummary,
+  RunTrace,
+  StageResult,
+} from "./types";
 import { getToken } from "./token";
 import { uuidV4 } from "../lib/id";
 
@@ -168,7 +192,8 @@ export class ApiClient {
 
   // -- changes ------------------------------------------------------------
 
-  listChanges(params?: { limit?: number; offset?: number }): Promise<Change[]> {
+  /** `product_id` narrows the list to one product's changes (T071). */
+  listChanges(params?: { product_id?: string; limit?: number; offset?: number }): Promise<Change[]> {
     return this.request("GET", "/changes", { params });
   }
 
@@ -182,6 +207,28 @@ export class ApiClient {
 
   getChange(changeId: string): Promise<ChangeCard> {
     return this.request("GET", `/changes/${encodeURIComponent(changeId)}`);
+  }
+
+  /** The operator's next step for a change (T074, ADR-033) — rendered, never computed here. */
+  getChangeGuidance(changeId: string): Promise<Guidance> {
+    return this.request("GET", `/changes/${encodeURIComponent(changeId)}/guidance`);
+  }
+
+  /**
+   * Ask the agent to formulate a brief from free text (T072). Requires
+   * `changes:write`. A harness failure is still a 200: the brief comes back
+   * as a `draft` with the original `source_text` and a human-readable `error`.
+   */
+  formulateBrief(body: BriefFormulateRequest, options?: { idempotencyKey?: string }): Promise<IntakeBrief> {
+    return this.request("POST", "/briefs/formulate", { body, idempotencyKey: options?.idempotencyKey });
+  }
+
+  /** Replace the brief of a change (T071). Requires `changes:write`; the updated change is returned. */
+  updateChangeBrief(changeId: string, brief: IntakeBrief, options?: { idempotencyKey?: string }): Promise<Change> {
+    return this.request("PUT", `/changes/${encodeURIComponent(changeId)}/brief`, {
+      body: brief,
+      idempotencyKey: options?.idempotencyKey,
+    });
   }
 
   getChangeTrace(changeId: string): Promise<ChangeTrace> {
@@ -204,6 +251,38 @@ export class ApiClient {
   ): Promise<Decision> {
     return this.request("POST", `/changes/${encodeURIComponent(changeId)}/approvals`, {
       body,
+      idempotencyKey: options?.idempotencyKey,
+    });
+  }
+
+  // -- products (T065/T066, ADR-030) --------------------------------------
+
+  listProducts(params?: { limit?: number; offset?: number }): Promise<Product[]> {
+    return this.request("GET", "/products", { params });
+  }
+
+  getProduct(productId: string): Promise<Product> {
+    return this.request("GET", `/products/${encodeURIComponent(productId)}`);
+  }
+
+  /** The operator's next step for a product (T074, ADR-033). */
+  getProductGuidance(productId: string): Promise<Guidance> {
+    return this.request("GET", `/products/${encodeURIComponent(productId)}/guidance`);
+  }
+
+  /** Register a product. Requires `products:write` + operator role; 201 created, 200 replay of the same id. */
+  createProduct(body: ProductCreateRequest, options?: { idempotencyKey?: string }): Promise<Product> {
+    return this.request("POST", "/products", { body, idempotencyKey: options?.idempotencyKey });
+  }
+
+  /**
+   * Observe the product repository (ADR-031 p.5: mutates nothing in the
+   * repository). Requires the operator token; 503 when provisioning is not
+   * configured on the contour — the `detail` is shown to the operator as is.
+   */
+  validateProduct(productId: string, options?: { idempotencyKey?: string }): Promise<ProductValidationView> {
+    return this.request("POST", `/products/${encodeURIComponent(productId)}/validate`, {
+      body: {},
       idempotencyKey: options?.idempotencyKey,
     });
   }

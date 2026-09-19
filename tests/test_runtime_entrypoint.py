@@ -10,7 +10,7 @@ as before.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -86,10 +86,18 @@ class ProvisioningSentinel:
         raise AssertionError("the sentinel provisioning port must not be called by the entry point")
 
 
+class FormulatorSentinel:
+    """Identity sentinel of the assembled brief formulator (T072)."""
+
+    async def formulate(self, source_text: str, *, change_id: str = "intake") -> Any:
+        raise AssertionError("the sentinel formulator must not be called by the entry point")
+
+
 class FakeRuntime:
     """Stand-in runtime: records how the entry point binds and releases it."""
 
     def __init__(self) -> None:
+        self.formulator: Any = FormulatorSentinel()
         self.executor = ExecutorSentinel()
         self.resolver = ResolverSentinel()
         self.facts = FactsSentinel()
@@ -120,6 +128,9 @@ class FakeRuntime:
     def facts_provider(self) -> FactsProvider:
         self.facts_calls += 1
         return self.facts
+
+    def brief_formulator(self) -> Any:
+        return self.formulator
 
     async def aclose(self) -> None:
         self.close_calls += 1
@@ -297,6 +308,7 @@ def test_api_serve_assembles_the_runtime_and_passes_the_ci_bindings(
         "ci_toggles": runtime.ci_stage_toggles,
         "ci_repository": runtime.ci_repository,
         "provisioning": runtime.provisioning,
+        "brief_formulator": runtime.formulator,
     }
     assert runtime.close_calls == 1, "the assembled adapters are released"
 
@@ -310,6 +322,7 @@ def test_api_serve_without_github_configuration_passes_absent_bindings(
     runtime.ci_stage_toggles = None
     runtime.ci_repository = None
     runtime.provisioning = None
+    runtime.formulator = None
     _stub_runtime(monkeypatch, runtime)
     calls = _record_cli(monkeypatch, EXIT_OK)
 
@@ -320,6 +333,7 @@ def test_api_serve_without_github_configuration_passes_absent_bindings(
         "ci_toggles": None,
         "ci_repository": None,
         "provisioning": None,
+        "brief_formulator": None,
     }
     assert runtime.close_calls == 1
 
@@ -354,12 +368,14 @@ def test_cli_main_forwards_the_api_seams_to_the_api_command(
     monkeypatch.setattr(api_module, "run_api_serve_command", _fake_serve)
     toggles = CiTogglesSentinel()
     provisioning = ProvisioningSentinel()
+    formulator = FormulatorSentinel()
 
     code = cli_main(
         ["api", "serve", "--host", "127.0.0.1", "--port", "8000"],
         ci_toggles=toggles,
         ci_repository="small/pilot",
         provisioning=provisioning,
+        brief_formulator=cast("Any", formulator),
     )
 
     assert code == EXIT_OK
@@ -367,6 +383,7 @@ def test_cli_main_forwards_the_api_seams_to_the_api_command(
     assert seen["ci_toggles"] is toggles
     assert seen["ci_repository"] == "small/pilot"
     assert seen["provisioning"] is provisioning
+    assert seen["brief_formulator"] is formulator
 
 
 # --- the CLI seam itself --------------------------------------------------

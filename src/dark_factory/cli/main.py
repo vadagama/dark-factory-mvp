@@ -9,8 +9,8 @@ is the explicit core path (deterministic executor, no composition).
 This module owns the command tree (``stage run``/``stage resume``,
 ``run advance``/``run status``/``run publish``/``run withdraw``, ``reconcile``, ``outbox dispatch``/
 ``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
-``release verify``, ``product add``/``product validate``/``product list``/``product show``),
-option validation and exit codes.
+``release verify``, ``product add``/``product validate``/``product list``/``product show``,
+``change create``/``change status``), option validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
 error, 2 invalid input/configuration; argparse rejects invalid input with
 exit code 2, matching the contract.
@@ -29,7 +29,9 @@ outbox events per ADR-016) in ``dark_factory.cli.outbox``, ``api serve``
 published into ``dark-factory-runs``, ADR-015 p.4) in
 ``dark_factory.cli.runs`` and the product registry commands (T070, the operator
 side of ADR-030: register, validate, list and show products) in
-``dark_factory.cli.products``; ``stage resume`` still reports ``not_implemented``
+``dark_factory.cli.products``, the intake commands with a brief and the next step
+(T073, ``change create``/``change status``) in ``dark_factory.cli.changes``;
+``stage resume`` still reports ``not_implemented``
 with exit code 2 until the durable state-store wiring of the resume protocol
 (ADR-006 p.8) lands.
 
@@ -48,12 +50,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, assert_never
 
-from dark_factory.changes.enums import Provider, Route, Stage
+from dark_factory.changes.enums import Provider, RiskClass, Route, Scenario, Stage
 from dark_factory.cli import doctor
 
 if TYPE_CHECKING:
     # Type-only: the CLI is core and must not pull the driver (or anything it
     # imports) into the import of the command tree. The seams arrive as values.
+    from dark_factory.orchestration.intake import BriefFormulator
     from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
     from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
 
@@ -223,6 +226,43 @@ class ProductShowArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeCreateArgs:
+    """Arguments of ``factory change create`` (T073, T071, plan §6).
+
+    The change belongs to a registered product (``product_id``); its repository
+    comes from the registry. The brief is either the field flags (``problem``,
+    ``goal``, ``constraints``, ``out_of_scope``) or a JSON document
+    (``brief_json``, a path or ``-`` for stdin) — not both. ``limit_usd`` is the
+    operator's hard spend limit as typed (parsed by the command, so a bad amount
+    is exit 2 with a message, not an argparse trace); ``change_id`` is optional
+    and generated when omitted.
+    """
+
+    product_id: str
+    title: str
+    problem: str | None
+    goal: str | None
+    constraints: tuple[str, ...]
+    out_of_scope: tuple[str, ...]
+    brief_json: str | None
+    scenario: Scenario
+    limit_usd: str
+    token_limit: int | None
+    risk_class: RiskClass
+    description: str | None
+    change_id: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeStatusArgs:
+    """Arguments of ``factory change status`` (T073): the change, its run and the next step."""
+
+    change_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReconcileArgs:
     """Arguments of ``factory reconcile`` (contract cli.md)."""
 
@@ -315,6 +355,8 @@ CommandArgs = (
     | ProductValidateArgs
     | ProductListArgs
     | ProductShowArgs
+    | ChangeCreateArgs
+    | ChangeStatusArgs
     | ReconcileArgs
     | OutboxDispatchArgs
     | OutboxReplayArgs
@@ -550,6 +592,73 @@ def build_parser() -> argparse.ArgumentParser:
     product_show.add_argument("--json", action="store_true", help="Emit the product as JSON.")
     product_show.set_defaults(command="product_show")
 
+    change = commands.add_parser(
+        "change", help="Intake of a change with a brief, and its next step (T073)."
+    )
+    change_commands = change.add_subparsers(required=True, metavar="command")
+    change_create = change_commands.add_parser(
+        "create", help="Create a change for a product with a brief, a scenario and a limit."
+    )
+    change_create.add_argument(
+        "--product", dest="product_id", required=True, help="Id of the registered product."
+    )
+    change_create.add_argument("--title", required=True, help="Short title of the change.")
+    change_create.add_argument("--problem", help="Brief: what hurts today.")
+    change_create.add_argument("--goal", help="Brief: what must be true when done.")
+    change_create.add_argument(
+        "--constraint",
+        dest="constraints",
+        action="append",
+        default=[],
+        help="Brief: a constraint (repeatable).",
+    )
+    change_create.add_argument(
+        "--out-of-scope",
+        dest="out_of_scope",
+        action="append",
+        default=[],
+        help="Brief: something explicitly left out (repeatable).",
+    )
+    change_create.add_argument(
+        "--brief-json",
+        help="Brief as a JSON document (path or - for stdin); excludes the field flags.",
+    )
+    change_create.add_argument(
+        "--scenario",
+        choices=[scenario.value for scenario in Scenario],
+        default=Scenario.FULL.value,
+        help="Scope: specs_only stops after the specification phases (default: full).",
+    )
+    change_create.add_argument(
+        "--limit-usd", required=True, help="Hard spend limit of the change in USD."
+    )
+    change_create.add_argument(
+        "--token-limit", type=int, help="Optional token limit on top of the money limit."
+    )
+    change_create.add_argument(
+        "--risk-class",
+        choices=[risk.value for risk in RiskClass],
+        default=RiskClass.R1.value,
+        help="Risk class R0..R4 (default: R1).",
+    )
+    change_create.add_argument("--description", help="Optional free-text description.")
+    change_create.add_argument(
+        "--id", dest="change_id", help="Client-chosen change id (default: generated chg_…)."
+    )
+    change_create.add_argument(
+        "--json", action="store_true", help="Emit the change and its guidance as JSON."
+    )
+    change_create.set_defaults(command="change_create")
+
+    change_status = change_commands.add_parser(
+        "status", help="Show a change, its latest run and the next step (Guidance)."
+    )
+    change_status.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_status.add_argument(
+        "--json", action="store_true", help="Emit the change, run and guidance as JSON."
+    )
+    change_status.set_defaults(command="change_status")
+
     reconcile = commands.add_parser(
         "reconcile", help="Perform one idempotent Reconciler pass (ADR-019 p.5)."
     )
@@ -691,6 +800,16 @@ def _required_str(data: Mapping[str, object], option: str) -> str:
     return value
 
 
+def _str_list(data: Mapping[str, object], option: str) -> tuple[str, ...]:
+    """Read a repeatable string option (``action="append"``) as a tuple."""
+    value = data.get(option)
+    if value is None:
+        return ()
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    raise AssertionError(f"option --{option.replace('_', '-')} must be a list of strings")
+
+
 def _flag(data: Mapping[str, object], option: str) -> bool:
     value = data.get(option)
     if isinstance(value, bool):
@@ -781,6 +900,28 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
         case "product_show":
             return ProductShowArgs(
                 product_id=_required_str(data, "product_id"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_create":
+            return ChangeCreateArgs(
+                product_id=_required_str(data, "product_id"),
+                title=_required_str(data, "title"),
+                problem=_option_str(data, "problem"),
+                goal=_option_str(data, "goal"),
+                constraints=_str_list(data, "constraints"),
+                out_of_scope=_str_list(data, "out_of_scope"),
+                brief_json=_option_str(data, "brief_json"),
+                scenario=Scenario(_required_str(data, "scenario")),
+                limit_usd=_required_str(data, "limit_usd"),
+                token_limit=_option_int(data, "token_limit"),
+                risk_class=RiskClass(_required_str(data, "risk_class")),
+                description=_option_str(data, "description"),
+                change_id=_option_str(data, "change_id"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_status":
+            return ChangeStatusArgs(
+                change_id=_required_str(data, "change_id"),
                 json_output=_flag(data, "json"),
             )
         case "reconcile":
@@ -930,6 +1071,20 @@ def _show_product(args: ProductShowArgs) -> int:
     return products.run_product_show_command(args)
 
 
+def _create_change(args: ChangeCreateArgs) -> int:
+    # Imported here: cli.changes imports the change args and the exit codes
+    # from this module, so a module-level import would be circular.
+    from dark_factory.cli import changes
+
+    return changes.run_change_create_command(args)
+
+
+def _show_change_status(args: ChangeStatusArgs) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_status_command(args)
+
+
 def _reconcile(args: ReconcileArgs) -> int:
     # Imported here: cli.reconcile imports ReconcileArgs and the exit codes
     # from this module, so a module-level import would be circular.
@@ -970,13 +1125,18 @@ def _serve_api(
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
     provisioning: "RepositoryProvisioningPort | None" = None,
+    brief_formulator: "BriefFormulator | None" = None,
 ) -> int:
     # Imported here: cli.api imports ApiServeArgs and the exit codes from this
     # module, so a module-level import would be circular.
     from dark_factory.cli import api
 
     return api.run_api_serve_command(
-        args, ci_toggles=ci_toggles, ci_repository=ci_repository, provisioning=provisioning
+        args,
+        ci_toggles=ci_toggles,
+        ci_repository=ci_repository,
+        provisioning=provisioning,
+        brief_formulator=brief_formulator,
     )
 
 
@@ -997,6 +1157,7 @@ def dispatch(
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
     provisioning: "RepositoryProvisioningPort | None" = None,
+    brief_formulator: "BriefFormulator | None" = None,
 ) -> int:
     """Execute one parsed command via its handler (exhaustive over the tree).
 
@@ -1034,6 +1195,10 @@ def dispatch(
             return _list_products(command)
         case ProductShowArgs():
             return _show_product(command)
+        case ChangeCreateArgs():
+            return _create_change(command)
+        case ChangeStatusArgs():
+            return _show_change_status(command)
         case ReconcileArgs():
             return _reconcile(command)
         case OutboxDispatchArgs():
@@ -1050,6 +1215,7 @@ def dispatch(
                 ci_toggles=ci_toggles,
                 ci_repository=ci_repository,
                 provisioning=provisioning,
+                brief_formulator=brief_formulator,
             )
         case ReleaseVerifyArgs():
             return _release_verify(command)
@@ -1066,6 +1232,7 @@ def main(
     ci_toggles: "CiStageTogglePort | None" = None,
     ci_repository: str | None = None,
     provisioning: "RepositoryProvisioningPort | None" = None,
+    brief_formulator: "BriefFormulator | None" = None,
 ) -> int:
     """Run one command from ``argv``; return the process exit code.
 
@@ -1093,4 +1260,5 @@ def main(
         ci_toggles=ci_toggles,
         ci_repository=ci_repository,
         provisioning=provisioning,
+        brief_formulator=brief_formulator,
     )

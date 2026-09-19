@@ -22,12 +22,14 @@ from dark_factory.changes.enums import (
     RiskClass,
     Route,
     RunStatus,
+    Scenario,
     Stage,
     StageStatus,
 )
 from dark_factory.changes.escalations import EscalationViolation
 from dark_factory.changes.findings import Finding, GateResult
 from dark_factory.changes.implementation_contract import ImplementationContract
+from dark_factory.changes.intake import IntakeBrief, SpendLimit
 from dark_factory.changes.next_action import NextAction
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.release_records import ReleaseEvidence
@@ -164,6 +166,12 @@ class Change(BaseModel):
     product_id: str | None = None
     """Optional owning product (ADR-030 p.2); ``None`` for pre-T065 changes."""
     risk_class: RiskClass
+    brief: IntakeBrief | None = None
+    """Structured brief of the intake (T071); ``None`` for pre-T071 changes."""
+    scenario: Scenario = Scenario.FULL
+    """Scope the operator chose at intake (T071); ``full`` for pre-T071 changes."""
+    spend_limit: SpendLimit | None = None
+    """Hard spend limit of the change (T071); ``None`` — no operator limit."""
     change_request: ChangeRequestRef | None = None
     created_at: datetime = Field(default_factory=utc_now)
 

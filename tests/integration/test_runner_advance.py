@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 from alembic import command
-from alembic.config import Config
 from sqlalchemy import Engine, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -68,6 +67,7 @@ from dark_factory.orchestration.state.run_store import (
 )
 from dark_factory.ports.events import EventType
 from tests.changes_factories import make_change, make_contract
+from tests.integration.conftest import alembic_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
@@ -501,10 +501,7 @@ def test_update_status_refuses_a_transition_outside_the_domain_table(
 def test_runner_state_migration_is_reversible(
     state_engine: Engine, session_factory: sessionmaker[Session]
 ) -> None:
-    url = os.environ[TEST_DATABASE_URL_ENV]
-    config = Config(str(REPO_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", url)
+    config = alembic_config(os.environ[TEST_DATABASE_URL_ENV])
     columns = {"budget", "implementation_contract"}
 
     try:

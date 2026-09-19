@@ -64,6 +64,11 @@ export function IntakeForm({ onCreated, onTokenRequired }: IntakeFormProps) {
       risk_class: fields.risk_class,
       change_request: null,
       created_at: new Date().toISOString(),
+      // Legacy list-page intake (pre-ADR-037): no product, no brief, default scenario.
+      product_id: null,
+      brief: null,
+      scenario: "full",
+      spend_limit: null,
     };
     try {
       // Idempotency-Key is generated inside the client (UUID v4, ADR-021 p.4).

@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 from alembic import command
-from alembic.config import Config
 from sqlalchemy import Engine, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -26,6 +25,7 @@ from dark_factory.orchestration.state.models import Change as ChangeRow
 from dark_factory.orchestration.state.models import Product as ProductRow
 from dark_factory.orchestration.state.repositories import StateConflictError
 from tests.changes_factories import make_change, make_product
+from tests.integration.conftest import alembic_config
 
 BASE = datetime(2026, 9, 19, 12, 0, 0, tzinfo=UTC)
 
@@ -207,10 +207,7 @@ def test_a_change_persists_its_product_id(session_factory: sessionmaker[Session]
 
 
 def test_products_migration_is_reversible(state_engine: Engine) -> None:
-    url = os.environ[TEST_DATABASE_URL_ENV]
-    config = Config(str(REPO_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", url)
+    config = alembic_config(os.environ[TEST_DATABASE_URL_ENV])
 
     try:
         command.downgrade(config, MIGRATION_PARENT)

@@ -207,6 +207,12 @@ class ProductCreateRequest(BaseModel):
     dev_env_ref: str | None = None
 
 
+class BriefFormulateRequest(BaseModel):
+    """Body of ``POST /briefs/formulate`` (T072): the operator's free text."""
+
+    source_text: str = Field(min_length=1)
+
+
 class ProductValidateRequest(BaseModel):
     """Body of ``POST /products/{product_id}/validate`` (T066, contract api.md).
 

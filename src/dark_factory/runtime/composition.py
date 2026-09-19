@@ -51,9 +51,11 @@ from dark_factory.adapters.scm.github import (
 from dark_factory.adapters.scm.github.config import DEFAULT_API_BASE_URL
 from dark_factory.adapters.telemetry import OtlpTelemetryAdapter, TelemetryConfig
 from dark_factory.agents.profiles.manifest import AgentProfile
-from dark_factory.changes.enums import Provider
+from dark_factory.agents.profiles.registry import get_profile
+from dark_factory.changes.enums import Provider, Role
 from dark_factory.changes.refs import RepositoryRef
 from dark_factory.execution import WorktreeExecution, WorktreeExecutionConfig
+from dark_factory.orchestration.intake import BriefFormulator
 from dark_factory.orchestration.stages.agent import (
     DEFAULT_BRANCH_PREFIX,
     DEFAULT_TARGET_BRANCH,
@@ -217,6 +219,17 @@ class Runtime:
                 "the harness is not configured: set the DARK_FACTORY_LLM_* variables"
             )
         return PydanticAIHarness(self.harness_config, role_tools={profile.role: tools})
+
+    def brief_formulator(self) -> BriefFormulator | None:
+        """The «Помоги сформулировать» agent (T072), or ``None`` without a harness.
+
+        The product role formulates the brief with no tools bound: intake happens
+        before any workspace exists. Without ``DARK_FACTORY_LLM_*`` the API and
+        the Console answer an honest draft instead of an invented brief.
+        """
+        if self.harness_config is None:
+            return None
+        return BriefFormulator(self.harness_of(get_profile(Role.PRODUCT), ()))
 
     def agent_stage_executor(self) -> AgentStageExecutor | None:
         """The harness-backed stage executor, or ``None`` while a piece is missing.
