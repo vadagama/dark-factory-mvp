@@ -14,13 +14,14 @@ transactional SQL and raise explicit errors. Cross-cutting guarantees:
 """
 
 from collections.abc import Callable, Iterable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any, cast
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from dark_factory.changes.clock import utc_now
 from dark_factory.changes.enums import Provider, Route, RunStatus, Stage, StageStatus
 from dark_factory.changes.keys import attempt_id as compose_attempt_id
 from dark_factory.changes.keys import operation_key as compose_operation_key
@@ -61,10 +62,6 @@ class LeaseLostError(StateError):
 
 class ContractConflictError(StateError):
     """A run that already carries an implementation contract was given another one."""
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _run_status_path(current: RunStatus, target: RunStatus) -> tuple[RunStatus, ...]:
@@ -209,7 +206,7 @@ class ExecutionRepository:
         _run_status_path(RunStatus(execution.status), target)
         execution.status = target.value
         execution.state_revision += 1
-        execution.updated_at = _now()
+        execution.updated_at = utc_now()
         if target in RUN_TERMINAL_STATUSES:
             execution.finished_at = execution.updated_at
         return execution
@@ -235,7 +232,7 @@ class LeaseRepository:
         holder can never mutate state again. ``LeaseLostError`` means a live
         lease is held by another owner.
         """
-        now = _now()
+        now = utc_now()
         expires = now + ttl
         table = ExecutionLease.__table__.c
         stmt = (
@@ -277,7 +274,7 @@ class LeaseRepository:
         ttl: timedelta,
     ) -> int:
         """Extend a lease held by ``owner_id``; a stale token is rejected."""
-        now = _now()
+        now = utc_now()
         table = ExecutionLease.__table__.c
         stmt = (
             update(ExecutionLease)
@@ -327,7 +324,7 @@ class EffectLedger:
 
     def plan(self, effect_key: str) -> EffectLedgerEntry:
         """Create the ledger entry if absent and return it (idempotent)."""
-        now = _now()
+        now = utc_now()
         stmt = (
             pg_insert(EffectLedgerEntry)
             .values(
@@ -349,18 +346,18 @@ class EffectLedger:
 
     def mark_in_progress(self, entry: EffectLedgerEntry) -> None:
         entry.status = EffectStatus.IN_PROGRESS.value
-        entry.updated_at = _now()
+        entry.updated_at = utc_now()
 
     def mark_unknown(self, entry: EffectLedgerEntry, external_ref: str | None = None) -> None:
         entry.status = EffectStatus.UNKNOWN.value
         if external_ref is not None:
             entry.external_ref = external_ref
-        entry.updated_at = _now()
+        entry.updated_at = utc_now()
 
     def succeed(self, entry: EffectLedgerEntry, external_ref: str) -> None:
         entry.status = EffectStatus.SUCCEEDED.value
         entry.external_ref = external_ref
-        entry.updated_at = _now()
+        entry.updated_at = utc_now()
 
 
 def ensure_effect(

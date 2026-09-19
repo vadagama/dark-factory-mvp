@@ -27,10 +27,11 @@ Environment variables:
   while every other GitHub-backed port keeps working.
 """
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
+
+from dark_factory.adapters._env import missing_env_vars, resolve_env
 
 GITHUB_API_URL_ENV_VAR: Final[str] = "DARK_FACTORY_GITHUB_API_URL"
 """REST API base URL (GHES overrides the default ``https://api.github.com``)."""
@@ -68,11 +69,6 @@ DEFAULT_CLONE_BASE_URL: Final[str] = "https://github.com"
 DEFAULT_WORKFLOW_ID: Final[str] = "factory.yml"
 
 
-def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
-    """The given mapping or, by default, the process environment."""
-    return os.environ if env is None else env
-
-
 @dataclass(frozen=True, slots=True)
 class GitHubConfig:
     """Endpoint and App configuration of the GitHub adapter (ADR-019 p.3)."""
@@ -91,13 +87,12 @@ class GitHubConfig:
     @classmethod
     def missing_env_vars(cls, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
         """Names of the required env vars that are unset or blank, in a stable order."""
-        source = _env(env)
-        return tuple(name for name in _REQUIRED_ENV_VARS if not (source.get(name) or "").strip())
+        return missing_env_vars(_REQUIRED_ENV_VARS, env)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "GitHubConfig | None":
         """Config read from ``env`` (default: the process environment); ``None`` when incomplete."""
-        source = _env(env)
+        source = resolve_env(env)
         if cls.missing_env_vars(env):
             return None
         return cls(

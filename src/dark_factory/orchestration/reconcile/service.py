@@ -40,12 +40,13 @@ by the pass.
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Final
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from dark_factory.changes.clock import utc_now
 from dark_factory.changes.enums import RunStatus, StageStatus
 from dark_factory.changes.run import RUN_STATUS_TRANSITIONS
 from dark_factory.orchestration.policy.merge import DEFAULT_MERGE_POLICY, MergePolicy
@@ -119,10 +120,6 @@ _ACTION_TARGETS: Final[dict[ReconcileActionKind, RunStatus]] = {
     ReconcileActionKind.ESCALATE: RunStatus.BLOCKED,
 }
 """Recovery mutations the pass applies itself; every other action is journal-only."""
-
-
-def _now_utc() -> datetime:
-    return datetime.now(UTC)
 
 
 async def observe_statuses(
@@ -207,7 +204,7 @@ class GlobalReconciler:
         lease: the report is empty and nothing was read or changed — the
         normal outcome under a concurrent launch.
         """
-        moment = _now_utc() if now is None else now
+        moment = utc_now() if now is None else now
         with session_scope(self._session_factory) as session:
             leases = LeaseRepository(session)
             try:
