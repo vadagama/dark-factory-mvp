@@ -25,6 +25,7 @@ from dark_factory.changes.enums import (
     StopOutcome,
 )
 from dark_factory.changes.findings import GateResult
+from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
@@ -59,6 +60,7 @@ from dark_factory.orchestration.state.run_store import OpenStage, StagePlacement
 from tests.changes_factories import (
     make_change,
     make_change_request,
+    make_contract,
     make_merge_approval,
     make_run,
 )
@@ -1556,3 +1558,101 @@ def test_advance_run_resolves_a_failed_verification_into_a_blocked_run() -> None
     assert store.released == [1]
     assert run.status is RunStatus.BLOCKED
     assert run.stages[4].status is StageStatus.BLOCKED
+
+
+# --- the Construction entry gate is attributed to Construction (T-063) -------
+
+
+def _run_at_construction_pending(*, contract: ImplementationContract | None) -> ChangeRun:
+    """A run whose specification and planning succeeded and whose construction is pending."""
+    run = make_run()
+    run.implementation_contract = contract
+    for stage in (Stage.SPECIFICATION, Stage.PLANNING):
+        run.stages.append(_stage_run(run, stage, StageStatus.SUCCEEDED))
+    run.stages.append(_stage_run(run, Stage.CONSTRUCTION, StageStatus.PENDING))
+    run.status = RunStatus.RUNNING
+    return run
+
+
+def _advance_construction(store: FakeStore) -> RunAdvance:
+    """Advance with the default executor — the deterministic path carries the gate."""
+    return advance_run(
+        store=store,
+        change=make_change(),
+        run_id=store.run.id,
+        owner_id="test-owner",
+        lease_ttl=TTL,
+        now=NOW,
+    )
+
+
+def _opened_stages(store: FakeStore) -> set[str]:
+    """Stage values of the attempts the driver opened, from the fake's attempt rows."""
+    return {attempt.stage_row_id.split(":")[1] for attempt in store.attempts}
+
+
+def test_the_construction_entry_gate_blocks_construction_not_planning() -> None:
+    """T-063 (B2): a missing contract stops Construction, never the outgoing stage.
+
+    The gate belongs to the stage being entered, so the stop and its diagnostics
+    are attributed to the Construction attempt the driver opened — planning keeps
+    its ``succeeded`` status and its attempt number.
+    """
+    run = _run_at_construction_pending(contract=None)
+    store = FakeStore(run=run)
+
+    advance = _advance_construction(store)
+
+    assert advance.outcome is RunAdvanceOutcome.BLOCKED
+    assert advance.stage is Stage.CONSTRUCTION
+    assert advance.decision is not None
+    assert advance.decision.stage_status is StageStatus.BLOCKED
+    assert advance.decision.next_stage is None
+    assert advance.result.attempt_number == 1
+    assert isinstance(advance.result.next_action, StopAction)
+    assert "no implementation contract attached" in advance.result.next_action.reason
+    assert run.status is RunStatus.BLOCKED
+    [planning] = [stage for stage in run.stages if stage.stage is Stage.PLANNING]
+    assert planning.status is StageStatus.SUCCEEDED
+    assert planning.attempt_number == 1
+    assert _opened_stages(store) == {Stage.CONSTRUCTION.value}
+
+
+def test_a_retry_of_the_entry_stop_never_re_runs_planning() -> None:
+    """T-063 (B2): the retry is the next Construction attempt and only that.
+
+    Before the fix the stop marked planning blocked, so the driver's retry
+    re-executed the completed planning — a second LLM run and a second change
+    request. The completed work must be inert: one planning occurrence, its own
+    attempt, and no planning attempt ever opened again.
+    """
+    run = _run_at_construction_pending(contract=None)
+    store = FakeStore(run=run)
+
+    first = _advance_construction(store)
+    second = _advance_construction(store)
+
+    assert first.result.attempt_number == 1
+    assert second.outcome is RunAdvanceOutcome.BLOCKED
+    assert second.stage is Stage.CONSTRUCTION
+    assert second.result.attempt_number == 2
+    planning_occurrences = [stage for stage in run.stages if stage.stage is Stage.PLANNING]
+    assert len(planning_occurrences) == 1
+    assert planning_occurrences[0].status is StageStatus.SUCCEEDED
+    assert planning_occurrences[0].attempt_number == 1
+    assert _opened_stages(store) == {Stage.CONSTRUCTION.value}
+    assert [result.stage for result in store.history] == [Stage.CONSTRUCTION, Stage.CONSTRUCTION]
+
+
+def test_construction_advances_once_the_contract_is_approved() -> None:
+    """The gate blocks only the missing approval: an approved contract lets construction run."""
+    run = _run_at_construction_pending(contract=make_contract())
+    store = FakeStore(run=run)
+
+    advance = _advance_construction(store)
+
+    assert advance.outcome is RunAdvanceOutcome.WAITING
+    assert advance.stage is Stage.CONSTRUCTION
+    assert isinstance(advance.result.next_action, WaitForInputAction)
+    [planning] = [stage for stage in run.stages if stage.stage is Stage.PLANNING]
+    assert planning.status is StageStatus.SUCCEEDED

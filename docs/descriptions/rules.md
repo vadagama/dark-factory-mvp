@@ -225,7 +225,7 @@ flowchart LR
 
 | Действие | После `_block_reason()` |
 |---|---|
-| `execute_stage` | `_escalation_reason(target)`: объявленные эскалации → contract entry gate (при входе в Construction) → полоса классов маршрута (T-080) → autonomy budget контракта (`iterations_used = len(run.stages)`) |
+| `execute_stage` | `_escalation_reason()`: объявленные эскалации → полоса классов маршрута (T-080) → autonomy budget контракта (`iterations_used = len(run.stages)`). Гейт входа в Construction в Flow не участвует: его проверяет префлайт исполнителя стадии (T-063) |
 | `merge` | объявленные эскалации → merge policy (`evaluate_merge`) |
 | `release` | объявленные эскалации → completion invariants (обязательная evidence доступна, blocker findings закрыты) |
 | `rework` | объявленные эскалации → autonomy budget → rework limit; эскалация и исчерпанный autonomy budget ветоируют раунд **без сжигания** |
@@ -263,7 +263,7 @@ flowchart TD
 
 ## 6. Матрица действий и политик
 
-| Action | Gate check | Token/cost/deadline | Эскалации | Contract entry / autonomy | Rework limit | Merge policy | Completion invariants |
+| Action | Gate check | Token/cost/deadline | Эскалации | Autonomy budget | Rework limit | Merge policy | Completion invariants |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `execute_stage` | да | да | да | да | нет | нет | нет |
 | `merge` | да | да | только объявленные | нет | нет | да | нет |
@@ -276,7 +276,7 @@ flowchart TD
 
 Wait-action может перевести run в ожидание даже при уже исчерпанном бюджете. При этом usage текущего результата всё равно будет накоплен. Проверка сработает при следующем действии продвижения.
 
-Эскалации и contract entry gate живут не в `rules/`, а в [`orchestration/policy/escalation.py`](../../src/dark_factory/orchestration/policy/escalation.py) — Flow вызывает их вместе с правилами `rules/`, поэтому они включены в порядок принятия решения.
+Эскалации и autonomy budget контракта живут не в `rules/`, а в [`orchestration/policy/escalation.py`](../../src/dark_factory/orchestration/policy/escalation.py) — Flow вызывает их вместе с правилами `rules/`, поэтому они включены в порядок принятия решения. Гейт входа в Construction — не проверка Flow, а префлайт исполнителя стадии (T-063, `stages/checks.construction_entry_reason`): он останавливает попытку Construction до любого внешнего эффекта.
 
 ## 7. Как нарушение представляется
 
@@ -309,7 +309,7 @@ next_stage = None
 | `requested_round` пропустил номер, но не превысил max | текущий код разрешает |
 | `ReworkAction.max_rounds` отличается от run budget | решение принимает run budget |
 | Объявлена эскалация в StageResult | execute/merge/release/rework заблокированы; rework-раунд не сжигается |
-| Вход в Construction без approved Implementation Contract | execute блокируется (contract entry gate) |
+| Вход в Construction без approved Implementation Contract | попытка Construction блокируется префлайтом стадии до любого внешнего эффекта (T-063): планирование остаётся `succeeded`, retry не переделывает его |
 | Класс изменения не допускается маршрутом (R2+ на `quick`) | execute блокируется с полосой маршрута в причине (T-080, ADR-023 п.3) |
 | Исчерпан autonomy budget контракта | execute и rework блокируются |
 | `merge_context` не передан | ручной режим: run в `WAITING` на человеческий merge |

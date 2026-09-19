@@ -238,7 +238,7 @@ Wait-действия (`wait_for_input`, `wait_for_ci`, `request_approval`) пе
 
 | Action | Гейты + budgets | Эскалации | Merge policy | Rework limit | Completion invariants |
 |---|---:|---:|---:|---:|---:|
-| `execute_stage` | да | да: объявленные + вход в construction + бюджет автономии | нет | нет | нет |
+| `execute_stage` | да | да: объявленные + полоса классов + бюджет автономии; гейт входа в construction — префлайт исполнителя стадии (T-063) | нет | нет | нет |
 | `merge` | да | да: только объявленные | да | нет | нет |
 | `release` | да | да: только объявленные | нет | нет | да |
 | `rework` | нет | да: объявленные + бюджет автономии | нет | да | нет |
@@ -251,9 +251,9 @@ Wait-действия (`wait_for_input`, `wait_for_ci`, `request_approval`) пе
 
 `changes/implementation_contract.py` — frozen-модель утверждённой границы автономной реализации: `scope` (in_scope/out_of_scope), `acceptance_criteria`, `architectural_constraints`, `ui_evidence`, `risk_class`, `budget` (`max_autonomous_iterations`, `deadline`, `max_cost`), `allowed_boundaries`, `escalation_rules` (по умолчанию весь каталог `EscalationRule`), `approval`. `approval is None` = контракт не утверждён.
 
-Runner копирует контракт в `ChangeRun.implementation_contract` при создании run. Проверки контракта живут в `orchestration/policy/escalation.py` (10 детерминированных функций), а в Flow действуют через:
+Runner копирует контракт в `ChangeRun.implementation_contract` при создании run, а драйвер (`orchestration/runner.advance_run`) кладёт его в `StageContext.implementation_contract` (T-063). Проверки контракта живут в `orchestration/policy/escalation.py` (10 детерминированных функций), а в потоке действуют так:
 
-- **гейт входа в construction** (`contract_entry_violation`): без утверждённого контракта `execute_stage` в Construction даёт `StopAction(blocked)`;
+- **гейт входа в construction** (`contract_entry_violation`) — это префлайт **исполнителя стадии Construction**: `stages/checks.construction_entry_reason(context)` возвращает причину, и обе реализации `StageExecutor` (`stages/executor.py`, `stages/agent.py`) заканчивают попытку `StopAction(blocked)` **до** workspace, harness, ветки и change request. Гейт атрибутируется стадии, которой принадлежит по смыслу: блокируется попытка Construction, планирование остаётся `succeeded`, и retry не переделывает завершённую работу (T-063, дефект B2 пилота). Контекст, собранный драйвером, run-backed и гейтится (`enforce_contract_entry=True`, fail-closed); одиночный детерминированный путь `factory stage run` исполняет стадию снапшота без run и контракта и явно отказывается от гейта — гейт остаётся за драйвером, единственным местом, где контракт можно прикрепить и утвердить;
 - **бюджет автономии** (`autonomy_budget_violation`): `iterations_used = len(run.stages)` (все occurrences run);
 - **объявленные эскалации** (`escalation_stop_reason(result.escalations)`): любое объявленное `EscalationViolation` останавливает автономное продвижение; wait-действия проходят сквозь эскалации (стадия уже «ожидает решения»).
 
@@ -418,7 +418,7 @@ Reconciler реализован в `orchestration/reconcile/`:
 
 - `tests/test_flow_engine.py` — интеграция политик в Flow: полный маршрут standard, накопление usage, wait/rework/бюджеты/гейты, merge-политика (approval, SHA mismatch, agent executor, устаревшие гейты), release-инварианты, терминальность, stale attempt;
 - `tests/test_flow_transitions.py` — исчерпывающий обход всех пар стадия × действие, отсутствие мёртвых рёбер, closed union;
-- `tests/test_flow_policy.py` — эскалации и контракт в Flow: вход в construction, все условия эскалации, вето rework без сжигания раунда, бюджет автономии, wait проходит сквозь эскалации;
+- `tests/test_flow_policy.py` — эскалации и контракт в Flow: атрибуция гейта входа в construction (T-063: уход из planning не блокируется, неодобренный контракт не подменяет полосу классов), все условия эскалации, вето rework без сжигания раунда, бюджет автономии, wait проходит сквозь эскалации; гейт как префлайт стадии — `tests/test_orchestration_stages.py`, `tests/test_orchestration_agent_stage.py`, а его атрибуция и идемпотентный retry — `tests/test_orchestration_runner.py`;
 - `tests/test_changes_models.py` — таблицы переходов, терминальные статусы, идемпотентные ключи, бюджеты, completion invariants;
 - `tests/test_changes_next_action.py` — закрытость union `NextAction` (шаблон `assert_never`); `tests/test_changes_serialization.py` — JSON/YAML round-trip, отказ unknown action type, запрет mutable `latest` в `RunManifest`;
 - `tests/test_changes_implementation_contract.py` — схема контракта, frozen, эскалации в round-trip;

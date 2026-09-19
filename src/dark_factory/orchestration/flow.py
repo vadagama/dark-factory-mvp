@@ -69,7 +69,6 @@ from dark_factory.changes.usage import BudgetSnapshot, Usage
 from dark_factory.flows.routes import route_allows_risk, route_profile
 from dark_factory.orchestration.policy.escalation import (
     autonomy_budget_violation,
-    contract_entry_violation,
     escalation_stop_reason,
     risk_escalation_violation,
 )
@@ -305,9 +304,7 @@ def _handle_action(
                 )
             reason = _block_reason(run, result.stage, result.gate_results, now)
             if reason is None:
-                reason = _escalation_reason(
-                    run, result, target=next_stage, human_decisions=human_decisions
-                )
+                reason = _escalation_reason(run, result, human_decisions=human_decisions)
             if reason is not None:
                 return _stop(stage_run, run, reason)
             _advance(run, stage_run, next_stage)
@@ -492,32 +489,31 @@ def _escalation_reason(
     run: ChangeRun,
     result: StageResult,
     *,
-    target: Stage,
     human_decisions: Sequence[Decision] = (),
 ) -> str | None:
     """Escalation-policy reason blocking an autonomous stage advance, if any.
 
-    Declared escalations always stop the advance. Entering construction
-    additionally requires an approved Implementation Contract (T-016 DoD):
-    rework only re-enters construction for runs that already passed this gate.
-    The obligations of a R2+ effective risk class — the route band and the
-    human control points of the stage being left — are checked next (T-080,
-    ADR-023 p.3/p.5); the check is produced here, by the engine, so a R2+
-    change never advances on a missing, unbound or stale approval. A human
-    gate that passed on a resolved wait is bound to the revision its approval
-    authorizes — the observed head of the stage's change request (T-043
-    increment 1) — so the control points close on the approval bound to that
-    same revision; a gate without a passing SHA falls back to the stage's
-    input revision. The contract's autonomy budget bounds the stage attempts
-    last (an iteration is one ``StageRun`` occurrence).
+    Declared escalations always stop the advance. The obligations of a R2+
+    effective risk class — the route band and the human control points of the
+    stage being left — are checked next (T-080, ADR-023 p.3/p.5); the check is
+    produced here, by the engine, so a R2+ change never advances on a missing,
+    unbound or stale approval. A human gate that passed on a resolved wait is
+    bound to the revision its approval authorizes — the observed head of the
+    stage's change request (T-043 increment 1) — so the control points close on
+    the approval bound to that same revision; a gate without a passing SHA falls
+    back to the stage's input revision. The contract's autonomy budget bounds
+    the stage attempts last (an iteration is one ``StageRun`` occurrence).
+
+    The Construction entry gate of ADR-018 p.3 is deliberately **not** here
+    (T-063): it is a precondition of entering Construction, so it is checked by
+    the stage executors' pre-flight where Construction is entered, before any
+    external effect. Blocking the outgoing stage here attributed the stop to the
+    wrong stage and made a retry re-run completed work (the B2 defect of the
+    T043 pilot).
     """
     declared = escalation_stop_reason(result.escalations)
     if declared is not None:
         return declared
-    if target is Stage.CONSTRUCTION:
-        violation = contract_entry_violation(run.implementation_contract)
-        if violation is not None:
-            return violation.reason
     obligations = risk_escalation_violation(
         risk_class=_effective_risk_class(run),
         route=run.route,

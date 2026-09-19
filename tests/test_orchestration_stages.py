@@ -16,21 +16,37 @@ from dark_factory.changes.enums import (
     StopOutcome,
 )
 from dark_factory.changes.findings import GateResult
+from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import apply_result
 from dark_factory.orchestration.stages import StageContext, build_context, run_deterministic_stage
 from dark_factory.rules.gates import required_gates
-from tests.changes_factories import NOW, make_change, make_change_request, make_run
+from tests.changes_factories import (
+    NOW,
+    make_change,
+    make_change_request,
+    make_contract,
+    make_run,
+)
 
 RUN_ID = "run_01H"
 REVISION = "a1b2c3d"
 
+DEFAULT_CONTRACT: ImplementationContract = make_contract()
+"""Approved contract a run-backed context carries by default (T-063)."""
+
 
 def _context(
-    stage: Stage, route: Route = Route.STANDARD, *, budget: BudgetSnapshot | None = None
+    stage: Stage,
+    route: Route = Route.STANDARD,
+    *,
+    budget: BudgetSnapshot | None = None,
+    contract: ImplementationContract | None = DEFAULT_CONTRACT,
+    enforce_contract_entry: bool = True,
 ) -> StageContext:
+    """A run-backed attempt context; an approved contract lets Construction start (T-063)."""
     return build_context(
         change=make_change(),
         stage=stage,
@@ -38,6 +54,8 @@ def _context(
         run_id=RUN_ID,
         input_revision=REVISION,
         budget=budget if budget is not None else BudgetSnapshot(),
+        implementation_contract=contract,
+        enforce_contract_entry=enforce_contract_entry,
     )
 
 
@@ -169,3 +187,50 @@ def test_output_is_deterministic_for_fixed_inputs() -> None:
     first = run_deterministic_stage(_context(Stage.CONSTRUCTION), now=NOW)
     second = run_deterministic_stage(_context(Stage.CONSTRUCTION), now=NOW)
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+# --- the Construction entry gate (T-016, T-063) -----------------------------
+
+
+def test_construction_without_a_contract_blocks_at_entry() -> None:
+    """T-063: the gate is a Construction precondition, checked before any other work."""
+    result = run_deterministic_stage(_context(Stage.CONSTRUCTION, contract=None))
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert result.next_action.outcome is StopOutcome.BLOCKED
+    assert "no implementation contract attached" in result.next_action.reason
+    # The gate wins over the ``waiting`` fallback: the required gates stay
+    # unevaluated records, so the blocked attempt claims nothing.
+    assert result.gate_results == [GateResult(gate=Gate.CODE, status=GateStatus.PENDING)]
+    assert result.findings == []
+
+
+def test_construction_with_an_unapproved_contract_blocks_at_entry() -> None:
+    unapproved = make_contract().model_copy(update={"approval": None})
+
+    result = run_deterministic_stage(_context(Stage.CONSTRUCTION, contract=unapproved))
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "not approved" in result.next_action.reason
+
+
+def test_other_stages_are_not_gated_on_the_contract() -> None:
+    """The gate belongs to Construction: planning runs its checks without a contract."""
+    result = run_deterministic_stage(_context(Stage.PLANNING, contract=None))
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForInputAction)
+    assert "no implementation contract" not in result.next_action.reason
+
+
+def test_a_one_shot_context_opts_out_of_the_entry_gate() -> None:
+    """``factory stage run`` has no run and no contract field, so it opts out (T-063)."""
+    context = _context(Stage.CONSTRUCTION, contract=None, enforce_contract_entry=False)
+
+    result = run_deterministic_stage(context)
+
+    assert result.status is StageStatus.WAITING
+    assert isinstance(result.next_action, WaitForInputAction)
+    assert "required gates not evaluated: code" in result.next_action.reason

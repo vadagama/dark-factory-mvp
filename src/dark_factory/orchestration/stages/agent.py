@@ -64,7 +64,10 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import Change, StageResult
-from dark_factory.orchestration.stages.checks import pending_gate_results
+from dark_factory.orchestration.stages.checks import (
+    construction_entry_reason,
+    pending_gate_results,
+)
 from dark_factory.orchestration.stages.context import StageContext
 from dark_factory.orchestration.stages.pr_description import PrDescriptionRenderer
 from dark_factory.orchestration.stages.tools import ToolFunction, WorkspaceTools
@@ -196,6 +199,13 @@ class AgentStageExecutor:
 
     async def execute(self, context: StageContext) -> StageResult:
         """Run one stage attempt asynchronously (the real implementation)."""
+        entry_reason = construction_entry_reason(context)
+        if entry_reason is not None:
+            # T-063: entering Construction without an approved Implementation
+            # Contract stops here, before the profile, the workspace, the harness
+            # and every publish effect — the gate belongs to Construction, so a
+            # retry of this stop never re-runs the completed outgoing stage.
+            return self._blocked(context, entry_reason)
         role = STAGE_ROLE[context.stage]
         try:
             profile = self._profile_of(role)

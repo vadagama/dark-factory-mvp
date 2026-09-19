@@ -38,7 +38,7 @@ from dark_factory.orchestration.budget import (
 )
 from dark_factory.orchestration.flow import apply_result
 from dark_factory.orchestration.stages import StageContext, build_context, run_deterministic_stage
-from tests.changes_factories import NOW, make_change, make_run
+from tests.changes_factories import NOW, make_change, make_contract, make_run
 
 RUN_ID = "run_01H"
 REVISION = "a1b2c3d"
@@ -63,6 +63,7 @@ def _account(
 
 
 def _context(stage: Stage, *, budget: BudgetSnapshot | None = None) -> StageContext:
+    """A run-backed attempt context; the approved contract lets Construction run (T-063)."""
     return build_context(
         change=make_change(),
         stage=stage,
@@ -70,6 +71,7 @@ def _context(stage: Stage, *, budget: BudgetSnapshot | None = None) -> StageCont
         run_id=RUN_ID,
         input_revision=REVISION,
         budget=budget if budget is not None else BudgetSnapshot(),
+        implementation_contract=make_contract(),
     )
 
 

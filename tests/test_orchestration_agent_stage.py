@@ -29,6 +29,7 @@ from dark_factory.changes.enums import (
     Stage,
     StageStatus,
 )
+from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import StopAction, WaitForCIAction, WaitForInputAction
 from dark_factory.changes.refs import RepositoryRef
 from dark_factory.changes.usage import BudgetSnapshot, Usage
@@ -59,11 +60,13 @@ from dark_factory.ports import (
     WorkspaceHandle,
     WorkspaceRequest,
 )
-from tests.changes_factories import make_change
+from tests.changes_factories import make_change, make_contract
 
 REVISION = "abc123"
 RUN_ID = "run-001"
 USAGE = Usage(prompt_tokens=3, completion_tokens=5, total_tokens=8)
+DEFAULT_CONTRACT: ImplementationContract = make_contract()
+"""Approved contract a run-backed context carries by default (T-063)."""
 
 
 class ProducingHarness(HarnessPort):
@@ -153,11 +156,18 @@ class UnreachableRepository(FakeRepository):
 
 
 class RecordingExecution(FakeExecution):
-    """Execution fake that records the idempotency key of every write."""
+    """Execution fake that records the idempotency key of every write and workspace."""
 
     def __init__(self) -> None:
         super().__init__()
         self.write_keys: list[tuple[str, str]] = []
+        self.prepare_keys: list[str] = []
+
+    async def prepare_workspace(
+        self, request: WorkspaceRequest, /, *, idempotency_key: str
+    ) -> WorkspaceHandle:
+        self.prepare_keys.append(idempotency_key)
+        return await super().prepare_workspace(request, idempotency_key=idempotency_key)
 
     async def write_file(
         self, workspace: WorkspaceHandle, path: str, content: bytes, /, *, idempotency_key: str
@@ -185,7 +195,9 @@ def _context(
     attempt: int = 1,
     description: str | None = None,
     risk_class: RiskClass | None = None,
+    implementation_contract: ImplementationContract | None = DEFAULT_CONTRACT,
 ) -> StageContext:
+    """A run-backed attempt context; the approved contract lets Construction start (T-063)."""
     return build_context(
         change=make_change().model_copy(update={"description": description}),
         stage=stage,
@@ -195,6 +207,7 @@ def _context(
         budget=BudgetSnapshot(),
         attempt_number=attempt,
         risk_class=risk_class,
+        implementation_contract=implementation_contract,
     )
 
 
@@ -450,6 +463,60 @@ def test_an_attempt_without_changes_blocks_before_any_external_effect() -> None:
     assert asyncio.run(changes.find_existing(make_change().product, "chg-001")) is None
     with pytest.raises(KeyError):
         asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001")))
+
+
+# --- the Construction entry gate (T-016, T-063) -----------------------------
+
+
+def test_construction_without_a_contract_blocks_before_any_external_effect() -> None:
+    """T-063: the entry gate is attributed to Construction, before any effect.
+
+    Without an approved Implementation Contract the attempt stops in ``blocked``
+    at the entry of Construction: no workspace is prepared, no harness is built,
+    no branch and no change request are created. The stop belongs to this stage,
+    so a retry lands here again and never re-runs the completed outgoing stage.
+    """
+    execution = RecordingExecution()
+    changes = RecordingMergeRequests()
+    executor, recorder, repo, _ = _executor(execution=execution, merge_requests=changes)
+
+    result = executor(_context(implementation_contract=None))
+
+    assert result.stage is Stage.CONSTRUCTION
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "no implementation contract attached" in result.next_action.reason
+    assert execution.prepare_keys == []
+    assert execution.write_keys == []
+    assert recorder.calls == []
+    assert changes.opened == []
+    with pytest.raises(KeyError):
+        asyncio.run(repo.get_revision(make_change().product, branch_name("chg-001")))
+
+
+def test_construction_with_an_unapproved_contract_blocks_at_entry() -> None:
+    """An attached but unapproved contract is the same gate: construction waits for the human."""
+    execution = RecordingExecution()
+    executor, recorder, _, _ = _executor(execution=execution)
+    unapproved = make_contract().model_copy(update={"approval": None})
+
+    result = executor(_context(implementation_contract=unapproved))
+
+    assert result.status is StageStatus.BLOCKED
+    assert isinstance(result.next_action, StopAction)
+    assert "not approved" in result.next_action.reason
+    assert execution.prepare_keys == []
+    assert recorder.calls == []
+
+
+def test_a_non_construction_stage_is_not_gated_on_the_contract() -> None:
+    """The gate is a Construction precondition only: planning runs without a contract."""
+    executor, recorder, _, _ = _executor()
+
+    result = executor(_context(stage=Stage.PLANNING, implementation_contract=None))
+
+    assert result.status is StageStatus.WAITING
+    assert recorder.calls == [("product", PRODUCT_PROFILE.tools)]
 
 
 def test_review_stage_reuses_the_open_request_when_the_agent_changed_nothing() -> None:

@@ -196,6 +196,12 @@ def execute_stage(
     run-state store arrives with the durable state-store wiring: the budget
     is the default snapshot — exhaustion outcomes stay reachable for callers
     that carry a persisted budget — and ``attempt_number`` stays 1.
+
+    The Construction entry gate is opted out (T-063): this command executes one
+    stage of a ``Change`` snapshot that has no contract field and no run behind
+    it, so it cannot evaluate the precondition. The gate belongs to the durable
+    run's transition into Construction (``factory run advance``), whose executor
+    pre-flights the run's approved contract before any external effect.
     """
     context = build_context(
         change=change,
@@ -204,6 +210,7 @@ def execute_stage(
         run_id=run_id,
         input_revision=input_revision,
         budget=BudgetSnapshot(),
+        enforce_contract_entry=False,
     )
     return run_deterministic_stage(context)
 
