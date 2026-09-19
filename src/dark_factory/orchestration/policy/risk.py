@@ -43,8 +43,8 @@ from dark_factory.changes.risk import (
     effective_risk_class,
     is_r2_or_higher,
 )
-from dark_factory.flows.routes import route_profile
-from dark_factory.rules.gates import required_human_gates
+from dark_factory.orchestration.routes import route_profile
+from dark_factory.orchestration.rules.gates import required_human_gates
 
 __all__ = [
     "CONTROL_POINT_BINDING",
@@ -62,14 +62,14 @@ __all__ = [
 ]
 
 TRUSTED_CHANGE_PATHS: Final[tuple[str, ...]] = (
-    "src/dark_factory/rules/",
+    "src/dark_factory/orchestration/rules/",
     "src/dark_factory/orchestration/policy/",
     "src/dark_factory/changes/risk.py",
     "src/dark_factory/quality/gates/",
 )
 """Paths of the trusted layer whose change is a factory self-modification (ADR-015 p.3).
 
-``rules/**``, ``orchestration/policy/**`` and the quality gates are named in
+``orchestration/rules/**``, ``orchestration/policy/**`` and the quality gates are named in
 ADR-023 p.7; ``changes/risk.py`` is the risk-classification rule itself, which
 ADR-015 p.3 counts as part of the same condition. A change touching any of them
 is R4 and travels on ``foundation`` — it can never be applied through the

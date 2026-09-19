@@ -17,7 +17,7 @@ it cannot be reserved while a limit is configured, and it keeps an open
 reservation open until reconciled (FR-018).
 
 Determinism: the reference time is always an explicit parameter (as in
-``rules/limits.py``), never the wall clock; reservation ids derive from the
+``orchestration/rules/limits.py``), never the wall clock; reservation ids derive from the
 caller-supplied key, never from a random source. The coordinator is stateful —
 it owns one ledger instance — but holds no global mutable state.
 """
@@ -36,7 +36,7 @@ from dark_factory.orchestration.budget.policy import (
     BudgetLimits,
     BudgetPolicy,
 )
-from dark_factory.rules.limits import LimitRule, continuation_violations
+from dark_factory.orchestration.rules.limits import LimitRule, continuation_violations
 
 
 class BudgetScope(StrEnum):

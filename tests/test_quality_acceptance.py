@@ -25,9 +25,10 @@ from dark_factory.changes.next_action import ExecuteStageAction, MergeAction, Ne
 from dark_factory.changes.refs import ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import ChangeRun, StageResult
 from dark_factory.context.bundle import SourceKind
-from dark_factory.flows.routes import STAGE_SEQUENCE
 from dark_factory.orchestration.flow import apply_result, expected_result_status
 from dark_factory.orchestration.policy.merge import MergeRequestContext
+from dark_factory.orchestration.routes import STAGE_SEQUENCE
+from dark_factory.orchestration.rules.gates import required_gates
 from dark_factory.quality.acceptance import (
     DiffMaterial,
     EvidenceMaterial,
@@ -38,7 +39,6 @@ from dark_factory.quality.acceptance import (
     evaluate_review_gate,
     human_comment_findings,
 )
-from dark_factory.rules.gates import required_gates
 from tests.changes_factories import make_finding, make_merge_approval, make_run
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)

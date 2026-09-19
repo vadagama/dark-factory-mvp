@@ -35,8 +35,8 @@ flowchart TD
     STAGE --> RESULT["StageResult + NextAction"]
     QUALITY["quality/\nвычисление гейтов"] --> RESULT
     RESULT --> FLOW["orchestration/flow.py\nмежстадийный FSM"]
-    ROUTE["flows/routes.py\nследующая стадия"] --> FLOW
-    RULES["rules/\nгейты, лимиты,\nmerge protection"] --> FLOW
+    ROUTE["orchestration/routes.py\nследующая стадия"] --> FLOW
+    RULES["orchestration/rules/\nгейты, лимиты,\nmerge protection"] --> FLOW
     RULES --> BUDGET["orchestration/budget/\nrun/role-лимиты,\nрезервации, вердикт"]
     BUDGET -.->|"BudgetCheck"| STAGE
     POLICY["orchestration/policy/\nrisk, escalation, merge,\nparticipation"] --> FLOW
@@ -55,8 +55,8 @@ flowchart TD
 
 Главное разделение ответственности:
 
-- `flows/routes.py` отвечает на вопрос **«какая стадия следующая?»**;
-- `rules/` — **«можно ли продолжать?»** (гейты, лимиты, branch protection);
+- `orchestration/routes.py` отвечает на вопрос **«какая стадия следующая?»**;
+- `orchestration/rules/` — **«можно ли продолжать?»** (гейты, лимиты, branch protection);
 - `orchestration/budget/` — **«укладывается ли прогон в лимиты и сколько уже зарезервировано?»** (run/role allowance, резервации вызовов, вердикт Awaiting Decision);
 - `quality/` — **«какой результат у проверок?»** (вычисление, не решение);
 - `orchestration/flow.py` — **«допустимо ли действие и как меняются доменные статусы?»**;

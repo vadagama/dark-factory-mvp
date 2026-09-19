@@ -1,12 +1,12 @@
 """Human participation modes per phase and their stage projection (T-016, ADR-018 p.1)."""
 
 from dark_factory.changes.enums import Gate, HumanParticipation, Route, Stage
-from dark_factory.flows.routes import HUMAN_GATES, route_profile
 from dark_factory.orchestration.policy.participation import (
     PHASE_PARTICIPATION,
     STAGE_PARTICIPATION,
     stage_participation,
 )
+from dark_factory.orchestration.routes import HUMAN_GATES, route_profile
 
 # The ADR-018 p.1 table, transcribed verbatim (T-016 part 4).
 ADR_018_PHASES: dict[str, HumanParticipation] = {

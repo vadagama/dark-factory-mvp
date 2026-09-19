@@ -106,7 +106,6 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
-from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -121,10 +120,18 @@ from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.run import Change, ChangeRun
 from dark_factory.changes.run_records import RunRecord
 from dark_factory.changes.usage import BudgetSnapshot
+from dark_factory.cli._common import (
+    StateStoreUnreachableError,
+    default_owner_id,
+    open_state_store,
+    os_error_reason,
+    report_error,
+    report_invalid_input,
+    report_state_store_unreachable,
+)
 from dark_factory.cli.main import (
     EXIT_BLOCKED,
     EXIT_ERROR,
-    EXIT_INVALID_INPUT,
     EXIT_OK,
     EXIT_WAITING,
     RunAdvanceArgs,
@@ -139,7 +146,7 @@ from dark_factory.cli.release import (
 from dark_factory.cli.release_facts import CliReleaseFactsProvider
 from dark_factory.cli.run_records import RunRecordError, collect_run_manifest
 from dark_factory.execution.runs.store import RunRecordStore
-from dark_factory.flows.routes import route_profile
+from dark_factory.orchestration.routes import route_profile
 from dark_factory.orchestration.runner import (
     FactsProvider,
     ReleaseFactsProvider,
@@ -151,12 +158,7 @@ from dark_factory.orchestration.runner import (
     advance_run,
 )
 from dark_factory.orchestration.state.change_store import ChangeRepository
-from dark_factory.orchestration.state.engine import (
-    DEFAULT_DATABASE_URL,
-    create_session_factory,
-    create_state_engine,
-    session_scope,
-)
+from dark_factory.orchestration.state.engine import session_scope
 from dark_factory.orchestration.state.repositories import ContractConflictError, StateError
 from dark_factory.orchestration.state.run_store import (
     RunNotWithdrawableError,
@@ -166,11 +168,11 @@ from dark_factory.orchestration.state.run_store import (
     WithdrawOutcome,
 )
 
-DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
-"""State-store URL variable; the same one ``factory doctor`` checks (ADR-004)."""
-
 RUN_OWNER_ID_ENV_VAR: Final[str] = "DARK_FACTORY_RUN_OWNER_ID"
 """Optional stable owner id of the run lease; a unique default otherwise."""
+
+_OWNER_ID_PREFIX: Final[str] = "factory-run"
+"""Prefix of the unique-per-process lease owner id (``factory-run-<pid>-<hex>``)."""
 
 RUNS_ROOT_ENV_VAR: Final[str] = "DARK_FACTORY_RUNS_ROOT"
 """Checkout of the ``dark-factory-runs`` repository (ADR-015 p.4); ``--runs-root`` wins."""
@@ -222,20 +224,6 @@ def exit_code_for(advance: RunAdvance) -> int:
 
 class InvalidRunnerInput(ValueError):
     """Invalid command input or unknown change/run: nothing was advanced (exit 2)."""
-
-
-def _database_url() -> str:
-    """Configured state-store URL; the local default when unset (ADR-004)."""
-    raw = os.environ.get(DATABASE_URL_ENV_VAR)
-    return raw if raw and raw.strip() else DEFAULT_DATABASE_URL
-
-
-def _default_owner_id() -> str:
-    """Unique-per-process lease owner id so concurrent advances never share a lease."""
-    configured = os.environ.get(RUN_OWNER_ID_ENV_VAR, "").strip()
-    if configured:
-        return configured
-    return f"factory-run-{os.getpid()}-{uuid4().hex[:8]}"
 
 
 def _validate_release_options(args: RunAdvanceArgs) -> str | None:
@@ -291,8 +279,7 @@ def _load_contract(args: RunAdvanceArgs, now: datetime | None) -> Implementation
             else Path(args.contract_json).read_text(encoding="utf-8")
         )
     except OSError as exc:
-        detail = exc.strerror or exc.__class__.__name__
-        raise InvalidRunnerInput(f"cannot read the contract file: {detail}") from exc
+        raise InvalidRunnerInput(f"cannot read the contract file: {os_error_reason(exc)}") from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -356,18 +343,18 @@ def run_advance_command(
     try:
         _validate_release_options(args)
     except ReleaseVerifyError as exc:
-        return _report(
-            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
-        )
+        return report_invalid_input("run advance", str(exc), json_output=args.json_output)
     try:
         contract = _load_contract(args, now)
     except InvalidRunnerInput as exc:
-        return _report(
-            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
-        )
+        return report_invalid_input("run advance", str(exc), json_output=args.json_output)
     if release_facts is None:
         release_facts = CliReleaseFactsProvider.from_options(args)
-    resolved_owner = owner_id if owner_id is not None else _default_owner_id()
+    resolved_owner = (
+        owner_id
+        if owner_id is not None
+        else default_owner_id(RUN_OWNER_ID_ENV_VAR, _OWNER_ID_PREFIX)
+    )
     if session_factory is not None:
         return _advance(
             session_factory,
@@ -381,26 +368,20 @@ def run_advance_command(
             contract=contract,
         )
     try:
-        engine = create_state_engine(_database_url())
-        with engine.connect():
-            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
-    except SQLAlchemyError:
+        with open_state_store() as factory:
+            return _advance(
+                factory,
+                args,
+                owner_id=resolved_owner,
+                now=now,
+                executor=executor,
+                revision_of=revision_of,
+                gate_facts=gate_facts,
+                release_facts=release_facts,
+                contract=contract,
+            )
+    except StateStoreUnreachableError:
         return _unreachable("run advance", args.json_output)
-    factory = create_session_factory(engine)
-    try:
-        return _advance(
-            factory,
-            args,
-            owner_id=resolved_owner,
-            now=now,
-            executor=executor,
-            revision_of=revision_of,
-            gate_facts=gate_facts,
-            release_facts=release_facts,
-            contract=contract,
-        )
-    finally:
-        engine.dispose()
 
 
 def run_status_command(
@@ -415,16 +396,10 @@ def run_status_command(
     if session_factory is not None:
         return _show_status(session_factory, args)
     try:
-        engine = create_state_engine(_database_url())
-        with engine.connect():
-            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
-    except SQLAlchemyError:
+        with open_state_store() as factory:
+            return _show_status(factory, args)
+    except StateStoreUnreachableError:
         return _unreachable("run status", args.json_output)
-    factory = create_session_factory(engine)
-    try:
-        return _show_status(factory, args)
-    finally:
-        engine.dispose()
 
 
 def run_withdraw_command(
@@ -442,20 +417,18 @@ def run_withdraw_command(
     unreachable database is exit 2 instead of a traceback; ``session_factory``,
     ``owner_id`` and ``now`` are the injection seams for tests.
     """
-    resolved_owner = owner_id if owner_id is not None else _default_owner_id()
+    resolved_owner = (
+        owner_id
+        if owner_id is not None
+        else default_owner_id(RUN_OWNER_ID_ENV_VAR, _OWNER_ID_PREFIX)
+    )
     if session_factory is not None:
         return _withdraw(session_factory, args, owner_id=resolved_owner, now=now)
     try:
-        engine = create_state_engine(_database_url())
-        with engine.connect():
-            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
-    except SQLAlchemyError:
+        with open_state_store() as factory:
+            return _withdraw(factory, args, owner_id=resolved_owner, now=now)
+    except StateStoreUnreachableError:
         return _unreachable("run withdraw", args.json_output)
-    factory = create_session_factory(engine)
-    try:
-        return _withdraw(factory, args, owner_id=resolved_owner, now=now)
-    finally:
-        engine.dispose()
 
 
 def render_advance_text(advance: RunAdvance) -> str:
@@ -589,34 +562,24 @@ def _advance(
                 release_facts=release_facts,
                 contract=contract,
             )
-    except InvalidRunnerInput as exc:
-        return _report(
-            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
-        )
-    except RunnerError as exc:
-        # An unknown run or a terminal one: the command cannot advance the run,
-        # and nothing was written. A committed failed/blocked attempt is not a
-        # refusal any more — the next advance retries it (ADR-006 p.7).
-        return _report(
-            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
-        )
-    except ContractConflictError as exc:
-        # Swapping the contract of a run that already carries one is refused by
-        # the store (T-016): nothing was written, and the text names the run —
-        # the operator supplied the id themselves.
-        return _report(
-            "run advance", "invalid_input", str(exc), EXIT_INVALID_INPUT, args.json_output
-        )
+    except (InvalidRunnerInput, RunnerError, ContractConflictError) as exc:
+        # Invalid input, nothing written, and the text is safe to echo:
+        # - InvalidRunnerInput: a broken option or an unknown change/run;
+        # - RunnerError: an unknown run or a terminal one — the command cannot
+        #   advance the run. A committed failed/blocked attempt is not a refusal
+        #   any more — the next advance retries it (ADR-006 p.7);
+        # - ContractConflictError: swapping the contract of a run that already
+        #   carries one is refused by the store (T-016); the text names the run —
+        #   the operator supplied the id themselves.
+        return report_invalid_input("run advance", str(exc), json_output=args.json_output)
     except StateError:
         # The store refused the write — a stale revision, a lost lease, a missing
         # row: the advance did not happen. The text may embed identifiers, so it
         # is not echoed (ADR-009).
-        return _report(
+        return report_invalid_input(
             "run advance",
-            "invalid_input",
             "the state store refused the advance (conflict, lost lease or missing state)",
-            EXIT_INVALID_INPUT,
-            args.json_output,
+            json_output=args.json_output,
         )
     except SQLAlchemyError:
         return _unreachable("run advance", args.json_output)
@@ -789,12 +752,8 @@ def _show_status(factory: sessionmaker[Session], args: RunStatusArgs) -> int:
     except SQLAlchemyError:
         return _unreachable("run status", args.json_output)
     if run is None:
-        return _report(
-            "run status",
-            "invalid_input",
-            f"unknown run {args.run_id!r}",
-            EXIT_INVALID_INPUT,
-            args.json_output,
+        return report_invalid_input(
+            "run status", f"unknown run {args.run_id!r}", json_output=args.json_output
         )
     print(render_status_json(run) if args.json_output else render_status_text(run))
     return EXIT_OK
@@ -812,29 +771,27 @@ def _withdraw(
         with session_scope(factory) as session:
             withdrawal = _withdraw_in_session(session, args, owner_id=owner_id, now=now)
     except UnknownRunError:
-        return _report(
-            "run withdraw",
-            "invalid_input",
-            f"unknown run {args.run_id!r}",
-            EXIT_INVALID_INPUT,
-            args.json_output,
+        return report_invalid_input(
+            "run withdraw", f"unknown run {args.run_id!r}", json_output=args.json_output
         )
     except RunNotWithdrawableError as exc:
         # A finished run is never rewritten by a withdrawal (T064). The message
         # names the run id and its status — neither is a secret.
-        return _report(
-            "run withdraw", "not_withdrawable", str(exc), EXIT_NOT_WITHDRAWABLE, args.json_output
+        return report_error(
+            "run withdraw",
+            "not_withdrawable",
+            str(exc),
+            EXIT_NOT_WITHDRAWABLE,
+            json_output=args.json_output,
         )
     except StateError:
         # The store refused the write — a stale revision, a lost lease, a missing
         # row: the withdrawal did not happen. The text may embed identifiers, so
         # it is not echoed (ADR-009).
-        return _report(
+        return report_invalid_input(
             "run withdraw",
-            "invalid_input",
             "the state store refused the withdrawal (conflict, lost lease or missing state)",
-            EXIT_INVALID_INPUT,
-            args.json_output,
+            json_output=args.json_output,
         )
     except SQLAlchemyError:
         return _unreachable("run withdraw", args.json_output)
@@ -864,19 +821,4 @@ def _withdraw_in_session(
 
 def _unreachable(command: str, json_output: bool) -> int:
     """Report an unreachable or misconfigured state store (exit 2, ADR-009 hygiene)."""
-    return _report(
-        command,
-        "invalid_input",
-        "the state store is not reachable or misconfigured",
-        EXIT_INVALID_INPUT,
-        json_output,
-    )
-
-
-def _report(command: str, tag: str, message: str, code: int, json_output: bool) -> int:
-    """Emit one error report: JSON payload on stdout, or a line on stderr."""
-    if json_output:
-        print(json.dumps({"error": tag, "detail": message}))
-    else:
-        print(f"factory {command}: {message}", file=sys.stderr)
-    return code
+    return report_state_store_unreachable(command, json_output=json_output)

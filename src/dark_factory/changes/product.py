@@ -7,11 +7,12 @@ environment (``dev_env_ref``). ``Change.product_id`` groups changes under it
 (ADR-030 p.2) and stays optional for pre-T065 changes.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Final
 
 from pydantic import BaseModel, Field
 
+from dark_factory.changes.clock import utc_now
 from dark_factory.changes.enums import ProductStatus
 from dark_factory.changes.refs import RepositoryRef
 from dark_factory.changes.run import InvalidStatusTransition
@@ -26,10 +27,6 @@ PRODUCT_STATUS_TRANSITIONS: Final[dict[ProductStatus, frozenset[ProductStatus]]]
     ProductStatus.READY: frozenset({ProductStatus.VALIDATING}),
     ProductStatus.ERROR: frozenset({ProductStatus.VALIDATING}),
 }
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 class Product(BaseModel):
@@ -51,7 +48,7 @@ class Product(BaseModel):
     status: ProductStatus = ProductStatus.CREATED
     status_reason: str | None = None
     state_revision: int = Field(default=1, ge=1)
-    created_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=utc_now)
 
     def apply_status(self, target: ProductStatus, *, reason: str | None = None) -> None:
         """Move to ``target``; raises InvalidStatusTransition outside the table.

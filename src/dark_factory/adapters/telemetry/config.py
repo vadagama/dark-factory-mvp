@@ -23,12 +23,13 @@ Environment variables:
   error. The path only ever reaches the file exporter.
 """
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
+
+from dark_factory.adapters._env import resolve_env
 
 SERVICE_NAME_ENV_VAR: Final[str] = "DARK_FACTORY_TELEMETRY_SERVICE_NAME"
 """``service.name`` resource attribute of the emitted spans."""
@@ -55,11 +56,6 @@ class TelemetryExporter(StrEnum):
     FILE = "file"
 
 
-def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
-    """The given mapping or, by default, the process environment."""
-    return os.environ if env is None else env
-
-
 @dataclass(frozen=True, slots=True)
 class TelemetryConfig:
     """Service identity and export policy of the telemetry adapter."""
@@ -76,7 +72,7 @@ class TelemetryConfig:
         ``DEFAULT_SERVICE_NAME`` while a missing path for ``exporter=file`` has
         no valid default and raises ``ValueError``.
         """
-        source = _env(env)
+        source = resolve_env(env)
         exporter_name = (source.get(EXPORTER_ENV_VAR) or "").strip().lower()
         exporter = _parse_exporter(exporter_name) if exporter_name else TelemetryExporter.CONSOLE
         artifact = (source.get(FILE_ENV_VAR) or "").strip()

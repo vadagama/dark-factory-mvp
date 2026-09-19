@@ -39,7 +39,6 @@ from dark_factory.changes.next_action import (
 from dark_factory.changes.refs import ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.run import ChangeRun, StageResult
 from dark_factory.changes.usage import BudgetSnapshot, Usage
-from dark_factory.flows.routes import STAGE_SEQUENCE, route_profile
 from dark_factory.orchestration.flow import (
     FlowStateError,
     InvalidFlowTransition,
@@ -47,7 +46,8 @@ from dark_factory.orchestration.flow import (
     expected_result_status,
 )
 from dark_factory.orchestration.policy.merge import MergeExecutor, MergeRequestContext
-from dark_factory.rules.gates import required_gates
+from dark_factory.orchestration.routes import STAGE_SEQUENCE, route_profile
+from dark_factory.orchestration.rules.gates import required_gates
 from tests.changes_factories import make_merge_approval, make_run
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)

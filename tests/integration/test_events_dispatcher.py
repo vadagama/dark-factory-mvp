@@ -31,7 +31,7 @@ from dark_factory.orchestration.events.rules import MAX_ATTEMPTS
 from dark_factory.orchestration.state.engine import session_scope
 from dark_factory.orchestration.state.enums import DeliveryStatus
 from dark_factory.orchestration.state.models import EventDelivery, OutboxEvent
-from dark_factory.orchestration.state.repositories import OutboxRepository
+from dark_factory.orchestration.state.repositories import OutboxEventDraft, OutboxRepository
 from dark_factory.ports import DomainEvent
 
 T0 = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
@@ -64,12 +64,14 @@ def _publish(
     """Seed one outbox event with its per-consumer deliveries (sequences auto-increment)."""
     with session_scope(factory) as session:
         event = OutboxRepository(session).publish(
-            event_id=event_id,
-            event_type="run.started",
-            change_id="chg-1",
-            run_id="run-1",
-            aggregate_id=aggregate_id,
-            aggregate_version=1,
+            OutboxEventDraft(
+                event_id=event_id,
+                event_type="run.started",
+                change_id="chg-1",
+                run_id="run-1",
+                aggregate_id=aggregate_id,
+                aggregate_version=1,
+            ),
             consumers=consumers,
         )
         if occurred_at is not None:

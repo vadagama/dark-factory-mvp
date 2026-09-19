@@ -34,8 +34,12 @@ from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.budget import BudgetCheck, BudgetState, BudgetViolation
 from dark_factory.orchestration.policy.escalation import contract_entry_violation
+from dark_factory.orchestration.rules.limits import (
+    LimitViolation,
+    continuation_violations,
+    rework_violation,
+)
 from dark_factory.orchestration.stages.context import StageContext
-from dark_factory.rules.limits import LimitViolation, continuation_violations, rework_violation
 
 # Stages whose deterministic success path needs a change request: review and
 # verification complete through ``merge`` (ADR-005 p.2), and ``MergeAction``

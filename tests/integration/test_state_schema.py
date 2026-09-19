@@ -23,6 +23,7 @@ from dark_factory.orchestration.state import (
     ensure_effect,
     session_scope,
 )
+from dark_factory.orchestration.state.repositories import OutboxEventDraft
 
 LONG = timedelta(minutes=5)
 
@@ -163,12 +164,14 @@ def test_state_change_and_event_commit_atomically(
             provider=Provider.GITHUB,
         )
         OutboxRepository(session).publish(
-            event_id="evt-1",
-            event_type="run.started",
-            change_id="chg-1",
-            run_id="exec-1",
-            aggregate_id="exec-1",
-            aggregate_version=1,
+            OutboxEventDraft(
+                event_id="evt-1",
+                event_type="run.started",
+                change_id="chg-1",
+                run_id="exec-1",
+                aggregate_id="exec-1",
+                aggregate_version=1,
+            ),
             consumers=("tracker", "console"),
         )
     with session_scope(session_factory) as session:
@@ -187,12 +190,14 @@ def test_state_change_and_event_roll_back_together(
             provider=Provider.GITHUB,
         )
         OutboxRepository(session).publish(
-            event_id="evt-x",
-            event_type="run.started",
-            change_id="chg-x",
-            run_id="exec-x",
-            aggregate_id="exec-x",
-            aggregate_version=1,
+            OutboxEventDraft(
+                event_id="evt-x",
+                event_type="run.started",
+                change_id="chg-x",
+                run_id="exec-x",
+                aggregate_id="exec-x",
+                aggregate_version=1,
+            ),
             consumers=("tracker",),
         )
         raise RuntimeError("simulated crash before commit")
@@ -207,21 +212,25 @@ def test_outbox_sequence_is_monotonic_per_aggregate(
     with session_scope(session_factory) as session:
         outbox = OutboxRepository(session)
         first = outbox.publish(
-            event_id="evt-1",
-            event_type="run.started",
-            change_id="chg-1",
-            run_id="exec-1",
-            aggregate_id="exec-1",
-            aggregate_version=1,
+            OutboxEventDraft(
+                event_id="evt-1",
+                event_type="run.started",
+                change_id="chg-1",
+                run_id="exec-1",
+                aggregate_id="exec-1",
+                aggregate_version=1,
+            ),
             consumers=("tracker",),
         )
         second = outbox.publish(
-            event_id="evt-2",
-            event_type="run.stage_completed",
-            change_id="chg-1",
-            run_id="exec-1",
-            aggregate_id="exec-1",
-            aggregate_version=2,
+            OutboxEventDraft(
+                event_id="evt-2",
+                event_type="run.stage_completed",
+                change_id="chg-1",
+                run_id="exec-1",
+                aggregate_id="exec-1",
+                aggregate_version=2,
+            ),
             consumers=("tracker",),
         )
         assert (first.sequence, second.sequence) == (1, 2)
@@ -236,12 +245,14 @@ def test_effect_key_is_unique(session_factory: sessionmaker[Session]) -> None:
 def test_event_delivery_pair_is_unique(session_factory: sessionmaker[Session]) -> None:
     with pytest.raises(IntegrityError), session_scope(session_factory) as session:
         OutboxRepository(session).publish(
-            event_id="evt-1",
-            event_type="run.started",
-            change_id="chg-1",
-            run_id="exec-1",
-            aggregate_id="exec-1",
-            aggregate_version=1,
+            OutboxEventDraft(
+                event_id="evt-1",
+                event_type="run.started",
+                change_id="chg-1",
+                run_id="exec-1",
+                aggregate_id="exec-1",
+                aggregate_version=1,
+            ),
             consumers=("tracker",),
         )
         session.add(EventDelivery(event_id="evt-1", consumer_id="tracker", status="pending"))

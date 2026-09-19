@@ -19,42 +19,28 @@ webhook events are only an accelerator for the scheduled pass.
 
 import asyncio
 import json
-import os
-import sys
-import uuid
 from typing import Final
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ReconcileArgs
+from dark_factory.cli._common import (
+    StateStoreUnreachableError,
+    default_owner_id,
+    open_state_store,
+    report_state_store_unreachable,
+)
+from dark_factory.cli.main import EXIT_OK, ReconcileArgs
 from dark_factory.orchestration.reconcile.models import ReconcileReport
 from dark_factory.orchestration.reconcile.service import GlobalReconciler
-from dark_factory.orchestration.state.engine import (
-    DEFAULT_DATABASE_URL,
-    create_session_factory,
-    create_state_engine,
-)
 
-DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
-"""State-store URL variable; the same one ``factory doctor`` checks (ADR-004)."""
+_COMMAND: Final[str] = "reconcile"
+"""Subcommand name of the error reports (``factory reconcile: ...``)."""
 
 RECONCILER_OWNER_ID_ENV_VAR: Final[str] = "DARK_FACTORY_RECONCILER_OWNER_ID"
 """Optional stable owner id of the reconciler lease; a unique default otherwise."""
 
-
-def _database_url() -> str:
-    """Configured state-store URL; the local default when unset (ADR-004)."""
-    raw = os.environ.get(DATABASE_URL_ENV_VAR)
-    return raw if raw and raw.strip() else DEFAULT_DATABASE_URL
-
-
-def _default_owner_id() -> str:
-    """Unique-per-process owner id so concurrent CLI passes never share a lease."""
-    configured = os.environ.get(RECONCILER_OWNER_ID_ENV_VAR, "").strip()
-    if configured:
-        return configured
-    return f"factory-reconcile-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+_OWNER_ID_PREFIX: Final[str] = "factory-reconcile"
+"""Prefix of the unique-per-process owner id (``factory-reconcile-<pid>-<hex>``)."""
 
 
 def render_text(report: ReconcileReport) -> str:
@@ -95,25 +81,19 @@ def run_reconcile_command(
     instead of a traceback. The reconciler never touches webhooks and never
     executes agent tasks: the pass plans and applies state-level recovery only.
     """
-    resolved_owner = owner_id if owner_id is not None else _default_owner_id()
+    resolved_owner = (
+        owner_id
+        if owner_id is not None
+        else default_owner_id(RECONCILER_OWNER_ID_ENV_VAR, _OWNER_ID_PREFIX)
+    )
     if session_factory is not None:
         report = asyncio.run(GlobalReconciler(session_factory, owner_id=resolved_owner).run_pass())
         return _emit(args, report)
     try:
-        engine = create_state_engine(_database_url())
-        with engine.connect():
-            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
-    except SQLAlchemyError:
-        # The exception text may embed the URL with credentials (ADR-009).
-        print(
-            "factory reconcile: the state store is not reachable or misconfigured", file=sys.stderr
-        )
-        return EXIT_INVALID_INPUT
-    factory = create_session_factory(engine)
-    try:
-        report = asyncio.run(GlobalReconciler(factory, owner_id=resolved_owner).run_pass())
-    finally:
-        engine.dispose()
+        with open_state_store() as factory:
+            report = asyncio.run(GlobalReconciler(factory, owner_id=resolved_owner).run_pass())
+    except StateStoreUnreachableError:
+        return report_state_store_unreachable(_COMMAND, json_output=False)
     return _emit(args, report)
 
 

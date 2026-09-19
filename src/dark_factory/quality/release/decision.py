@@ -7,6 +7,10 @@ input is observed data only: the expected immutable digest (the T033
 ``image-digest.json`` artifact), the digest observed on the deployment, the
 Argo Application sync/health status and the smoke-probe results (FR-013) run
 behind the :class:`~dark_factory.quality.release.probes.SmokeProbe` seam.
+:class:`ReleaseObservation` is the one value-level carrier of those facts:
+``factory release verify`` builds it from its flags, and the durable driver
+(``orchestration.runner``, T-092 S4) receives it from the release facts
+provider to resume a waiting release stage (``orchestration.stages.release``).
 
 Fixed check order — the first triggered outcome wins (DoD T034):
 
@@ -26,6 +30,7 @@ p.6) — the Operation-facing diagnostics of docs T-045.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Final
 
@@ -120,20 +125,38 @@ class SmokeOutcome:
 
 @dataclass(frozen=True)
 class ReleaseObservation:
-    """Facts of one release verification as observed by the caller (T034).
+    """Facts of one release verification as observed by the caller (T034, T-092 S4).
 
     The digests are the promoted (expected) and the deployed (observed)
     immutable image digests; ``argo_sync_raw``/``argo_health_raw`` are the
     raw Argo Application status values (normalized only inside
     :func:`evaluate_release`, and recorded verbatim in the evidence);
-    ``smoke`` is ``None`` when no probe ran at all.
+    ``smoke`` is the raw probe evidence — empty when no probe ran at all
+    (folded to :class:`SmokeOutcome` by :attr:`smoke_outcome`, so an empty
+    set is ``not_run`` and fails closed, FR-013).
+
+    The same value travels through the durable driver (ADR-024 p.5: the
+    driver stays port-free, the release facts provider derives the
+    observation from the GitOps/Argo/smoke seams). ``expected_digest`` may
+    stay ``None`` there when the waiting checkpoint's release evidence
+    already pins it; ``application`` is optional Argo bookkeeping
+    (``namespace/name``) passed through to the evidence, and ``verified_at``
+    overrides the resolver's ``now`` stamp when set. The decision core reads
+    neither: they are transport for the evidence builder.
     """
 
     expected_digest: str | None = None
     observed_digest: str | None = None
     argo_sync_raw: str | None = None
     argo_health_raw: str | None = None
-    smoke: SmokeOutcome | None = None
+    smoke: Sequence[SmokeProbeEvidence] = ()
+    application: str | None = None
+    verified_at: datetime | None = None
+
+    @property
+    def smoke_outcome(self) -> SmokeOutcome:
+        """The probe evidence folded into the aggregated smoke outcome (FR-013)."""
+        return SmokeOutcome.of(self.smoke)
 
 
 @dataclass(frozen=True)
@@ -223,17 +246,14 @@ def evaluate_release(observation: ReleaseObservation) -> ReleaseDecision:
     pre_smoke = pre_smoke_failure(observation)
     if pre_smoke is not None:
         return pre_smoke
-    smoke_status = (
-        observation.smoke.status if observation.smoke is not None else SmokeStatus.NOT_RUN
-    )
-    if smoke_status is SmokeStatus.NOT_RUN:
+    smoke = observation.smoke_outcome
+    if smoke.status is SmokeStatus.NOT_RUN:
         return _failed(
             "smoke was not run: the released status requires a passing smoke check "
             "(FR-013, ADR-011 p.6)"
         )
-    if smoke_status is SmokeStatus.FAILED:
-        probes = observation.smoke.probes if observation.smoke is not None else ()
-        names = ", ".join(probe.name for probe in probes if not probe.passed)
+    if smoke.status is SmokeStatus.FAILED:
+        names = ", ".join(probe.name for probe in smoke.probes if not probe.passed)
         return _failed(f"smoke probes failed: {names} (ADR-011 p.6)")
     return ReleaseDecision(status=ReleaseStatus.RELEASED)
 

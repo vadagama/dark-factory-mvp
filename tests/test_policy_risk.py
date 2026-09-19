@@ -118,11 +118,11 @@ def test_is_r2_or_higher(risk_class: RiskClass, expected: bool) -> None:
 @pytest.mark.parametrize(
     ("in_scope", "expected"),
     [
-        (("src/dark_factory/rules/gates.py",), True),
+        (("src/dark_factory/orchestration/rules/gates.py",), True),
         (("src/dark_factory/orchestration/policy/risk.py",), True),
         (("src/dark_factory/quality/gates/specification.py",), True),
         (("src/dark_factory/changes/risk.py",), True),
-        (("./src/dark_factory/rules/gates.py",), True),
+        (("./src/dark_factory/orchestration/rules/gates.py",), True),
         (("src/dark_factory/api/routes_runs.py",), False),
         (("docs/hld.md",), False),
         (("checkout timeout configuration",), False),

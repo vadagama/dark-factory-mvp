@@ -24,7 +24,7 @@ flowchart LR
     ESC["policy/escalation.py"] --> FLOW
 ```
 
-Дисциплина общая с `rules/`: чистые функции получают `now` явным параметром, одинаковые факты дают одинаковый результат; исполнение (dispatcher, reconciler) отделено от принятия решений (rules, policy).
+Дисциплина общая с `orchestration/rules/`: чистые функции получают `now` явным параметром, одинаковые факты дают одинаковый результат; исполнение (dispatcher, reconciler) отделено от принятия решений (rules, policy).
 
 ## 2. Events — transactional outbox (T-028, ADR-016)
 
@@ -261,7 +261,7 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 
 Проводка в Flow: на `MergeAction` контекст якорится к run — `route=run.route`, `stage=result.stage`, `gate_results=result.gate_results` (вызывающий не может расширить/сузить набор гейтов); без контекста политика не вызывается вовсе — ручной режим. `blocked` → `StopAction(blocked)`; `manual_merge_required` → `WaitForInputAction`, run в `WAITING` до человеческой авторизации на финальный SHA.
 
-**Branch protection** ([`rules/merge_protection.py`](../../src/dark_factory/rules/merge_protection.py), T-032) — provider-side аналог: `protected_branch=True`, `required_approving_reviews=1`, `required_status_checks=True`, `allowed_merge_methods={"squash"}`, `dismiss_stale_approvals=True`. `protection_violations(observed, policy)` детерминированно возвращает до одного нарушения на правило: `branch_not_protected`, `insufficient_required_approvals`, `required_checks_missing`, `non_squash_merge_allowed`, `stale_approvals_not_dismissed`.
+**Branch protection** ([`orchestration/rules/merge_protection.py`](../../src/dark_factory/orchestration/rules/merge_protection.py), T-032) — provider-side аналог: `protected_branch=True`, `required_approving_reviews=1`, `required_status_checks=True`, `allowed_merge_methods={"squash"}`, `dismiss_stale_approvals=True`. `protection_violations(observed, policy)` детерминированно возвращает до одного нарушения на правило: `branch_not_protected`, `insufficient_required_approvals`, `required_checks_missing`, `non_squash_merge_allowed`, `stale_approvals_not_dismissed`.
 
 ### 4.5. Участие человека (`participation.py`)
 
@@ -274,7 +274,7 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 | `specification`, `planning`, `review_verification` | `human_in_the_loop` |
 | `construction`, `release` | `human_off_the_loop` |
 
-Человеческие гейты Flow — `HUMAN_GATES = {specification, review}` в [`rules/gates.py`](../../src/dark_factory/rules/gates.py) (реэкспортируется из `flows/routes.py`): базовый набор, не зависящий от маршрута (ADR-018). Риск-класс расширяет его — `rules.gates.required_human_gates(route, stage, risk_class)` (T-080, ADR-023 п.3): с R2 человеческим становится и `planning`, с R3/R4 — каждый требуемый гейт стадии. Planning остаётся in-the-loop и через эскалации (например, новый ADR), но с R2 его подтверждение — уже обязательное решение.
+Человеческие гейты Flow — `HUMAN_GATES = {specification, review}` в [`orchestration/rules/gates.py`](../../src/dark_factory/orchestration/rules/gates.py) (реэкспортируется из `orchestration/routes.py`): базовый набор, не зависящий от маршрута (ADR-018). Риск-класс расширяет его — `rules.gates.required_human_gates(route, stage, risk_class)` (T-080, ADR-023 п.3): с R2 человеческим становится и `planning`, с R3/R4 — каждый требуемый гейт стадии. Planning остаётся in-the-loop и через эскалации (например, новый ADR), но с R2 его подтверждение — уже обязательное решение.
 
 ## 5. Граничные случаи
 
@@ -328,7 +328,7 @@ CLI [`cli/reconcile.py`](../../src/dark_factory/cli/reconcile.py): `factory reco
 ## 8. Связь с другими модулями
 
 - [orchestration-flow-and-state.md](orchestration-flow-and-state.md) — Flow, PostgreSQL state store, лизы/fencing: таблицы `outbox`/`event_delivery` и `execution_leases` описаны там;
-- [rules.md](rules.md) — гейты и лимиты; merge policy переиспользует `unsatisfied_gates` из `rules/gates.py`;
+- [rules.md](rules.md) — гейты и лимиты; merge policy переиспользует `unsatisfied_gates` из `orchestration/rules/gates.py`;
 - [cli.md](cli.md) — контракты команд `factory outbox *` и `factory reconcile`;
 - [api.md](api.md) — API утверждений, привязанных к SHA (version-bound approval);
 - [orchestration-execution.md](orchestration-execution.md) — внутристадийное исполнение (stages, taskgraph, rework), вокруг которого работают event/reconcile-подсистемы;

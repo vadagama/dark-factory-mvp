@@ -19,8 +19,8 @@ class Route(StrEnum):
     """Factory Flow route of a run (ADR-005, ADR-023 p.6).
 
     All four routes traverse the same five stages; they differ in gate policy
-    (``rules/gates.py``) and in the risk-class band they allow
-    (``flows/routes.py``).
+    (``orchestration/rules/gates.py``) and in the risk-class band they allow
+    (``orchestration/routes.py``).
     """
 
     QUICK = "quick"

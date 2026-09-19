@@ -36,7 +36,7 @@ from dark_factory.orchestration.policy.merge import (
     MergeRequestContext,
     evaluate_merge,
 )
-from dark_factory.rules.gates import required_gates
+from dark_factory.orchestration.rules.gates import required_gates
 from tests.changes_factories import make_merge_approval
 
 SHA = "731ac91"

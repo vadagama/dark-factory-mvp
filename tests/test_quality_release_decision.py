@@ -23,13 +23,11 @@ EXPECTED = "sha256:1111111111111111111111111111111111111111111111111111111111111
 OBSERVED = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 
 
-def _passed_probes() -> SmokeOutcome:
-    return SmokeOutcome.of(
-        [
-            SmokeProbeEvidence(name="http-health", passed=True, detail="HTTP 200"),
-            SmokeProbeEvidence(name="http-digest", passed=True, detail="digest found"),
-        ]
-    )
+def _passed_probes() -> list[SmokeProbeEvidence]:
+    return [
+        SmokeProbeEvidence(name="http-health", passed=True, detail="HTTP 200"),
+        SmokeProbeEvidence(name="http-digest", passed=True, detail="digest found"),
+    ]
 
 
 def _released_observation() -> ReleaseObservation:
@@ -84,9 +82,7 @@ class TestDigestImmutabilityFirst:
                 observed_digest=OBSERVED,
                 argo_sync_raw="Progressing",
                 argo_health_raw="Degraded",
-                smoke=SmokeOutcome.of(
-                    [SmokeProbeEvidence(name="http-health", passed=False, detail="HTTP 500")]
-                ),
+                smoke=[SmokeProbeEvidence(name="http-health", passed=False, detail="HTTP 500")],
             )
         )
 
@@ -172,7 +168,6 @@ class TestSmokeCheck:
                 observed_digest=EXPECTED,
                 argo_sync_raw="Synced",
                 argo_health_raw="Healthy",
-                smoke=None,
             )
         )
 
@@ -187,7 +182,7 @@ class TestSmokeCheck:
                 observed_digest=EXPECTED,
                 argo_sync_raw="Synced",
                 argo_health_raw="Healthy",
-                smoke=SmokeOutcome(),
+                smoke=(),
             )
         )
 
@@ -202,14 +197,10 @@ class TestSmokeCheck:
                 observed_digest=EXPECTED,
                 argo_sync_raw="Synced",
                 argo_health_raw="Healthy",
-                smoke=SmokeOutcome.of(
-                    [
-                        SmokeProbeEvidence(name="http-health", passed=True, detail="HTTP 200"),
-                        SmokeProbeEvidence(
-                            name="http-digest", passed=False, detail="digest not found"
-                        ),
-                    ]
-                ),
+                smoke=[
+                    SmokeProbeEvidence(name="http-health", passed=True, detail="HTTP 200"),
+                    SmokeProbeEvidence(name="http-digest", passed=False, detail="digest not found"),
+                ],
             )
         )
 
@@ -227,9 +218,7 @@ class TestSmokeCheck:
                 observed_digest=EXPECTED,
                 argo_sync_raw="Synced",
                 argo_health_raw="Degraded",
-                smoke=SmokeOutcome.of(
-                    [SmokeProbeEvidence(name="http-health", passed=False, detail="HTTP 500")]
-                ),
+                smoke=[SmokeProbeEvidence(name="http-health", passed=False, detail="HTTP 500")],
             )
         )
 

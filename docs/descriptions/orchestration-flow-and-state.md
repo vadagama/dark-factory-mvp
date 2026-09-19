@@ -26,8 +26,8 @@ cli/runner.py + orchestration/runner.py"]
     SERVICE --> LOAD["Загрузить ChangeRun / history
 state/run_store.RunStore"]
     LOAD --> FLOW["flow.apply_result()"]
-    ROUTES["flows/routes.py\nмаршрут"] --> FLOW
-    RULES["rules/\nгейты + лимиты"] --> FLOW
+    ROUTES["orchestration/routes.py\nмаршрут"] --> FLOW
+    RULES["orchestration/rules/\nгейты + лимиты"] --> FLOW
     POLICY["orchestration/policy/\nэскалации + merge"] --> FLOW
     FLOW --> DECISION["FlowDecision + изменённый ChangeRun"]
     DECISION --> SERVICE
@@ -206,7 +206,7 @@ Wait-действия (`wait_for_input`, `wait_for_ci`, `request_approval`) пе
 
 1. объявленные эскалации на результате (`result.escalations`) — вето без сжигания раунда: эскалация не является rework-итерацией;
 2. исчерпан ли бюджет автономии контракта (`autonomy_budget_violation`, итерация = один `StageRun` occurrence);
-3. `rework_violation(budget, requested_round)` из `rules/limits.py`.
+3. `rework_violation(budget, requested_round)` из `orchestration/rules/limits.py`.
 
 Разрешённый раунд: `budget.used_rework_rounds += 1`, текущий stage occurrence → `failed`, запуск `REWORK_TARGET[result.stage]` (Review/Verification возвращается в Construction, остальные — в себя). Run остаётся `running`. Сам `flow.py` не трогает `attempt_number`: физические попытки — забота execution/state слоя.
 

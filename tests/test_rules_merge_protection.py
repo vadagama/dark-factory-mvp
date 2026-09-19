@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from dark_factory.rules.merge_protection import (
+from dark_factory.orchestration.rules.merge_protection import (
     DEFAULT_MERGE_PROTECTION,
     MergeProtectionPolicy,
     ObservedBranchProtection,

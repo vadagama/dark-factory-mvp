@@ -22,6 +22,9 @@ Layout:
 
 - :mod:`dark_factory.quality.release.decision` — the deterministic, pure
   core: ``evaluate_release`` over ``ReleaseObservation`` (no I/O, no clock);
+  the observation is the one value-level carrier of the release facts,
+  shared with the durable driver's release resolver
+  (``orchestration.stages.release``, T-092 S4);
 - :mod:`dark_factory.quality.release.probes` — the I/O seam of the smoke
   check: the ``SmokeProbe`` protocol plus the MVP ``HttpHealthProbe`` /
   ``HttpDigestProbe`` (httpx2, fixed timeouts/retries, URLs never echoed,

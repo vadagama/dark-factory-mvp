@@ -10,7 +10,7 @@ invariants are enforced here and covered by integration tests:
   (ADR-006 p.3), the basis of effectively-once side effects.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Final
 
@@ -30,6 +30,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from dark_factory.changes.clock import utc_now
 from dark_factory.changes.enums import (
     ChangeSource,
     DecisionOutcome,
@@ -46,10 +47,6 @@ from dark_factory.changes.enums import Stage as StageEnum
 from dark_factory.changes.run import _RESULT_STATUSES
 from dark_factory.orchestration.state.base import Base
 from dark_factory.orchestration.state.enums import DeliveryStatus, EffectStatus
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _values(enum_cls: type[Any]) -> str:
@@ -97,10 +94,10 @@ class Execution(Base):
     budget: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     implementation_contract: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -153,7 +150,7 @@ class Attempt(Base):
     attempt_number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), default=StageStatus.IN_PROGRESS.value)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -178,11 +175,11 @@ class ExecutionLease(Base):
     owner_id: Mapped[str] = mapped_column(String(128))
     fencing_token: Mapped[int] = mapped_column(Integer)
     acquired_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
 
     __table_args__ = (CheckConstraint("fencing_token >= 1", name="fencing_token_positive"),)
@@ -197,7 +194,7 @@ class OutboxEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     event_version: Mapped[int] = mapped_column(Integer, default=1)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     change_id: Mapped[str] = mapped_column(String(128), index=True)
     run_id: Mapped[str] = mapped_column(String(128), index=True)
@@ -253,10 +250,10 @@ class EffectLedgerEntry(Base):
     status: Mapped[str] = mapped_column(String(16), default=EffectStatus.PLANNED.value)
     external_ref: Mapped[str | None] = mapped_column(String(1024))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
 
     __table_args__ = (
@@ -282,7 +279,7 @@ class UsageRecord(Base):
     rework_rounds: Mapped[int] = mapped_column(Integer, default=0)
     manual_interventions: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
 
     __table_args__ = (
@@ -315,7 +312,7 @@ class Product(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     state_revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
 
     __table_args__ = (
@@ -346,7 +343,7 @@ class Change(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     state_revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
 
     __table_args__ = (
@@ -435,7 +432,7 @@ class AuditLogEntry(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, server_default=func.now()
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
     )
     actor: Mapped[str] = mapped_column(String(128))
     role: Mapped[str | None] = mapped_column(String(32))

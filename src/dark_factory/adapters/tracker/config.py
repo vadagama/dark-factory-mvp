@@ -24,11 +24,11 @@ Environment variables:
   during rotation (optional; a secret, ADR-013 p.6).
 """
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Final
 
+from dark_factory.adapters._env import missing_env_vars, resolve_env
 from dark_factory.ports import Provider, RepositoryRef
 
 PLANE_BASE_URL_ENV_VAR: Final[str] = "DARK_FACTORY_PLANE_BASE_URL"
@@ -67,11 +67,6 @@ DEFAULT_REPOSITORY_PROVIDER: Final[Provider] = Provider.GITHUB
 """Provider assumed when ``DARK_FACTORY_PLANE_REPOSITORY_PROVIDER`` is unset."""
 
 
-def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
-    """The given mapping or, by default, the process environment."""
-    return os.environ if env is None else env
-
-
 def _parse_provider(value: str) -> Provider:
     """``Provider`` for a configured name; an unknown name is a configuration error."""
     try:
@@ -106,13 +101,12 @@ class PlaneConfig:
     @classmethod
     def missing_env_vars(cls, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
         """Names of the required env vars that are unset or blank, in a stable order."""
-        source = _env(env)
-        return tuple(name for name in _REQUIRED_ENV_VARS if not (source.get(name) or "").strip())
+        return missing_env_vars(_REQUIRED_ENV_VARS, env)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "PlaneConfig | None":
         """Config read from ``env`` (default: the process environment); ``None`` when incomplete."""
-        source = _env(env)
+        source = resolve_env(env)
         if cls.missing_env_vars(env):
             return None
         provider_name = (source.get(PLANE_REPOSITORY_PROVIDER_ENV_VAR) or "").strip()

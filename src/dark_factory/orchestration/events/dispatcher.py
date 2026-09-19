@@ -26,11 +26,12 @@ promised — consumers deduplicate by ``event_id`` (and the effect ledger for
 internal effects, ADR-006 p.3).
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Final
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from dark_factory.changes.clock import utc_now
 from dark_factory.orchestration.events.cleanup import cleanup_expired_events
 from dark_factory.orchestration.events.handlers import HandlerRegistry
 from dark_factory.orchestration.events.models import (
@@ -54,10 +55,6 @@ pass, not from long-running single passes."""
 
 MAX_ERROR_LENGTH: Final[int] = 1024
 """Width of the ``event_delivery.last_error`` column — errors are truncated to it."""
-
-
-def _now_utc() -> datetime:
-    return datetime.now(UTC)
 
 
 def _error_text(error: BaseException) -> str:
@@ -90,7 +87,7 @@ class OutboxDispatcher:
         self, *, now: datetime | None = None, cleanup: bool = False
     ) -> DispatchReport:
         """Run one delivery pass (plus the optional cleanup step) and return its report."""
-        moment = _now_utc() if now is None else now
+        moment = utc_now() if now is None else now
         with session_scope(self._session_factory) as session:
             batch = DeliveryRepository(session).reserve_batch(limit=self._batch_size, now=moment)
         outcomes: list[DeliveryOutcome] = [

@@ -3,7 +3,7 @@
 The bridge between the pure decision core (``quality.release.decision``) and
 the persisted run-record section (``RunRecord.release``): digests are
 normalized the same way the decision saw them, the raw Argo statuses are
-recorded verbatim as observed, and the smoke results are flattened from the
+recorded verbatim as observed, and the smoke results are copied from the
 observation. The evidence stays an honest index of what was seen at
 verification time (ADR-015 p.4) — nothing is recomputed here.
 """
@@ -42,6 +42,6 @@ def build_release_evidence(
         argo_sync_status=observation.argo_sync_raw,
         argo_health_status=observation.argo_health_raw,
         application=application_clean or None,
-        smoke=observation.smoke.probes if observation.smoke is not None else (),
+        smoke=tuple(observation.smoke),
         rollback_signal=decision.rollback_signal,
     )

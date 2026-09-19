@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+import dark_factory.cli._common as cli_common
 import dark_factory.cli.runner as runner_module
 from dark_factory.changes.enums import Provider, Role, Route, RunStatus, Stage, StageStatus
 from dark_factory.changes.implementation_contract import (
@@ -419,7 +420,7 @@ def test_run_advance_refuses_an_unreachable_state_store(
     def _failing_engine(url: str) -> _UnreachableEngine:
         return _UnreachableEngine()
 
-    monkeypatch.setattr(runner_module, "create_state_engine", _failing_engine)
+    monkeypatch.setattr(cli_common, "create_state_engine", _failing_engine)
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:secret@db.example/dark_factory")
 
     code = runner_module.run_advance_command(
@@ -614,16 +615,23 @@ def test_main_dispatches_run_status_to_the_runner_command(
     assert capsys.readouterr().out.startswith("run run-001: pending")
 
 
+def _default_owner_id() -> str:
+    """The run lease owner id exactly as the commands resolve it."""
+    return cli_common.default_owner_id(
+        runner_module.RUN_OWNER_ID_ENV_VAR, runner_module._OWNER_ID_PREFIX
+    )
+
+
 def test_default_owner_id_is_unique_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DARK_FACTORY_RUN_OWNER_ID", raising=False)
 
-    first = runner_module._default_owner_id()
-    second = runner_module._default_owner_id()
+    first = _default_owner_id()
+    second = _default_owner_id()
 
     assert first != second
     int(first.rsplit("-", 1)[1], 16)  # the suffix is a uuid hex chunk
     monkeypatch.setenv("DARK_FACTORY_RUN_OWNER_ID", "cronjob-runner")
-    assert runner_module._default_owner_id() == "cronjob-runner"
+    assert _default_owner_id() == "cronjob-runner"
 
 
 # --- release options and the run-record publication (T-092 S4) ---------------
@@ -1199,7 +1207,7 @@ def test_run_withdraw_refuses_an_unreachable_state_store(
         def dispose(self) -> None:
             return None
 
-    monkeypatch.setattr(runner_module, "create_state_engine", lambda url: _UnreachableEngine())
+    monkeypatch.setattr(cli_common, "create_state_engine", lambda url: _UnreachableEngine())
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:secret@db.example/dark_factory")
 
     code = runner_module.run_withdraw_command(

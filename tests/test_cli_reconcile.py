@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+import dark_factory.cli._common as cli_common
 import dark_factory.cli.reconcile as reconcile_module
 from dark_factory.changes.enums import RunStatus
 from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ReconcileArgs, main
@@ -95,7 +96,7 @@ def test_unreachable_state_store_fails_with_invalid_configuration(
     def _failing_engine(url: str) -> _UnreachableEngine:
         return _UnreachableEngine()
 
-    monkeypatch.setattr(reconcile_module, "create_state_engine", _failing_engine)
+    monkeypatch.setattr(cli_common, "create_state_engine", _failing_engine)
 
     assert (
         reconcile_module.run_reconcile_command(ReconcileArgs(json_output=True))
@@ -123,13 +124,20 @@ def test_main_dispatches_reconcile_to_the_command_handler(
     assert payload["entries"][0]["run_id"] == "run-0001"
 
 
+def _default_owner_id() -> str:
+    """The reconciler's owner id exactly as the command resolves it."""
+    return cli_common.default_owner_id(
+        reconcile_module.RECONCILER_OWNER_ID_ENV_VAR, reconcile_module._OWNER_ID_PREFIX
+    )
+
+
 def test_default_owner_id_is_unique_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DARK_FACTORY_RECONCILER_OWNER_ID", raising=False)
 
-    first = reconcile_module._default_owner_id()
-    second = reconcile_module._default_owner_id()
+    first = _default_owner_id()
+    second = _default_owner_id()
 
     assert first != second
     int(first.rsplit("-", 1)[1], 16)  # the suffix is a uuid hex chunk
     monkeypatch.setenv("DARK_FACTORY_RECONCILER_OWNER_ID", "cronjob-reconciler")
-    assert reconcile_module._default_owner_id() == "cronjob-reconciler"
+    assert _default_owner_id() == "cronjob-reconciler"

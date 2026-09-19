@@ -27,10 +27,10 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import expected_result_status
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
+from dark_factory.orchestration.routes import route_profile
 from dark_factory.orchestration.stages.gates import (
     GateObservation,
     GateResolution,

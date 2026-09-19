@@ -7,7 +7,6 @@ product id, and every mutating API operation appends one audit row inside the
 caller's transaction (ADR-009 p.7).
 """
 
-from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -44,10 +43,6 @@ class ChangeAlreadyExistsError(RuntimeError):
 
 class ProductAlreadyExistsError(RuntimeError):
     """A product with the same id already exists but could not be read back."""
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _change_from_row(row: ChangeRow) -> Change:

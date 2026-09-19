@@ -12,9 +12,9 @@ from itertools import pairwise
 import pytest
 
 from dark_factory.changes.enums import ControlPoint, Gate, RiskClass, Route, Stage
-from dark_factory.flows.routes import route_allows_risk
 from dark_factory.orchestration.policy.risk import required_control_points
-from dark_factory.rules.gates import (
+from dark_factory.orchestration.routes import route_allows_risk
+from dark_factory.orchestration.rules.gates import (
     HUMAN_GATES,
     RISK_HUMAN_GATES,
     required_gates,

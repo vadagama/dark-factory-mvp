@@ -8,20 +8,21 @@ or the raw exception, which may contain credentials (ADR-009).
 """
 
 import os
-import sys
 from typing import Final
 
-from sqlalchemy.exc import SQLAlchemyError
-
 from dark_factory.api import create_app
-from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ApiServeArgs
-from dark_factory.orchestration.state.engine import (
-    create_session_factory,
-    create_state_engine,
+from dark_factory.cli._common import (
+    DATABASE_URL_ENV_VAR,
+    StateStoreUnreachableError,
+    open_state_store,
+    report_invalid_input,
+    report_state_store_unreachable,
 )
+from dark_factory.cli.main import EXIT_OK, ApiServeArgs
 from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
 
-DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
+_COMMAND: Final[str] = "api serve"
+"""Subcommand name of the error reports (``factory api serve: ...``)."""
 
 
 def run_api_serve_command(
@@ -44,28 +45,19 @@ def run_api_serve_command(
     """
     database_url = os.environ.get(DATABASE_URL_ENV_VAR, "").strip()
     if not database_url:
-        print(f"factory api serve: {DATABASE_URL_ENV_VAR} is not configured", file=sys.stderr)
-        return EXIT_INVALID_INPUT
-    try:
-        engine = create_state_engine(database_url)
-        with engine.connect():
-            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
-    except SQLAlchemyError:
-        # The exception text may embed the URL with credentials (ADR-009).
-        print(
-            "factory api serve: the state store is not reachable or misconfigured",
-            file=sys.stderr,
+        return report_invalid_input(
+            _COMMAND, f"{DATABASE_URL_ENV_VAR} is not configured", json_output=False
         )
-        return EXIT_INVALID_INPUT
-    app = create_app(
-        create_session_factory(engine),
-        ci_toggles=ci_toggles,
-        ci_repository=ci_repository,
-    )
     try:
-        import uvicorn
+        with open_state_store(database_url) as session_factory:
+            app = create_app(
+                session_factory,
+                ci_toggles=ci_toggles,
+                ci_repository=ci_repository,
+            )
+            import uvicorn
 
-        uvicorn.run(app, host=args.host, port=args.port)
-    finally:
-        engine.dispose()
+            uvicorn.run(app, host=args.host, port=args.port)
+    except StateStoreUnreachableError:
+        return report_state_store_unreachable(_COMMAND, json_output=False)
     return EXIT_OK

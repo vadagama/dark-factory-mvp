@@ -15,7 +15,7 @@ from dark_factory.changes.enums import Gate, RiskClass, Route, Stage
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.rules.gates import required_gates, required_human_gates
+from dark_factory.orchestration.rules.gates import required_gates, required_human_gates
 
 
 @dataclass(frozen=True, slots=True)

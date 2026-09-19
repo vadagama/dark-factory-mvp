@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.rules.limits import continuation_violations, rework_violation
+from dark_factory.orchestration.rules.limits import continuation_violations, rework_violation
 
 NOW = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
 

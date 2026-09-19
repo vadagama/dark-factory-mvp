@@ -39,7 +39,6 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import StageResult
-from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import (
     FLOW_TRANSITIONS,
     REWORK_TARGET,
@@ -50,7 +49,8 @@ from dark_factory.orchestration.flow import (
     expected_result_status,
 )
 from dark_factory.orchestration.policy.merge import MergeRequestContext
-from dark_factory.rules.gates import required_gates
+from dark_factory.orchestration.routes import route_profile
+from dark_factory.orchestration.rules.gates import required_gates
 from tests.changes_factories import make_merge_approval, make_run
 
 UNION_DISCRIMINATORS: frozenset[str] = frozenset(

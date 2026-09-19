@@ -9,7 +9,7 @@ The contract these tests pin without running CI:
 * the trusted image jobs keep their ``needs`` chain and the final SHA, tolerate
   a gate skipped on purpose, and still refuse to build after a failed or
   cancelled gate;
-* the catalog (``dark_factory.ci.stages``) covers exactly the workflow jobs and
+* the catalog (``dark_factory.orchestration.ci``) covers exactly the workflow jobs and
   agrees with them on titles and toggle variables — it is what the API serves
   and what the console renders (T059);
 * the instruction (``docs/instructions/manage-ci-stages.md``) and the ADR
@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-from dark_factory.ci import (
+from dark_factory.orchestration.ci import (
     CI_STAGES,
     CiStageGroup,
     CiStageWeight,

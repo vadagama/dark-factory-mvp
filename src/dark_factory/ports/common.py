@@ -124,7 +124,7 @@ def stage_gate(stage: str) -> Gate:
     """Base gate a stage's CI job evaluates (vision 3.9).
 
     The base gate is the CI-evaluable representative of the stage;
-    ``dark_factory.rules.gates`` remains the owner of the full stage→gate
+    ``dark_factory.orchestration.rules.gates`` remains the owner of the full stage→gate
     policy (routes add gates a CI job does not evaluate).
     """
     try:

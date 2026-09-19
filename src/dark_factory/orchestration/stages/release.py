@@ -5,8 +5,10 @@ of ADR-006 p.8 — is resumed by the driver
 (:func:`~dark_factory.orchestration.runner.advance_run`) once the release
 facts it waits for resolve (ADR-024 §7 S4: digest → GitOps-MR → Argo sync →
 smoke → release evidence). This module turns the observed facts
-(:class:`ReleaseObservation`: the digest observed on the deployment, the raw
-Argo Application sync/health statuses, the smoke probes behind the
+(:class:`~dark_factory.quality.release.decision.ReleaseObservation` — the
+release core's own observation, re-exported here for the driver: the digest
+observed on the deployment, the raw Argo Application sync/health statuses,
+the smoke probes behind the
 :class:`~dark_factory.quality.release.probes.SmokeProbe` seam) into the
 :class:`StageResult` of that same attempt, deciding through the pure release
 core (:func:`~dark_factory.quality.release.decision.evaluate_release`, T034)
@@ -30,8 +32,8 @@ its business, as in ``gates``.
 """
 
 import asyncio
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Final
 
@@ -49,43 +51,27 @@ from dark_factory.changes.findings import GateResult
 from dark_factory.changes.keys import effect_key, operation_key
 from dark_factory.changes.next_action import ReleaseAction, StopAction, WaitForCIAction
 from dark_factory.changes.refs import ArtifactRef, ChangeRequestRef, RepositoryRef
-from dark_factory.changes.release_records import SmokeProbeEvidence
 from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.orchestration.stages.agent import DEFAULT_TARGET_BRANCH, branch_name
 from dark_factory.orchestration.stages.checks import pending_gate_results
 from dark_factory.orchestration.stages.context import StageContext
 from dark_factory.ports import MergeRequestPort, OpenChangeRequest, RepositoryPort
 from dark_factory.quality.release.decision import (
-    ReleaseObservation as DecisionObservation,
-)
-from dark_factory.quality.release.decision import (
-    SmokeOutcome,
+    ReleaseObservation,
     evaluate_release,
     normalize_digest,
 )
 from dark_factory.quality.release.evidence import build_release_evidence
 
-
-@dataclass(frozen=True, slots=True)
-class ReleaseObservation:
-    """Release facts observed for one waiting release attempt (T-092 S4).
-
-    A value-level observation — the driver stays port-free (ADR-024 p.5), the
-    composition root derives it from the GitOps/Argo/smoke seams. The wait
-    resolves only when the deployed digest and both raw Argo statuses are
-    present (:func:`release_resolved`); ``expected_digest`` may stay ``None``
-    when the checkpoint's release evidence already pins it.
-    ``application`` is optional Argo bookkeeping passed through to the
-    evidence; ``verified_at`` overrides the resolver's ``now`` stamp when set.
-    """
-
-    expected_digest: str | None
-    observed_digest: str | None
-    argo_sync_raw: str | None
-    argo_health_raw: str | None
-    smoke: Sequence[SmokeProbeEvidence] = ()
-    application: str | None = None
-    verified_at: datetime | None = None
+__all__ = [
+    "DIGEST_FILE_TEMPLATE",
+    "RELEASE_BRANCH_PREFIX",
+    "InnerStageExecutor",
+    "ReleaseObservation",
+    "ReleaseStageExecutor",
+    "build_release_resolution",
+    "release_resolved",
+]
 
 
 def _present(value: str | None) -> bool:
@@ -152,20 +138,12 @@ def build_release_resolution(
             f"{checkpoint.stage.value}; the driver replays the waiting checkpoint instead"
         )
 
-    expected_digest = observation.expected_digest
-    if expected_digest is None and checkpoint.release is not None:
-        expected_digest = checkpoint.release.expected_digest
+    if observation.expected_digest is None and checkpoint.release is not None:
+        observation = replace(observation, expected_digest=checkpoint.release.expected_digest)
 
-    decision_observation = DecisionObservation(
-        expected_digest=expected_digest,
-        observed_digest=observation.observed_digest,
-        argo_sync_raw=observation.argo_sync_raw,
-        argo_health_raw=observation.argo_health_raw,
-        smoke=SmokeOutcome.of(observation.smoke),
-    )
-    decision = evaluate_release(decision_observation)
+    decision = evaluate_release(observation)
     release = build_release_evidence(
-        decision_observation,
+        observation,
         decision,
         verified_at=observation.verified_at if observation.verified_at is not None else now,
         application=observation.application,
