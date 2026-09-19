@@ -226,6 +226,20 @@ class ChangeRequestStatus(StrEnum):
     CLOSED = "closed"
 
 
+class ProductStatus(StrEnum):
+    """Readiness of a product repository (ADR-030 p.1).
+
+    ``created -> validating -> ready | error``: a failure keeps its cause in
+    ``Product.status_reason``, never in the status value, so the wire value
+    stays stable (ADR-030 p.4).
+    """
+
+    CREATED = "created"
+    VALIDATING = "validating"
+    READY = "ready"
+    ERROR = "error"
+
+
 class EvidenceType(StrEnum):
     """Kind of evidence attached to a result."""
 

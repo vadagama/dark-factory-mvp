@@ -35,6 +35,7 @@ from dark_factory.changes.enums import (
     DecisionOutcome,
     DecisionSource,
     Gate,
+    ProductStatus,
     Provider,
     RiskClass,
     Route,
@@ -64,6 +65,7 @@ STAGE_STATUS_VALUES: Final = _values(StageStatus)
 EFFECT_STATUS_VALUES: Final = _values(EffectStatus)
 DELIVERY_STATUS_VALUES: Final = _values(DeliveryStatus)
 CHANGE_SOURCE_VALUES: Final = _values(ChangeSource)
+PRODUCT_STATUS_VALUES: Final = _values(ProductStatus)
 RISK_CLASS_VALUES: Final = _values(RiskClass)
 GATE_VALUES: Final = _values(Gate)
 DECISION_OUTCOME_VALUES: Final = _values(DecisionOutcome)
@@ -291,12 +293,44 @@ class UsageRecord(Base):
     )
 
 
+class Product(Base):
+    """Product registry entry: a product and its repository readiness (ADR-030, T065).
+
+    ``payload`` carries the full Product document; ``repository``, ``status``
+    and ``status_reason`` are denormalized for querying. ``state_revision``
+    guards concurrent status writers (ADR-006 p.4).
+    """
+
+    __tablename__ = "product"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str | None] = mapped_column(Text)
+    repository: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    repository_url: Mapped[str | None] = mapped_column(String(512))
+    baseline_ref: Mapped[str | None] = mapped_column(String(512))
+    dev_env_ref: Mapped[str | None] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(16), default=ProductStatus.CREATED.value)
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    state_revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({PRODUCT_STATUS_VALUES})", name="status_allowed"),
+        CheckConstraint("state_revision >= 1", name="state_revision_positive"),
+    )
+
+
 class Change(Base):
     """Intake record of a change (FR-001, FR-017, ADR-009 p.7).
 
     ``payload`` carries the full Change document; ``product`` is denormalized
     for querying. ``external_ref`` is the tracker dedup key: at most one change
-    per external reference (partial unique index).
+    per external reference (partial unique index). ``product_id`` is the
+    optional owning product (ADR-030 p.2): ``NULL`` for pre-T065 changes.
     """
 
     __tablename__ = "change"
@@ -308,6 +342,7 @@ class Change(Base):
     external_ref: Mapped[str | None] = mapped_column(String(512))
     risk_class: Mapped[str] = mapped_column(String(8))
     product: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    product_id: Mapped[str | None] = mapped_column(String(128), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     state_revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(
@@ -423,6 +458,7 @@ ALL_MODELS: Final[tuple[type[Base], ...]] = (
     EventDelivery,
     EffectLedgerEntry,
     UsageRecord,
+    Product,
     Change,
     Decision,
     StageResult,

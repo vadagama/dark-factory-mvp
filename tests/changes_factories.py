@@ -31,6 +31,7 @@ from dark_factory.changes.implementation_contract import (
     ImplementationContract,
 )
 from dark_factory.changes.next_action import ExecuteStageAction, NextAction
+from dark_factory.changes.product import Product
 from dark_factory.changes.refs import ChangeRequestRef, Evidence, RepositoryRef
 from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.changes.run_records import RunManifest, RunRecord
@@ -60,6 +61,19 @@ def make_change() -> Change:
         external_ref="PLANE-42",
         product=make_repository(),
         risk_class=RiskClass.R1,
+        created_at=NOW,
+    )
+
+
+def make_product() -> Product:
+    return Product(
+        id="prd-001",
+        name="Pilot product",
+        description="The product the pilot deliverable runs against",
+        repository=make_repository(),
+        repository_url="https://github.com/small/pilot",
+        baseline_ref=".factory/product",
+        dev_env_ref="factory-dev/small-pilot",
         created_at=NOW,
     )
 

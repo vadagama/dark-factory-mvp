@@ -164,6 +164,8 @@ class Change(BaseModel):
     source: ChangeSource
     external_ref: str | None = None
     product: RepositoryRef
+    product_id: str | None = None
+    """Optional owning product (ADR-030 p.2); ``None`` for pre-T065 changes."""
     risk_class: RiskClass
     change_request: ChangeRequestRef | None = None
     created_at: datetime = Field(default_factory=_now)

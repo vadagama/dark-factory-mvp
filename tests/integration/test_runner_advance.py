@@ -71,7 +71,10 @@ from tests.changes_factories import make_change, make_contract
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
-MIGRATION_HEAD = "0004_runner_state"
+# The head is the revision under test only by convention; ``MIGRATION_PARENT`` is
+# the revision below the runner-state migration whose columns are asserted, so it
+# stays two revisions back once a newer head is added (T065).
+MIGRATION_HEAD = "0005_products"
 MIGRATION_PARENT = "0003_route_risk_classes"
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 
