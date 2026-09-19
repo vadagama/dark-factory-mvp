@@ -17,6 +17,7 @@
 | Инспекция запуска | `run status` (T-092) |
 | Продвижение запуска ровно на одну стадию | `run advance` (T-092) |
 | Снятие (отзыв) ошибочного или невалидного запуска | `run withdraw` (T064) |
+| Регистрация продукта, проверка готовности его репозитория, реестр | `product add` / `validate` / `list` / `show` (T070, ADR-030) |
 | Публикация индекса run-записи в `dark-factory-runs` | `run publish` (T-061) |
 | Диагностика окружения и конфигурации | `doctor` |
 | Один идемпотентный проход Reconciler | `reconcile` |
@@ -38,6 +39,7 @@ flowchart TD
     D --> STUB["stage resume\nnot_implemented, exit 2"]
     D --> ADV["run advance, run status,\nrun withdraw\ncli/runner.py"]
     D --> PUB["run publish\ncli/runs.py"]
+    D --> PRD["product add/validate/list/show\ncli/products.py"]
     D --> REC["reconcile\ncli/reconcile.py"]
     D --> OUT["outbox dispatch/replay/skip\ncli/outbox.py"]
     D --> DOC["doctor\ncli/doctor.py"]
@@ -59,6 +61,8 @@ flowchart TD
     RUNNER --> RSTORE["orchestration/state/run_store.py\nexecution + stage + attempt\n+ stage_result + outbox"]
     RUNNER --> FLOWD["orchestration/flow.py\napply_result — единственный переход"]
     RSTORE --> PG
+    PRD --> PSTORE["orchestration/state/change_store.py\nProductRepository + AuditRepository\norchestration/products.py — готовность"]
+    PSTORE --> PG
     DOC --> ENV["переменные окружения\nофлайн, без БД"]
 ```
 
@@ -68,6 +72,7 @@ flowchart TD
 |---|---|
 | `stage run` | файл change-снапшота + `--evidence-dir`; PostgreSQL state store не используется (подключение — «durable state-store wiring», ещё не сделано) |
 | `run advance`, `run status`, `run withdraw` | PostgreSQL через `orchestration/state/run_store.py`: change из intake и run-стейт (execution/stage/attempt/stage_result/outbox/audit_log); `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` |
+| `product add`, `product validate`, `product list`, `product show` | PostgreSQL через `orchestration/state/change_store.py` (`ProductRepository`, `AuditRepository`); `product validate` дополнительно наблюдает репозиторий через шов `provisioning` (`RepositoryProvisioningPort`), который связывает `runtime.entrypoint` — без него команда отказывает (exit 2), статус не меняется |
 | `reconcile`, `outbox *`, `api serve` | PostgreSQL через `orchestration/state/engine.py`: `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` = `postgresql+psycopg://dark_factory:dark_factory@localhost:5432/dark_factory` |
 | `doctor` | только переменные окружения; соединение с БД не открывается (офлайн-проверки) |
 | `ci_job` | файл `stage_result.json` + `$GITHUB_OUTPUT` |
@@ -94,6 +99,10 @@ flowchart TD
 | `run status` | `--run-id`*, `--json` | Запуск из PostgreSQL: статус и стадии | 0/2 |
 | `run advance` | `--change-id` XOR `--run-id` (обязательна ровно одна), `--json`; контракт-опции (T-016): `--contract-json <path|->`, `--approve-contract`; release-опции (T-092 S4): `--expected-digest` XOR `--digest-json`, наблюдение `--observed-digest`/`--argo-sync`/`--argo-health`, пробы `--smoke-url`/`--smoke-digest-url`/`--smoke-digest-header`, `--application`, `--runs-root` | Ровно одна стадия запуска durable-раннером; контракт-опции — прикрепление Implementation Contract, release-опции — GitOps-промоушен, резолюция waiting-релиза и публикация run-записи | 0/10/20/1/2 |
 | `run withdraw` | `--run-id`*, `--reason`, `--json` | Операторское снятие паркованного запуска (T064): run и non-terminal стадии → `canceled`, решение — append-only в audit log | 0/1/2 |
+| `product add` | `--id`*, `--name`*, `--provider`* (`github`/`gitlab`), `--repository`* (slug `owner/name`), `--description`, `--repository-url`, `--baseline-ref`, `--dev-env-ref`, `--json` | Регистрация продукта (T070, ADR-030 p.1): идемпотентно по `--id` — повтор replay'ит существующий и ничего не пишет; audit `product.add` | 0/2 |
+| `product validate` | `--id`*, `--json` | Наблюдение репозитория через шов `provisioning` и запись готовности `validating → ready/error` (ADR-030 p.4, ADR-031); audit `product.validate` | 0/1/2 |
+| `product list` | `--limit` (1–200, по умолчанию 50), `--offset` (≥ 0), `--json` | Реестр продуктов: по строке на продукт или массив документов `Product` | 0/2 |
+| `product show` | `--id`*, `--json` | Один продукт: статус, причина ошибки, ссылки baseline/dev-контура | 0/2 |
 | `reconcile` | `--json` | Один проход Reconciler | 0/2 |
 | `outbox dispatch` | `--once`, `--json`, `--limit`, `--cleanup` | Одна пачка доставки outbox | 0/2 |
 | `outbox replay` | `--event-id`*, `--consumer`, `--json` | dead/failed → pending | 0/1/2 |
@@ -262,9 +271,20 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 - **Вывод**: текстовая строка или `--json` `{"outcome", "change_id", "run_id", "path"}`.
 - **Коды выхода**: `0` — created или unchanged; `1` — запись отклонена; `2` — невалидный вход/конфигурация.
 
+### 3.10. `product add | validate | list | show` (T070, ADR-030/ADR-031)
+
+Операторская сторона реестра продуктов (`cli/products.py`): продукт — верхний уровень работы фабрики (ADR-030 p.3), и его регистрация — первое действие оператора, а не побочный эффект intake'а. Команды — тонкая обвязка над тем же ядром, что обслуживает `/products` (T066): реестр — `orchestration/state/change_store.py` (`ProductRepository`), готовность — `orchestration/products.py` (`product_readiness`/`record_validation`), поэтому CLI и Console не могут расходиться в том, что такое продукт и когда он `ready`.
+
+- **`product add`** строит `Product` из флагов **до** обращения к store (пустой `--repository` или `--name` — exit 2 без транзакции), затем `ProductRepository.create` с дедупом по `--id` (FR-017): новый продукт — `registered`, существующий — `replayed`, запрос никогда не перезаписывает сохранённое. Audit-строка `product.add` с `outcome` `created`/`replayed` пишется в той же транзакции; `actor` — `cli` (`_common.CLI_ACTOR`, как у `run withdraw`), роль не заявляется — CLI это доверенный локальный операторский путь без bearer-токена.
+- **`product validate`** требует шов `provisioning` (`RepositoryProvisioningPort`), который связывает `runtime.entrypoint` (ADR-024 p.5): без него команда отказывает с exit 2 **до** любого чтения и статус не меняется — готовность, которую фабрика не наблюдала, не показывается (ADR-031 p.6). С портом: продукт читается, репозиторий наблюдается (`validate`, read-only), исход записывается в одной транзакции — `created/ready/error → validating → ready | error` под optimistic `state_revision`. `ready` — exit 0; `error` (единственный отказ — `UNAVAILABLE`, «репозиторий недоступен фабрике») — записан с причиной и exit 1; пустой репозиторий и отсутствующий baseline — штатные состояния (`ready`, ADR-031 p.4). Сбой самого наблюдения (креды, сеть, отвергнутый клон) — exit 1 `execution_error` с фиксированным текстом, ничего не записано; текст исключения адаптера не эхоится (ADR-009). Конкурентный переход (`StateConflictError`) — exit 2, ничего не записано.
+- **`product list`** — страница реестра (`--limit` 1–200, `--offset` ≥ 0, как у `GET /products`; вне границ — exit 2 без обращения к store); текстом — по строке `product <id>: <status> (name=…, repository=<provider>:<slug>, state_revision=…)`, без продуктов — `no products registered`; `--json` — массив документов `Product`.
+- **`product show`** — один продукт: заголовок как в `list`, затем `reason:` (для `error`), `description`/`repository_url`/`baseline_ref`/`dev_env_ref` (если заданы) и `created_at`; `--json` — документ `Product`. Неизвестный продукт — exit 2 `invalid_input` (id — операторский, эхо безопасно).
+
+`--json` печатает ровно один документ на stdout: `add` — `{"outcome", "persisted", "product"}`; `validate` — `{"outcome", "product", "validation"}` (наблюдение `RepositoryValidation`: `state`, `default_branch`, `head_revision`); `show` — `Product`; `list` — массив `Product`. Недоступный или отказавший store — exit 2 с фиксированным текстом без URL (ADR-009). Композиция: `runtime.entrypoint` собирает runtime только для `product validate` (ради порта провижининга) и освобождает его в `finally`; `add`/`list`/`show` идут core-путём без сборки.
+
 ## 4. Парсинг и обработка ошибок (`main.py`)
 
-- **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне: `stage {run,resume}`, `run {advance,status,publish,withdraw}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
+- **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне (включая `product add|validate|list|show`, T070): `stage {run,resume}`, `run {advance,status,publish,withdraw}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
 - **Выборы значений**: `--stage`, `--route`, `--next-action` ограничены `choices` из StrEnum (`Stage`, `Route`, `ResumeNextAction`) — недопустимое значение отсекается argparse'ом с exit 2, совпадающим с контрактом. `--help` на любом уровне → exit 0.
 - **Типизированные аргументы**: `parse_command(argv)` = `build_command_args(build_parser().parse_args(argv))`. Плоский namespace превращается в один из двенадцати frozen-датаклассов union `CommandArgs` (`StageRunArgs`, `StageResumeArgs`, `RunStatusArgs`, `RunPublishArgs`, `RunWithdrawArgs`, `ReconcileArgs`, `OutboxDispatchArgs`, `OutboxReplayArgs`, `OutboxSkipArgs`, `DoctorArgs`, `ApiServeArgs`, `ReleaseVerifyArgs`). Чтение полей идёт через `_option_str`/`_option_int`/`_required_str`/`_flag`: нарушение типа после argparse — программистская ошибка, `AssertionError`.
 - **Диспетчеризация**: `dispatch(command)` — исчерпывающий `match` по всем вариантам `CommandArgs`; ветка по умолчанию — `assert_never`, поэтому новая команда требует нового кейса на этапе компиляции.
@@ -296,6 +316,13 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 | `run withdraw`: run терминальный, но не `canceled` | отказ: exit 1, ничего не записано (ни состояния, ни audit) — завершённый run не переписывается |
 | `run withdraw`: неизвестный run | exit 2, тег `invalid_input`; в audit ничего не пишется |
 | `run withdraw`: конкурентный advance держит lease запуска | exit 2 (`invalid_input`) — store отказал, снятие не выполнено |
+| `product add`: `--id` уже зарегистрирован | replay: exit 0, сохранённый продукт не перезаписывается, audit `replayed` |
+| `product add`: пустой `--repository`/`--name` (`""`) | exit 2 `invalid_input` до обращения к store |
+| `product validate`: шов `provisioning` не связан (нет `DARK_FACTORY_WORKSPACE_MIRROR_ROOT`) | exit 2 `invalid_input`, store не читается, статус не меняется (ADR-031 p.6) |
+| `product validate`: репозиторий `UNAVAILABLE` | статус `error` с причиной записан, audit `product.validate`; exit 1 |
+| `product validate`: адаптер провижининга бросил исключение | exit 1 `execution_error` с фиксированным текстом, ничего не записано, текст исключения не эхоится |
+| `product validate`/`show`: неизвестный продукт | exit 2 `invalid_input`; audit не пишется, репозиторий не наблюдается |
+| `product list`: `--limit` вне 1–200 или `--offset < 0` | exit 2 без обращения к store |
 | `--json` у `stage run` | `operation_key=…` в stderr; stdout — ровно один JSON |
 | `doctor`: `DATABASE_URL` не задан или пустой | `warn`, exit 0; ошибка схеме URL — `error`, exit 2 |
 | `ci_job`: `status = waiting` | exit 0, без аннотации — waiting не ошибка |
@@ -328,9 +355,10 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 - [test_cli_run_records.py](../../tests/test_cli_run_records.py) — резолв коммитов манифеста (env → `GITHUB_SHA` → git HEAD), сборка записи, маппинг статусов run/stage, round-trip release-секции;
 - [test_cli_release.py](../../tests/test_cli_release.py) — exit-коды, invalid-ветки, e2e DoD (успешный и неуспешный smoke → статусы + evidence), rollback-сигнал, короткое замыкание проб, отсутствие эха секретов;
 - [test_cli_runs.py](../../tests/test_cli_runs.py) — `run publish`: exit-коды, форма `--json`, fallback на `DARK_FACTORY_RUNS_ROOT`, отсутствие эха секрета, созданные файлы записи;
-- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify`, `run publish` и `run withdraw`, их флагов и отсутствующих обязательных опций.
+- [test_cli_products.py](../../tests/test_cli_products.py) — `product add|validate|list|show` над стабами реестра: идемпотентность `add`, маппинг исхода на exit-код, рендер текста и `--json`, audit-строки, отказ без порта провижининга, non-echo исключений адаптера и URL store; [test_orchestration_products.py](../../tests/test_orchestration_products.py) — правило готовности (исчерпывающе по `RepositoryState`) и переход через `validating`;
+- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify`, `run publish`, `run withdraw` и `product *`, их флагов и отсутствующих обязательных опций.
 
-Интеграционные проги `run advance`/`run withdraw` над реальной БД живут в `tests/integration/test_runner_advance.py` и `tests/integration/test_run_withdraw.py`; unit-слои этих файлов БД не касаются.
+Интеграционные проги `run advance`/`run withdraw`/`product *` над реальной БД живут в `tests/integration/test_runner_advance.py`, `tests/integration/test_cli_products.py` и `tests/integration/test_run_withdraw.py`; unit-слои этих файлов БД не касаются.
 
 ## 7. Связанные решения
 

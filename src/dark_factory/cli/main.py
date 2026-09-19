@@ -9,7 +9,8 @@ is the explicit core path (deterministic executor, no composition).
 This module owns the command tree (``stage run``/``stage resume``,
 ``run advance``/``run status``/``run publish``/``run withdraw``, ``reconcile``, ``outbox dispatch``/
 ``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
-``release verify``), option validation and exit codes.
+``release verify``, ``product add``/``product validate``/``product list``/``product show``),
+option validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
 error, 2 invalid input/configuration; argparse rejects invalid input with
 exit code 2, matching the contract.
@@ -26,14 +27,17 @@ outbox events per ADR-016) in ``dark_factory.cli.outbox``, ``api serve``
 ``release verify`` (T034, smoke + release evidence, ADR-011 p.6) in
 ``dark_factory.cli.release`` and ``run publish`` (T-061, the run-record index
 published into ``dark-factory-runs``, ADR-015 p.4) in
-``dark_factory.cli.runs``; ``stage resume`` still reports ``not_implemented``
+``dark_factory.cli.runs`` and the product registry commands (T070, the operator
+side of ADR-030: register, validate, list and show products) in
+``dark_factory.cli.products``; ``stage resume`` still reports ``not_implemented``
 with exit code 2 until the durable state-store wiring of the resume protocol
 (ADR-006 p.8) lands.
 
-The ``executor``/``revision_of``/``gate_facts`` seams of ``run advance`` are
-values, not imports: this module is core and may not name ``dark_factory.runtime``
+The ``executor``/``revision_of``/``gate_facts`` seams of ``run advance`` and the
+``provisioning`` seam of ``api serve``/``product validate`` are values, not
+imports: this module is core and may not name ``dark_factory.runtime``
 (ADR-024 p.5), so the composition root passes the bindings in
-(``main``/``dispatch``/``_advance_run``).
+(``main``/``dispatch``/``_advance_run``/``_validate_product``).
 """
 
 import argparse
@@ -44,7 +48,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, assert_never
 
-from dark_factory.changes.enums import Route, Stage
+from dark_factory.changes.enums import Provider, Route, Stage
 from dark_factory.cli import doctor
 
 if TYPE_CHECKING:
@@ -171,6 +175,54 @@ class RunWithdrawArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductAddArgs:
+    """Arguments of ``factory product add`` (T070, ADR-030 p.1/p.6).
+
+    ``product_id`` is client-chosen like the change id, so registration replays
+    by it and a retry cannot create a second product (FR-017). The repository is
+    ``provider`` + ``slug`` (``RepositoryRef``); the optional fields are the
+    product's own (``description``, canonical ``repository_url``, ``baseline_ref``
+    of ADR-020, ``dev_env_ref`` of the dev contour). Readiness is observed by
+    ``product validate``, never submitted here.
+    """
+
+    product_id: str
+    name: str
+    provider: Provider
+    slug: str
+    description: str | None
+    repository_url: str | None
+    baseline_ref: str | None
+    dev_env_ref: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProductValidateArgs:
+    """Arguments of ``factory product validate`` (T070, ADR-030 p.4, ADR-031)."""
+
+    product_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProductListArgs:
+    """Arguments of ``factory product list`` (T070): the registry page ``limit``/``offset``."""
+
+    limit: int
+    offset: int
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProductShowArgs:
+    """Arguments of ``factory product show`` (T070): one product and its readiness."""
+
+    product_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReconcileArgs:
     """Arguments of ``factory reconcile`` (contract cli.md)."""
 
@@ -259,6 +311,10 @@ CommandArgs = (
     | RunAdvanceArgs
     | RunPublishArgs
     | RunWithdrawArgs
+    | ProductAddArgs
+    | ProductValidateArgs
+    | ProductListArgs
+    | ProductShowArgs
     | ReconcileArgs
     | OutboxDispatchArgs
     | OutboxReplayArgs
@@ -427,6 +483,72 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit the withdrawal outcome as JSON."
     )
     run_withdraw.set_defaults(command="run_withdraw")
+
+    product = commands.add_parser(
+        "product", help="Register, validate and inspect products (T070, ADR-030)."
+    )
+    product_commands = product.add_subparsers(required=True, metavar="command")
+    product_add = product_commands.add_parser(
+        "add", help="Register a product; a repeat with the same --id replays (FR-017)."
+    )
+    product_add.add_argument(
+        "--id", dest="product_id", required=True, help="Client-chosen product id."
+    )
+    product_add.add_argument("--name", required=True, help="Human-readable product name.")
+    product_add.add_argument(
+        "--provider",
+        required=True,
+        choices=[provider.value for provider in Provider],
+        help="Source-control provider of the product repository (ADR-019).",
+    )
+    product_add.add_argument(
+        "--repository",
+        dest="slug",
+        required=True,
+        help="Repository slug at the provider (owner/name).",
+    )
+    product_add.add_argument("--description", help="Optional product description.")
+    product_add.add_argument(
+        "--repository-url", help="Optional canonical URL of the repository (ADR-030 p.1)."
+    )
+    product_add.add_argument(
+        "--baseline-ref",
+        help="Optional reference of the canonical Product Baseline (ADR-020, .factory/product).",
+    )
+    product_add.add_argument(
+        "--dev-env-ref", help="Optional reference of the dev delivery environment (namespace/app)."
+    )
+    product_add.add_argument(
+        "--json", action="store_true", help="Emit the registration outcome as JSON."
+    )
+    product_add.set_defaults(command="product_add")
+
+    product_validate = product_commands.add_parser(
+        "validate",
+        help="Observe the product repository and record its readiness (ADR-030 p.4, ADR-031).",
+    )
+    product_validate.add_argument(
+        "--id", dest="product_id", required=True, help="Id of the product to validate."
+    )
+    product_validate.add_argument(
+        "--json", action="store_true", help="Emit the product and the observation as JSON."
+    )
+    product_validate.set_defaults(command="product_validate")
+
+    product_list = product_commands.add_parser("list", help="List the registered products.")
+    product_list.add_argument(
+        "--limit", type=int, default=50, help="Page size, 1..200 (default: 50)."
+    )
+    product_list.add_argument("--offset", type=int, default=0, help="Page offset (default: 0).")
+    product_list.add_argument("--json", action="store_true", help="Emit the products as JSON.")
+    product_list.set_defaults(command="product_list")
+
+    product_show = product_commands.add_parser("show", help="Show one product and its readiness.")
+    product_show.add_argument(
+        "--id", dest="product_id", required=True, help="Id of the product to show."
+    )
+    product_show.add_argument("--json", action="store_true", help="Emit the product as JSON.")
+    product_show.set_defaults(command="product_show")
 
     reconcile = commands.add_parser(
         "reconcile", help="Perform one idempotent Reconciler pass (ADR-019 p.5)."
@@ -633,6 +755,34 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 reason=_option_str(data, "reason"),
                 json_output=_flag(data, "json"),
             )
+        case "product_add":
+            return ProductAddArgs(
+                product_id=_required_str(data, "product_id"),
+                name=_required_str(data, "name"),
+                provider=Provider(_required_str(data, "provider")),
+                slug=_required_str(data, "slug"),
+                description=_option_str(data, "description"),
+                repository_url=_option_str(data, "repository_url"),
+                baseline_ref=_option_str(data, "baseline_ref"),
+                dev_env_ref=_option_str(data, "dev_env_ref"),
+                json_output=_flag(data, "json"),
+            )
+        case "product_validate":
+            return ProductValidateArgs(
+                product_id=_required_str(data, "product_id"),
+                json_output=_flag(data, "json"),
+            )
+        case "product_list":
+            limit = _option_int(data, "limit")
+            offset = _option_int(data, "offset")
+            if limit is None or offset is None:
+                raise AssertionError("options --limit and --offset have defaults")
+            return ProductListArgs(limit=limit, offset=offset, json_output=_flag(data, "json"))
+        case "product_show":
+            return ProductShowArgs(
+                product_id=_required_str(data, "product_id"),
+                json_output=_flag(data, "json"),
+            )
         case "reconcile":
             return ReconcileArgs(json_output=_flag(data, "json"))
         case "outbox_dispatch":
@@ -751,6 +901,35 @@ def _withdraw_run(args: RunWithdrawArgs) -> int:
     return runner.run_withdraw_command(args)
 
 
+def _add_product(args: ProductAddArgs) -> int:
+    # Imported here: cli.products imports the product args and the exit codes
+    # from this module, so a module-level import would be circular.
+    from dark_factory.cli import products
+
+    return products.run_product_add_command(args)
+
+
+def _validate_product(
+    args: ProductValidateArgs, *, provisioning: "RepositoryProvisioningPort | None" = None
+) -> int:
+    # Imported here for the same reason as ``_add_product``.
+    from dark_factory.cli import products
+
+    return products.run_product_validate_command(args, provisioning=provisioning)
+
+
+def _list_products(args: ProductListArgs) -> int:
+    from dark_factory.cli import products
+
+    return products.run_product_list_command(args)
+
+
+def _show_product(args: ProductShowArgs) -> int:
+    from dark_factory.cli import products
+
+    return products.run_product_show_command(args)
+
+
 def _reconcile(args: ReconcileArgs) -> int:
     # Imported here: cli.reconcile imports ReconcileArgs and the exit codes
     # from this module, so a module-level import would be circular.
@@ -824,8 +1003,9 @@ def dispatch(
     ``executor``, ``revision_of`` and ``gate_facts`` are the optional binding
     seams of ``factory run advance`` and are consumed only by that branch;
     ``ci_toggles``/``ci_repository`` are the CI stage switchboard seam of
-    ``factory api serve`` (T059), and ``provisioning`` its product-validation
-    seam (T066). They are values, not imports: this module is
+    ``factory api serve`` (T059), and ``provisioning`` the product-validation
+    seam of ``api serve`` (T066) and ``product validate`` (T070). They are
+    values, not imports: this module is
     core and must not name ``dark_factory.runtime`` (ADR-024 p.5), so the
     composition root (``runtime.entrypoint``) hands the assembled bindings over
     as arguments. Every other command ignores them, and all of them default to
@@ -846,6 +1026,14 @@ def dispatch(
             return _publish_run(command)
         case RunWithdrawArgs():
             return _withdraw_run(command)
+        case ProductAddArgs():
+            return _add_product(command)
+        case ProductValidateArgs():
+            return _validate_product(command, provisioning=provisioning)
+        case ProductListArgs():
+            return _list_products(command)
+        case ProductShowArgs():
+            return _show_product(command)
         case ReconcileArgs():
             return _reconcile(command)
         case OutboxDispatchArgs():
@@ -885,7 +1073,8 @@ def main(
     ``dark_factory.runtime.entrypoint:main``, the composition root that assembles
     the runtime and passes ``executor``/``revision_of``/``gate_facts`` (ADR-025)
     and the CI stage switchboard (``ci_toggles``/``ci_repository``, T059) plus the
-    provisioning seam (``provisioning``, T066). This
+    provisioning seam (``provisioning``, T066; also consumed by ``product
+    validate``, T070). This
     function stays the command tree's own entry point, usable without seams —
     ``python -m dark_factory.cli`` is the explicit core path, and both the
     wrapper and ``__main__.py`` raise ``SystemExit`` with the returned code.

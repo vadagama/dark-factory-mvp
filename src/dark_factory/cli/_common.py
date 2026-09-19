@@ -43,6 +43,7 @@ from dark_factory.orchestration.state.engine import (
 )
 
 __all__ = [
+    "CLI_ACTOR",
     "DATABASE_URL_ENV_VAR",
     "STATE_STORE_UNREACHABLE",
     "StateStoreUnreachableError",
@@ -58,6 +59,13 @@ __all__ = [
 
 STATE_STORE_UNREACHABLE: Final[str] = "the state store is not reachable or misconfigured"
 """Fixed diagnostic of a failed store bootstrap; it never names the URL (ADR-009)."""
+
+CLI_ACTOR: Final[str] = "cli"
+"""``actor`` of the audit rows an operator command writes (T064, T070).
+
+The CLI is the trusted local operator path: it carries no bearer token, so its
+decisions are attributed to the command line itself, with no role claimed.
+"""
 
 
 class StateStoreUnreachableError(RuntimeError):

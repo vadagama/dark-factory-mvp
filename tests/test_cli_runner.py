@@ -1061,7 +1061,7 @@ def test_run_withdraw_cancels_the_run_and_records_the_decision(
     )
     call = _last_withdraw_store().calls[0]
     assert call["run_id"] == RUN_ID
-    assert call["actor"] == runner_module.CLI_ACTOR
+    assert call["actor"] == cli_common.CLI_ACTOR
     assert call["role"] is None
     assert call["reason"] == "mistakenly started"
     assert call["owner_id"] == "test-owner"

@@ -8,13 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from dark_factory.changes.enums import Route, Stage
+from dark_factory.changes.enums import Provider, Route, Stage
 from dark_factory.cli.main import (
     ApiServeArgs,
     DoctorArgs,
     OutboxDispatchArgs,
     OutboxReplayArgs,
     OutboxSkipArgs,
+    ProductAddArgs,
+    ProductListArgs,
+    ProductShowArgs,
+    ProductValidateArgs,
     ReconcileArgs,
     ReleaseVerifyArgs,
     ResumeNextAction,
@@ -216,6 +220,89 @@ def test_run_withdraw_parses_options() -> None:
     ) == RunWithdrawArgs(run_id="run_01H", reason="invalid run", json_output=True)
 
 
+def test_product_add_parses_all_options() -> None:
+    args = parse_command(
+        [
+            "product",
+            "add",
+            "--id",
+            "prd-calc",
+            "--name",
+            "Calculator",
+            "--provider",
+            "github",
+            "--repository",
+            "small/calculator",
+            "--description",
+            "the pilot calculator",
+            "--repository-url",
+            "https://github.com/small/calculator",
+            "--baseline-ref",
+            ".factory/product",
+            "--dev-env-ref",
+            "apps-dev/calculator",
+            "--json",
+        ]
+    )
+    assert args == ProductAddArgs(
+        product_id="prd-calc",
+        name="Calculator",
+        provider=Provider.GITHUB,
+        slug="small/calculator",
+        description="the pilot calculator",
+        repository_url="https://github.com/small/calculator",
+        baseline_ref=".factory/product",
+        dev_env_ref="apps-dev/calculator",
+        json_output=True,
+    )
+
+
+def test_product_add_optional_fields_default_to_none() -> None:
+    args = parse_command(
+        [
+            "product",
+            "add",
+            "--id",
+            "prd-calc",
+            "--name",
+            "Calculator",
+            "--provider",
+            "gitlab",
+            "--repository",
+            "team/calc",
+        ]
+    )
+    assert args == ProductAddArgs(
+        product_id="prd-calc",
+        name="Calculator",
+        provider=Provider.GITLAB,
+        slug="team/calc",
+        description=None,
+        repository_url=None,
+        baseline_ref=None,
+        dev_env_ref=None,
+        json_output=False,
+    )
+
+
+def test_product_validate_show_and_list_parse_options() -> None:
+    assert parse_command(["product", "validate", "--id", "prd-calc"]) == ProductValidateArgs(
+        product_id="prd-calc", json_output=False
+    )
+    assert parse_command(["product", "validate", "--id", "prd-calc", "--json"]) == (
+        ProductValidateArgs(product_id="prd-calc", json_output=True)
+    )
+    assert parse_command(["product", "show", "--id", "prd-calc", "--json"]) == ProductShowArgs(
+        product_id="prd-calc", json_output=True
+    )
+    assert parse_command(["product", "list"]) == ProductListArgs(
+        limit=50, offset=0, json_output=False
+    )
+    assert parse_command(["product", "list", "--limit", "5", "--offset", "10", "--json"]) == (
+        ProductListArgs(limit=5, offset=10, json_output=True)
+    )
+
+
 def test_run_publish_parses_options() -> None:
     assert parse_command(
         [
@@ -389,6 +476,12 @@ def test_release_verify_defaults() -> None:
         ["run", "status"],
         ["run", "publish"],
         ["run", "withdraw"],
+        ["product"],
+        ["product", "add"],
+        ["product", "add", "--id", "prd-1", "--name", "Calc", "--provider", "github"],
+        ["product", "add", "--id", "prd-1", "--name", "Calc", "--repository", "a/b"],
+        ["product", "validate"],
+        ["product", "show"],
         ["outbox", "replay"],
         ["outbox", "replay", "--consumer", "tracker"],
         ["outbox", "skip"],
@@ -407,6 +500,19 @@ def test_missing_required_argument_exits_with_code_2(argv: list[str]) -> None:
         ["stage", "run", "--change", "c.yaml", "--stage", "bogus"],
         ["stage", "run", "--change", "c.yaml", "--stage", "construction", "--route", "fast"],
         ["stage", "resume", "--run-id", "run_01H", "--next-action", "manual"],
+        [
+            "product",
+            "add",
+            "--id",
+            "prd-1",
+            "--name",
+            "Calc",
+            "--provider",
+            "bitbucket",
+            "--repository",
+            "a/b",
+        ],
+        ["product", "list", "--limit", "many"],
     ],
 )
 def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
@@ -426,6 +532,11 @@ def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
         ["run", "status", "--help"],
         ["run", "publish", "--help"],
         ["run", "withdraw", "--help"],
+        ["product", "--help"],
+        ["product", "add", "--help"],
+        ["product", "validate", "--help"],
+        ["product", "list", "--help"],
+        ["product", "show", "--help"],
         ["reconcile", "--help"],
         ["outbox", "--help"],
         ["outbox", "dispatch", "--help"],
