@@ -40,6 +40,7 @@ from dark_factory.changes.enums import (
     FindingStatus,
     Gate,
     GateStatus,
+    Phase,
     RiskClass,
     Route,
     Stage,
@@ -50,6 +51,7 @@ from dark_factory.changes.findings import Decision, Finding, GateResult
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
+    PhaseRoundAction,
     ReworkAction,
     StopAction,
     WaitForCIAction,
@@ -57,6 +59,7 @@ from dark_factory.changes.next_action import (
 from dark_factory.changes.refs import ChangeRequestRef
 from dark_factory.changes.run import Change, ChangeRun, StageResult
 from dark_factory.orchestration.conversations import plan_rework_order
+from dark_factory.orchestration.phase_gate import decision_phase, phase_of_gate
 from dark_factory.orchestration.policy.merge import MergeRequestContext
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
 from dark_factory.orchestration.rework import ReviewPass, finding_signature, plan_rework
@@ -120,6 +123,15 @@ class GateObservation:
     the escalation stop when the bounded loop refuses one). The history feeds
     the loop's stop conditions; the store assembles it (``state.conversations``).
     """
+    phase: Phase | None = None
+    """The operator phase the waiting attempt is a round of (M3, ADR-039).
+
+    On the specification stage only a decision *of this phase* resolves the
+    wait; ``None`` (a stage without rounds, or a caller without the store)
+    keeps the M2 reading — any human gate decision of the stage resolves it.
+    """
+    next_phase: Phase | None = None
+    """The round that follows ``phase``; ``None`` when the resolved phase completes the stage."""
 
 
 def pending_rework_order(observation: GateObservation) -> ReworkOrder | None:
@@ -190,11 +202,7 @@ def gate_resolved(
         # round of the stage instead of its successor (T081).
         if pending_rework_order(observation) is not None:
             return True
-        return any(
-            decision.outcome is DecisionOutcome.APPROVED
-            and decision.gate in _human_gates(route, stage, risk_class)
-            for decision in observation.approvals
-        )
+        return _settling_decision(observation, _human_gates(route, stage, risk_class)) is not None
     if observation.pipeline_status == _PIPELINE_SUCCESS:
         # A pipeline verdict satisfies machine gates only (ADR-029 p.2): a stage
         # that still requires a human gate is never resolved by a green
@@ -203,6 +211,27 @@ def gate_resolved(
             return False
         return stage is not Stage.REVIEW_VERIFICATION
     return observation.pipeline_status in _PIPELINE_FAILURES
+
+
+def _settling_decision(
+    observation: GateObservation, human_gates: frozenset[Gate]
+) -> Decision | None:
+    """The observed decision that settles the waiting phase, if any (ADR-039).
+
+    ``approved`` or ``waived`` on a human gate of the stage; with a phase on
+    the observation only a decision of that phase counts — the requirements
+    approval never resolves the architecture round, and vice versa. The
+    newest matching decision wins.
+    """
+    for decision in reversed(list(observation.approvals)):
+        if decision.outcome not in {DecisionOutcome.APPROVED, DecisionOutcome.WAIVED}:
+            continue
+        if decision.gate not in human_gates:
+            continue
+        if observation.phase is not None and decision_phase(decision) is not observation.phase:
+            continue
+        return decision
+    return None
 
 
 def build_gate_resolution(
@@ -314,6 +343,34 @@ def _resolve_human_gated(
     successor = route_profile(run.route).next_stage(stage)
     if successor is None:  # pragma: no cover - a human-gated stage always has a successor
         raise ValueError(f"stage {stage.value} on route {run.route.value} has no successor")
+    if not observation.merged and observation.next_phase is not None:
+        # M3 (ADR-039): the approval of a non-final phase of the stage is
+        # progress inside the stage, not its completion — the next round of
+        # the same stage starts at the revision the decision was bound to; no
+        # gate passes yet and no rework round is spent.
+        settled = _settling_decision(observation, frozenset(human_gates))
+        settled_phase = observation.phase.value if observation.phase is not None else "phase"
+        verb = (
+            "waived"
+            if settled is not None and settled.outcome is DecisionOutcome.WAIVED
+            else "approved"
+        )
+        result = StageResult(
+            stage=stage,
+            run_id=run.id,
+            change_id=run.change_id,
+            attempt_number=attempt_number,
+            input_revision=input_revision,
+            status=StageStatus.SUCCEEDED,
+            next_action=PhaseRoundAction(
+                phase=observation.next_phase,
+                reason=f"phase {settled_phase} {verb} at {observation.head_sha};"
+                f" next round: {observation.next_phase.value}",
+            ),
+            phase=observation.phase,
+            produced_at=now,
+        )
+        return GateResolution(result=result, merge_context=None)
     if observation.merged:
         reason = (
             f"change request observed merged at {observation.head_sha}"
@@ -334,18 +391,34 @@ def _resolve_human_gated(
         input_revision=input_revision,
         status=StageStatus.SUCCEEDED,
         next_action=ExecuteStageAction(next_stage=successor, reason=reason),
-        gate_results=[
-            GateResult(
-                gate=gate,
-                status=GateStatus.PASSED,
-                sha=observation.head_sha,
-                summary=reason,
-            )
-            for gate in human_gates
-        ],
+        gate_results=[_human_gate_result(gate, observation, reason) for gate in human_gates],
+        phase=observation.phase,
         produced_at=now,
     )
     return GateResolution(result=result, merge_context=None)
+
+
+def _human_gate_result(gate: Gate, observation: GateObservation, reason: str) -> GateResult:
+    """The version-bound result of one human gate of the completed stage.
+
+    A phase the operator *waived* (a UI-free change, ADR-032 p.5) leaves its
+    gate ``skipped`` — satisfied for the flow, never reported as passed.
+    """
+    if not observation.merged:
+        phase = phase_of_gate(gate)
+        for decision in reversed(list(observation.approvals)):
+            if (
+                decision.gate is gate
+                and decision.outcome is DecisionOutcome.WAIVED
+                and decision_phase(decision) is phase
+            ):
+                return GateResult(
+                    gate=gate,
+                    status=GateStatus.SKIPPED,
+                    sha=observation.head_sha,
+                    summary=f"phase {phase.value} waived: {decision.comment or 'no reason given'}",
+                )
+    return GateResult(gate=gate, status=GateStatus.PASSED, sha=observation.head_sha, summary=reason)
 
 
 def _resolve_rework_order(
@@ -377,6 +450,7 @@ def _resolve_rework_order(
             input_revision=input_revision,
             status=StageStatus.BLOCKED,
             next_action=StopAction(outcome=StopOutcome.BLOCKED, reason=decision.reason),
+            phase=observation.phase,
             produced_at=now,
         )
     else:
@@ -393,6 +467,11 @@ def _resolve_rework_order(
             next_action=ReworkAction(
                 round=next_round, max_rounds=decision.max_rounds, reason=decision.reason
             ),
+            # The round belongs to the parked phase (M3): the store starts the
+            # pending order of *that* phase from this result — without it the
+            # architect's rework round ran with the order still ``pending``
+            # (found on the M3 live run).
+            phase=observation.phase,
             produced_at=now,
         )
     return GateResolution(result=result, merge_context=None)

@@ -143,6 +143,66 @@ describe("ApiClient auth semantics", () => {
   });
 });
 
+describe("ApiClient M3 (phases, decisions, alternative, UI spec)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reads the phases projection, the decisions overview and the UI spec without a token", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("secret-token");
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { change_id: "chg_1" }));
+    const client = new ApiClient({ fetchImpl });
+    await client.getPhases("chg_1");
+    await client.getDecisions("chg_1");
+    await client.getUiSpec("chg 1");
+    const urls = fetchImpl.mock.calls.map((call) => (call as unknown as [string, RequestInit])[0]);
+    expect(urls).toEqual([
+      "http://localhost:3000/api/v1/changes/chg_1/phases",
+      "http://localhost:3000/api/v1/changes/chg_1/decisions",
+      "http://localhost:3000/api/v1/changes/chg%201/ui",
+    ]);
+    for (const call of fetchImpl.mock.calls) {
+      const init = (call as unknown as [string, RequestInit])[1];
+      expect(init.method).toBe("GET");
+      expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    }
+  });
+
+  it("POSTs the alternative request to the decision with Bearer, Idempotency-Key and the body", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("secret-token");
+    const fetchImpl = vi.fn(async () => jsonResponse(201, { id: "rw_1" }));
+    const client = new ApiClient({ fetchImpl });
+    await client.requestAlternative("chg_1", "adr:prd:0002", { instruction: "кеш в памяти", comment_ids: ["cmt_1"] }, { idempotencyKey: "alt-key" });
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://localhost:3000/api/v1/changes/chg_1/decisions/adr%3Aprd%3A0002/alternative");
+    expect(init.method).toBe("POST");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer secret-token");
+    expect(headers["Idempotency-Key"]).toBe("alt-key");
+    expect(JSON.parse(init.body as string)).toEqual({ instruction: "кеш в памяти", comment_ids: ["cmt_1"] });
+  });
+
+  it("surfaces the 409 detail of a pending order on the phase", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(409, { type: "about:blank", title: "Conflict", status: 409, detail: "rework order 'rw_1' of phase architecture is pending" }),
+    );
+    const client = new ApiClient({ fetchImpl, tokenProvider: () => "secret-token" });
+    const error = (await client
+      .requestAlternative("chg_1", "adr:prd:0001", { instruction: "x", comment_ids: [] })
+      .catch((caught: unknown) => caught)) as ApiError;
+    expect(error.isStateRevisionConflict).toBe(true);
+    expect(error.detail).toBe("rework order 'rw_1' of phase architecture is pending");
+  });
+
+  it("passes the phase of an approval through to the body (M3)", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(201, { id: "dec_1" }));
+    const client = new ApiClient({ fetchImpl, tokenProvider: () => "secret-token" });
+    await client.recordApproval("chg_1", { gate: "ui", phase: "interface", outcome: "waived", subject_revision: "abc", comment: "UI не требуется" });
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ gate: "ui", phase: "interface", outcome: "waived", subject_revision: "abc", comment: "UI не требуется" });
+  });
+});
+
 describe("ApiClient CI stages (T058/ADR-026)", () => {
   afterEach(() => {
     vi.restoreAllMocks();

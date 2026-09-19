@@ -68,3 +68,4 @@
 | [ADR-036](ADR-036-merge-assistant.md) | Merge assistant — human-initiated merge from the console (уточняет ADR-011) | принято с условиями |
 | [ADR-037](ADR-037-console-changeset-workspace-ia.md) | Console IA and the ChangeSet workspace | принято с условиями |
 | [ADR-038](ADR-038-fold-flows-rules-ci-into-orchestration.md) | Пакеты `flows`, `rules` и `ci` входят в `orchestration` | принято |
+| [ADR-039](ADR-039-phase-rounds-and-phase-bound-decisions.md) | Пофазные раунды стадии `specification` и привязка решений к фазе (уточняет ADR-029, ADR-032, ADR-034, ADR-035) | принято |

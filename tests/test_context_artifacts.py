@@ -57,6 +57,11 @@ See REQ-001 and ADR-003.
         (f"{CHG}/decisions/ADR-002.md", ArtifactKind.ADR),
         (f"{CHG}/design/ADR-003-cache.md", ArtifactKind.ADR),
         (f"{CHG}/ui/screens/main.md", ArtifactKind.UI),
+        (f"{CHG}/design/ui/scenarios/SCN-001-checkout.md", ArtifactKind.UI),
+        (f"{CHG}/design/ui/screens/SCR-001-confirm.md", ArtifactKind.UI),
+        (f"{CHG}/design/screens/SCR-002.md", ArtifactKind.UI),
+        (f"{CHG}/screens/SCR-003.md", ArtifactKind.UI),
+        ("design/ui/screens/SCR-001.md", ArtifactKind.UI),
         (f"{CHG}/tasks/graph.yaml", ArtifactKind.PLAN),
         (f"{CHG}/verification/plan.yaml", ArtifactKind.PLAN),
         (f"{CHG}/evidence/index.yaml", ArtifactKind.OTHER),
@@ -146,3 +151,43 @@ def test_unified_diff_counts_added_and_removed_lines() -> None:
     assert diff.added == 2 and diff.removed == 1
     assert "--- spec/x.md@r1" in diff.unified and "+++ spec/x.md@r2" in diff.unified
     assert unified_diff("same", "same", path="p", from_revision="a", to_revision="b").is_empty
+
+
+SCREEN = """---
+schema: dark-factory.dev/ui-screen/v1
+id: SCR-001
+type: ui_screen
+title: Confirm
+elements:
+  - id: EL-display
+    kind: text
+  - id: EL-btn-percent
+    kind: button
+transitions:
+  - to: SCR-002
+    trigger: press
+---
+
+## States
+
+Step S1 shows the display; S12 retries. The S3 bucket is not a step but matches as a word.
+See SCN-001 and `EL-retry`.
+"""
+
+
+def test_ui_ids_declared_in_frontmatter_and_body_are_anchors() -> None:
+    anchors = anchors_of(SCREEN)
+    assert anchors[0] == "SCR-001", "the frontmatter id comes first"
+    assert {"EL-display", "EL-btn-percent", "SCR-002"} <= set(anchors), "frontmatter ids"
+    assert {"S1", "S12", "SCN-001", "EL-retry", "states"} <= set(anchors), "body ids"
+    assert "S3" in anchors, "S<n> matches as a whole word"
+    assert len(anchors) == len(set(anchors))
+    assert resolve_anchor(SCREEN, "EL-btn-percent")
+    assert not resolve_anchor(SCREEN, "EL-missing")
+
+
+def test_step_and_element_ids_match_only_as_whole_words() -> None:
+    anchors = anchors_of("HTTPS1 and S1x and xS2 are not steps; S4 is. EL-a_b is EL-a only.\n")
+    assert "S4" in anchors
+    assert not {"S1", "S2", "HTTPS1"} & set(anchors)
+    assert "EL-a" in anchors and "EL-a_b" not in anchors

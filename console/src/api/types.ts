@@ -163,6 +163,8 @@ export interface Decision {
   commit_sha: string | null;
   comment: string | null;
   evidence_ids: string[];
+  /** The operator phase the decision belongs to (M3, migration 0007); null for pre-M3 rows. */
+  phase: Phase | null;
 }
 
 /**
@@ -405,11 +407,22 @@ export interface ProductValidationView extends Product {
 export interface ApprovalRequest {
   gate: Gate;
   outcome: DecisionOutcome;
-  /** Required: the decision is version-bound to this revision (ADR-009 p.7). */
-  subject_revision: string;
+  /**
+   * The revision the decision is bound to (ADR-009 p.7). Required for
+   * `approved` / `rejected` (422 otherwise); optional for `waived` — a waiver
+   * is about the phase, not a document (M3), so it is omitted when the phase
+   * has no revision yet.
+   */
+  subject_revision?: string | null;
   comment?: string | null;
   /** Optimistic-concurrency guard (ADR-006 p.4); a mismatch answers 409. */
   expected_state_revision?: number | null;
+  /**
+   * The phase the decision is about (M3). Defaults to `phase_of_gate(gate)`
+   * on the server; `architecture` must be explicit because the
+   * `specification` gate is shared with `requirements`.
+   */
+  phase?: Phase | null;
 }
 
 /** `POST /products` (T066): id is client-chosen so a retry replays instead of duplicating. */
@@ -560,9 +573,29 @@ export interface ReworkOrder {
   escalation_reason: string | null;
   created_at: string;
   updated_at: string;
+  /** Decisions (ADR ids) the order is about — «Запросить альтернативу» (M3, T093). */
+  decision_ids: string[];
 }
 
 // Phase gate (orchestration/phase_gate.py — T087): why the gate is closed and how to open it.
+
+/** Whether the change needs a UI phase at all (M3, T097): the architect proposes, the operator confirms with `waived`. */
+export interface UiRequirement {
+  required: boolean;
+  source: "route" | "agent" | "operator" | "default";
+  reason: string | null;
+}
+
+export type PlannedCheckId = "axe" | "visual_regression";
+/** `planned` is the honest M3 status: the check runs at execution and is never green before (T097). */
+export type PlannedCheckStatus = "planned" | "not_required" | "passed" | "failed";
+
+export interface PlannedCheck {
+  id: PlannedCheckId;
+  label: string;
+  status: PlannedCheckStatus;
+  note: string;
+}
 
 export interface GateReason {
   what: string;
@@ -575,6 +608,8 @@ export interface ApprovalView {
   revision: string | null;
   state: RevisionState;
   comment: string | null;
+  /** The phase the decision was recorded for (M3); null for pre-M3 rows. */
+  phase: Phase | null;
 }
 
 export interface PhaseGate {
@@ -598,6 +633,178 @@ export interface PhaseGate {
   rework_in_progress: boolean;
   rework_rounds_used: number;
   rework_rounds_max: number;
+  /** Rework orders of this phase that reached a round — the phase's own iteration (M3). */
+  rework_orders_spent: number;
+  /** Filled for `phase === "interface"` only (M3, T097); null elsewhere. */
+  ui_requirement: UiRequirement | null;
+  /** Non-automatable checks of the phase; `[]` for phases other than `interface`. */
+  checks: PlannedCheck[];
+}
+
+// ---------------------------------------------------------------------------
+// Phases projection (orchestration — T098, M3): the eight operator phases as
+// the server derives them from stages and control points. The Console renders
+// the left column from this and never computes a phase state itself.
+// ---------------------------------------------------------------------------
+
+export type PhaseViewState =
+  | "pending"
+  | "active"
+  | "needs_decision"
+  | "approved"
+  | "waived"
+  | "not_required"
+  | "stale"
+  | "done"
+  | "blocked";
+
+export interface PhaseView {
+  phase: Phase;
+  index: number;
+  label: string;
+  stage: Stage | null;
+  gate: Gate | null;
+  state: PhaseViewState;
+  /** «Маршрут quick не требует UI», «Согласовано на ревизии abc», … */
+  state_reason: string | null;
+  /** Revision of the phase artifacts (last commit touching its files). */
+  revision: string | null;
+  /** Revision the current approval is bound to. */
+  approved_revision: string | null;
+  open_questions: number;
+  blocking_questions: number;
+  open_comments: number;
+  /** Rework rounds of the phase (orders in_progress | done | escalated). */
+  iteration: number;
+}
+
+/** `GET /changes/{id}/phases`: eight `PhaseView`s in the F0..F7 order. */
+export interface PhasesProjection {
+  change_id: string;
+  current: Phase;
+  phases: PhaseView[];
+}
+
+// ---------------------------------------------------------------------------
+// Decisions overview (T093, M3): a read model over the ADR files in git. The
+// `status` is derived from the approvals and orders — the agent only writes
+// `proposed` into the frontmatter.
+// ---------------------------------------------------------------------------
+
+export type DecisionCardStatus = "proposed" | "accepted" | "needs_revision" | "superseded";
+
+export interface DecisionAlternative {
+  title: string;
+  summary: string | null;
+  rejected_because: string | null;
+}
+
+export interface DecisionCard {
+  /** Frontmatter id (`adr:prd:0001`) or the file name without extension. */
+  id: string;
+  path: string;
+  title: string;
+  status: DecisionCardStatus;
+  /** As the agent wrote it in the frontmatter. */
+  document_status: string | null;
+  revision: string | null;
+  proposal: string | null;
+  rationale: string | null;
+  consequences: string | null;
+  alternatives: DecisionAlternative[];
+  impact: string[];
+  /** The open «Запросить альтернативу» order on this decision, if any. */
+  pending_alternative: ReworkOrder | null;
+  /** Files changed after the last finished order on the decision. */
+  affected_artifacts: string[];
+}
+
+export interface DecisionsView {
+  change_id: string;
+  revision: string | null;
+  approved: boolean;
+  decisions: DecisionCard[];
+  /** Files that could not be parsed — shown as a warning, never hidden. */
+  errors: string[];
+}
+
+/** `POST /changes/{id}/decisions/{decision_id}/alternative` body. */
+export interface AlternativeRequest {
+  instruction: string;
+  comment_ids: string[];
+}
+
+// ---------------------------------------------------------------------------
+// UI specification (T094, M3): scenarios, screens, links — read model over
+// `design/ui/**` markdown + frontmatter. Stable ids `SCN-*`, `SCR-*`, `EL-*`
+// are the comment anchors.
+// ---------------------------------------------------------------------------
+
+export interface UiStep {
+  id: string;
+  text: string;
+  screen: string | null;
+}
+
+export interface UiScenario {
+  id: string;
+  path: string;
+  title: string;
+  summary: string | null;
+  steps: UiStep[];
+  screens: string[];
+}
+
+export type UiStateKind = "loading" | "empty" | "error" | "success" | "access";
+
+export interface UiState {
+  kind: UiStateKind;
+  description: string | null;
+}
+
+export interface UiElement {
+  id: string;
+  kind: string | null;
+  label: string | null;
+  component: string | null;
+}
+
+export interface UiScreen {
+  id: string;
+  path: string;
+  title: string;
+  purpose: string | null;
+  route: string | null;
+  /** Absolute as is; relative → `dev_url` + path (resolved by the Console, `previewHref`). */
+  preview_url: string | null;
+  states: UiState[];
+  elements: UiElement[];
+  components: string[];
+}
+
+export interface UiLink {
+  id: string;
+  from_screen: string;
+  to_screen: string;
+  trigger: string | null;
+  condition: string | null;
+}
+
+export interface UiComponentUse {
+  name: string;
+  screens: string[];
+}
+
+export interface UiSpecView {
+  change_id: string;
+  revision: string | null;
+  /** From the product baseline `factory.yaml` (`dev_url`); null until it exists. */
+  dev_url: string | null;
+  scenarios: UiScenario[];
+  screens: UiScreen[];
+  links: UiLink[];
+  components: UiComponentUse[];
+  errors: string[];
 }
 
 // ---------------------------------------------------------------------------

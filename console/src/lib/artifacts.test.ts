@@ -6,11 +6,11 @@ import {
   coercePropertyValue,
   encodeArtifactPath,
   phaseIndexLabel,
-  phaseState,
+  previewHref,
   shortRevision,
   splitFrontmatter,
 } from "./artifacts";
-import { SPEC_CONTENT, SPEC_PATH, phaseGateClosed, phaseGateOpen } from "../test/fixtures";
+import { SPEC_CONTENT, SPEC_PATH } from "../test/fixtures";
 
 describe("encodeArtifactPath", () => {
   it("encodes every segment and keeps the slashes (server route is {path:path})", () => {
@@ -72,16 +72,13 @@ describe("coercePropertyValue", () => {
   });
 });
 
-describe("phaseState", () => {
-  it("projects server facts only: approved, decision, active, rework, passed, pending", () => {
-    expect(phaseState("requirements", "requirements", { ...phaseGateOpen, approved: true })).toBe("approved");
-    expect(phaseState("requirements", "requirements", phaseGateOpen)).toBe("decision");
-    expect(phaseState("requirements", "requirements", phaseGateClosed)).toBe("active");
-    expect(phaseState("requirements", "requirements", { ...phaseGateClosed, rework_pending: true })).toBe("rework");
-    expect(phaseState("initiative", "requirements", null)).toBe("passed");
-    expect(phaseState("plan", "requirements", null)).toBe("pending");
-    expect(phaseState("delivery", "done", null)).toBe("passed");
-    expect(phaseState("initiative", null, null)).toBe("pending");
+describe("previewHref", () => {
+  it("keeps an absolute preview URL, joins a relative one to dev_url, and is null when nothing can be opened", () => {
+    expect(previewHref("https://preview.example.test/calc", null)).toBe("https://preview.example.test/calc");
+    expect(previewHref("/calc", "https://dev.example.test/")).toBe("https://dev.example.test/calc");
+    expect(previewHref("calc", "https://dev.example.test")).toBe("https://dev.example.test/calc");
+    expect(previewHref("/calc", null)).toBeNull();
+    expect(previewHref(null, "https://dev.example.test")).toBeNull();
   });
 });
 

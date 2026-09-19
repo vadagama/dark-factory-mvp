@@ -54,7 +54,6 @@ from dark_factory.changes.errors import InvalidStatusTransition
 from dark_factory.changes.run import Change
 from dark_factory.orchestration.artifacts import ArtifactService
 from dark_factory.orchestration.conversations import anchor_state
-from dark_factory.orchestration.guidance import phase_of_run
 from dark_factory.orchestration.phase_gate import PhaseGate, discussion_phase
 from dark_factory.orchestration.state.change_store import (
     APPROVAL_RECORD_ACTION,
@@ -79,6 +78,7 @@ from dark_factory.orchestration.state.conversation_store import (
     ConversationRepository,
 )
 from dark_factory.orchestration.state.guidance import build_phase_gate, latest_run
+from dark_factory.orchestration.state.phases import current_change_phase
 
 __all__ = ["create_conversations_router"]
 
@@ -116,7 +116,9 @@ def create_conversations_router(
         if requested is not None:
             return requested
         run = latest_run(session, change.id)
-        return discussion_phase(run, phase_of_run(run))
+        return discussion_phase(
+            run, current_change_phase(session, change, run=run, artifacts=artifacts)
+        )
 
     def _audit(
         token: ApiToken,

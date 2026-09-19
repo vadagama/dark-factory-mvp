@@ -12,6 +12,7 @@
  */
 
 import type {
+  AlternativeRequest,
   AnswerRequest,
   ApprovalRequest,
   ArtifactDiff,
@@ -32,6 +33,7 @@ import type {
   CommentStatus,
   CommentView,
   Decision,
+  DecisionsView,
   ErrorBody,
   Evidence,
   Finding,
@@ -42,6 +44,7 @@ import type {
   IntakeBrief,
   Phase,
   PhaseGate,
+  PhasesProjection,
   Product,
   ProductCreateRequest,
   ProductValidationView,
@@ -53,6 +56,7 @@ import type {
   RunSummary,
   RunTrace,
   StageResult,
+  UiSpecView,
 } from "./types";
 import { getToken } from "./token";
 import { encodeArtifactPath } from "../lib/artifacts";
@@ -388,6 +392,41 @@ export class ApiClient {
   /** Preconditions of the phase gate (T087): why it is closed and how to open it. */
   getPhaseGate(changeId: string, phase?: Phase): Promise<PhaseGate> {
     return this.request("GET", `/changes/${encodeURIComponent(changeId)}/phase-gate`, { params: { phase } });
+  }
+
+  // -- M3: phases projection, decisions overview, UI spec (T093/T094/T098) ----
+
+  /** The eight operator phases as the server derives them — the left column renders this, never a local state. */
+  getPhases(changeId: string): Promise<PhasesProjection> {
+    return this.request("GET", `/changes/${encodeURIComponent(changeId)}/phases`);
+  }
+
+  /** Decision cards over the ADR files of the change branch (status is derived server-side). */
+  getDecisions(changeId: string): Promise<DecisionsView> {
+    return this.request("GET", `/changes/${encodeURIComponent(changeId)}/decisions`);
+  }
+
+  /**
+   * «Запросить альтернативу» on one decision (T093): a rework order bound to
+   * that ADR. 201; 409 while another order of the phase is pending/in
+   * progress; 404 when the decision is unknown. Operator token.
+   */
+  requestAlternative(
+    changeId: string,
+    decisionId: string,
+    body: AlternativeRequest,
+    options?: { idempotencyKey?: string },
+  ): Promise<ReworkOrder> {
+    return this.request(
+      "POST",
+      `/changes/${encodeURIComponent(changeId)}/decisions/${encodeURIComponent(decisionId)}/alternative`,
+      { body, idempotencyKey: options?.idempotencyKey },
+    );
+  }
+
+  /** Scenarios, screens and links of the UI spec (T094); `errors` names files that did not parse. */
+  getUiSpec(changeId: string): Promise<UiSpecView> {
+    return this.request("GET", `/changes/${encodeURIComponent(changeId)}/ui`);
   }
 
   // -- artifacts (T082–T085, ADR-035) ----------------------------------------

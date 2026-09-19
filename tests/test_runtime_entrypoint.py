@@ -203,6 +203,7 @@ def test_run_advance_assembles_the_runtime_and_passes_the_bindings(
         "executor": runtime.executor,
         "revision_of": runtime.resolver,
         "gate_facts": runtime.facts,
+        "repository": runtime.repository,
     }
 
 
@@ -433,7 +434,7 @@ def test_cli_main_without_seams_keeps_the_deterministic_path(
     monkeypatch.setattr(runner_module, "run_advance_command", _fake_command)
 
     assert cli_main(["run", "advance", "--change-id", "chg-001"]) == EXIT_OK
-    assert seen == {"executor": None, "revision_of": None, "gate_facts": None}
+    assert seen == {"executor": None, "revision_of": None, "gate_facts": None, "repository": None}
 
 
 # --- product validate: the provisioning port (T070, ADR-030/ADR-031) ---------

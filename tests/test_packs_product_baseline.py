@@ -17,7 +17,7 @@ import yaml
 from dark_factory.changes.enums import GateStatus, RiskClass
 from dark_factory.context.sdd.baseline import current_revision, read_factory_manifest
 from dark_factory.context.sdd.errors import BaselineMismatchError
-from dark_factory.context.sdd.frontmatter import parse_frontmatter
+from dark_factory.context.sdd.frontmatter import parse_frontmatter, split_frontmatter
 from dark_factory.context.sdd.lifecycle import ChangeSetStatus
 from dark_factory.context.sdd.models import (
     CHANGE_ID_PATTERN,
@@ -75,11 +75,12 @@ def test_pack_manifest_declares_a_valid_pack() -> None:
         assert (PACK_ROOT / path).exists(), path
 
 
-def test_changelog_declares_the_initial_version() -> None:
+def test_changelog_declares_the_current_version_first() -> None:
     changelog = (PACK_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     version = str(_read_pack_manifest()["version"])
     assert f"## [{version}]" in changelog
-    assert version in changelog.split("## [", 1)[1]  # the initial entry is the first one
+    assert version in changelog.split("## [", 1)[1]  # the current entry is the first one
+    assert "## [0.1.0]" in changelog  # history is kept
 
 
 def test_baseline_template_is_valid() -> None:
@@ -163,3 +164,114 @@ def test_changeset_template_round_trips_through_adapter(tmp_path: Path) -> None:
     # must be rejected.
     with pytest.raises(BaselineMismatchError):
         asyncio.run(adapter.apply_delta(CHANGE_ID, expected_revision=actual))
+
+
+# --- design phase templates (M3, T092/T094, ADR-032/ADR-035) -----------------
+
+DESIGN = CHANGESET / "design"
+UI_STATES = ("loading", "empty", "error", "success", "access")
+UI_KIT_COMPONENTS = frozenset(
+    {
+        "Alert",
+        "Badge",
+        "Button",
+        "Card",
+        "Checkbox",
+        "Dialog",
+        "Input",
+        "Select",
+        "Spinner",
+        "Switch",
+        "Tabs",
+        "Textarea",
+        "ConfirmDialog",
+        "EmptyState",
+        "FormField",
+        "StatusBadge",
+        "Toolbar",
+    }
+)
+
+
+def _split(path: Path) -> tuple[dict[str, Any], str]:
+    raw, body = split_frontmatter(path.read_text(encoding="utf-8"))
+    assert raw is not None, path
+    document = parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert document is not None and document.change == CHANGE_ID, path
+    assert document.product == "example-product", path
+    assert document.status == "proposed", path
+    return raw, body
+
+
+def test_design_overview_template_follows_the_contract() -> None:
+    raw, body = _split(DESIGN / "overview.md")
+    assert raw["schema"] == "dark-factory.dev/design/v1"
+    assert raw["type"] == "design"
+    assert raw["id"] == "design:example-product:example-change"
+    assert raw["ui"] in {"required", "not_required"}
+    assert str(raw["ui_reason"]).strip()
+    for heading in ("## Обзор", "## Компоненты", "## Решения"):
+        assert heading in body, heading
+    assert "```mermaid" in body
+    assert "decisions/ADR-001-example.md" in body
+
+
+def test_adr_template_follows_the_contract() -> None:
+    path = DESIGN / "decisions" / "ADR-001-example.md"
+    raw, body = _split(path)
+    assert raw["schema"] == "dark-factory.dev/adr/v1"
+    assert raw["type"] == "adr"
+    assert re.fullmatch(r"adr:example-product:\d{4}", raw["id"])
+    assert raw["status"] == "proposed"  # acceptance is derived, never written
+    assert isinstance(raw["impact"], list) and raw["impact"]
+    headings = re.findall(r"^## (.+)$", body, flags=re.MULTILINE)
+    assert headings == ["Контекст", "Решение", "Обоснование", "Альтернативы", "Последствия"]
+    assert "| Вариант | Плюсы | Минусы | Почему не выбран |" in body
+
+
+def test_ui_scenario_template_follows_the_contract() -> None:
+    path = DESIGN / "ui" / "scenarios" / "SCN-001-example.md"
+    raw, body = _split(path)
+    assert raw["schema"] == "dark-factory.dev/ui-scenario/v1"
+    assert raw["type"] == "ui_scenario"
+    assert raw["id"] == "SCN-001"
+    steps = raw["steps"]
+    assert isinstance(steps, list) and steps
+    assert [step["id"] for step in steps] == [f"S{index}" for index in range(1, len(steps) + 1)]
+    for step in steps:
+        assert str(step["text"]).strip()
+        assert re.fullmatch(r"SCR-\d{3}", step["screen"])
+    assert body.strip()
+
+
+def test_ui_screen_template_follows_the_contract() -> None:
+    path = DESIGN / "ui" / "screens" / "SCR-001-example.md"
+    raw, body = _split(path)
+    assert raw["schema"] == "dark-factory.dev/ui-screen/v1"
+    assert raw["type"] == "ui_screen"
+    assert raw["id"] == "SCR-001"
+    assert raw["route"].startswith("/")
+    assert raw["preview_url"].startswith("/")
+    assert tuple(raw["states"]) == UI_STATES
+    assert all(str(raw["states"][state]).strip() for state in UI_STATES)
+    elements = raw["elements"]
+    assert isinstance(elements, list) and elements
+    ids = [element["id"] for element in elements]
+    assert len(set(ids)) == len(ids)
+    for element in elements:
+        assert re.fullmatch(r"EL-[a-z0-9-]+", element["id"]), element
+        assert element["kind"] and element["label"]
+        assert element["component"] in UI_KIT_COMPONENTS, element["component"]
+    for transition in raw["transitions"]:
+        assert re.fullmatch(r"SCR-\d{3}", transition["to"])
+        assert str(transition["trigger"]).strip()
+    assert body.strip()
+
+
+def test_ui_scenario_steps_reference_existing_screens() -> None:
+    screens = {
+        split_frontmatter(path.read_text(encoding="utf-8"))[0]["id"]  # type: ignore[index]
+        for path in (DESIGN / "ui" / "screens").glob("SCR-*.md")
+    }
+    scenario, _ = _split(DESIGN / "ui" / "scenarios" / "SCN-001-example.md")
+    assert {step["screen"] for step in scenario["steps"]} <= screens

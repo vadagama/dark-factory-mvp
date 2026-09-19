@@ -18,6 +18,7 @@ from dark_factory.changes.enums import (
     ChangeRequestStatus,
     Gate,
     GateStatus,
+    Phase,
     Provider,
     RiskClass,
     Route,
@@ -30,6 +31,7 @@ from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
     NextAction,
+    PhaseRoundAction,
     ReleaseAction,
     RequestApprovalAction,
     ReworkAction,
@@ -115,6 +117,8 @@ def _action_for(stage: Stage, action_type: NextActionType, route: Route) -> Next
             return WaitForCIAction(reason="pipeline running against the change request")
         case "rework":
             return ReworkAction(round=1, max_rounds=3, reason="blocker findings")
+        case "phase_round":
+            return PhaseRoundAction(phase=Phase.ARCHITECTURE, reason="requirements approved")
         case "request_approval":
             return RequestApprovalAction(gate=_APPROVAL_GATES[stage])
         case "merge":
@@ -198,6 +202,8 @@ def _successors(stage: Stage, action_type: NextActionType, route: Route) -> set[
             return {stage}  # the stage waits, then resumes in place
         case "rework":
             return {REWORK_TARGET[stage]}
+        case "phase_round":
+            return {stage}  # the next round re-enters the same stage (ADR-039)
         case "release" | "stop":
             return set()  # terminal
         case _:

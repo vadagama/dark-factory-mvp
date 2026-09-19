@@ -67,7 +67,10 @@ select = [
 # Guidance is operator-facing product text in Russian (ADR-033): Cyrillic letters are
 # not confusables here.
 "src/dark_factory/orchestration/guidance.py" = ["RUF001"]
+"src/dark_factory/orchestration/phases.py" = ["RUF001"]
+"src/dark_factory/orchestration/phase_gate.py" = ["RUF001"]
 "tests/test_orchestration_guidance.py" = ["RUF001"]
+"tests/test_orchestration_phases.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

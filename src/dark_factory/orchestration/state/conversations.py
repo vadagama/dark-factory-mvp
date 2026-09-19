@@ -29,12 +29,14 @@ from sqlalchemy.orm import Session
 from dark_factory.changes.conversations import Question, ReworkOrder, ReworkSummary
 from dark_factory.changes.enums import (
     CommentStatus,
+    DecisionOutcome,
     Phase,
     QuestionStatus,
     ReworkOrderStatus,
-    Role,
     Stage,
+    StageStatus,
 )
+from dark_factory.changes.findings import Decision
 from dark_factory.changes.keys import attempt_id as compose_attempt_id
 from dark_factory.changes.keys import operation_key as compose_operation_key
 from dark_factory.changes.next_action import (
@@ -44,13 +46,20 @@ from dark_factory.changes.next_action import (
     WaitForInputAction,
 )
 from dark_factory.changes.run import Change, ChangeRun, StageResult
+from dark_factory.orchestration.artifacts import ArtifactService
 from dark_factory.orchestration.conversations import ConversationInputs
-from dark_factory.orchestration.guidance import STAGE_PHASE
+from dark_factory.orchestration.phase_gate import SPECIFICATION_PHASES, decision_phase
+from dark_factory.orchestration.phases import (
+    next_specification_phase,
+    specification_phase,
+    stage_phase,
+)
 from dark_factory.orchestration.runner import FactsProvider, RunAdvance, RunAdvanceOutcome
-from dark_factory.orchestration.stages.agent import STAGE_ROLE
+from dark_factory.orchestration.stages.agent import role_of
 from dark_factory.orchestration.stages.gates import GateObservation
-from dark_factory.orchestration.state.change_store import DecisionRepository
 from dark_factory.orchestration.state.conversation_store import ConversationRepository
+from dark_factory.orchestration.state.phases import load_phase_facts
+from dark_factory.orchestration.state.run_store import RunStore
 
 __all__ = [
     "load_conversation_inputs",
@@ -58,6 +67,7 @@ __all__ = [
     "phase_of_stage",
     "question_id_for",
     "record_stage_outcome",
+    "waiting_phase_of",
     "with_store_facts",
 ]
 
@@ -65,8 +75,13 @@ QUESTION_ID_PREFIX: Final[str] = "q_"
 
 
 def phase_of_stage(stage: Stage) -> Phase:
-    """The operator phase a stage's discussion binds to (ADR-032 projection)."""
-    return STAGE_PHASE[stage]
+    """The first operator phase of a stage (ADR-032 projection).
+
+    The specification stage has three (ADR-039); callers that know the round
+    pass it explicitly — this is the fallback for a stage without rounds and
+    for records written before M3.
+    """
+    return stage_phase(stage)
 
 
 def question_id_for(result: StageResult, index: int) -> str:
@@ -82,14 +97,34 @@ def question_id_for(result: StageResult, index: int) -> str:
     return f"{QUESTION_ID_PREFIX}{digest}"
 
 
+def waiting_phase_of(session: Session, run: ChangeRun, stage: Stage) -> Phase | None:
+    """The phase of the ``waiting`` checkpoint of ``stage``, if the run has one (M3).
+
+    The latest result of the stage in the run history, when it is a waiting
+    checkpoint that names its round; ``None`` for a stage without rounds, a
+    pre-M3 record or a run whose latest result of the stage is final.
+    """
+    history = RunStore(session).load_history(run.id)
+    for result in reversed(history):
+        if result.stage is stage:
+            return result.phase if result.status is StageStatus.WAITING else None
+    return None
+
+
 def load_rework_orders(session: Session, change_id: str, phase: Phase) -> list[ReworkOrder]:
     """The rework orders of a phase in issue order — the loop history (T081)."""
     return ConversationRepository(session).list_rework_orders(change_id, phase=phase)
 
 
-def load_conversation_inputs(session: Session, change_id: str, stage: Stage) -> ConversationInputs:
-    """The discussion the next attempt of ``stage`` must take into account (ADR-034 p.5)."""
-    phase = phase_of_stage(stage)
+def load_conversation_inputs(
+    session: Session, change_id: str, stage: Stage, *, phase: Phase | None = None
+) -> ConversationInputs:
+    """The discussion the next attempt of ``stage`` must take into account (ADR-034 p.5).
+
+    ``phase`` is the round of the specification stage (M3); without it the
+    stage's first phase is read.
+    """
+    phase = phase if phase is not None else phase_of_stage(stage)
     repository = ConversationRepository(session)
     order = repository.active_rework_order(
         change_id, phase=phase
@@ -111,16 +146,28 @@ def load_conversation_inputs(session: Session, change_id: str, stage: Stage) -> 
 
 
 def with_store_facts(
-    gate_facts: FactsProvider | None, session: Session, change_id: str
+    gate_facts: FactsProvider | None,
+    session: Session,
+    change_id: str,
+    *,
+    artifacts: ArtifactService | None = None,
 ) -> FactsProvider | None:
     """A facts provider that adds the store's decisions and rework orders to the observation.
 
     The provider's own observation (head, merge state, reviews) stays the base;
     the decisions recorded through the API (``POST /changes/{id}/approvals``)
-    are folded in **only when bound to the observed head** — a decision about
-    another revision authorizes nothing here (ADR-009 p.7) — and the rework
-    orders of the stage's phase are attached in issue order. Without a
+    are folded in **only when bound to the current revision** — a decision
+    about another revision authorizes nothing here (ADR-009 p.7) — and the
+    rework orders of the stage's phase are attached in issue order. Without a
     provider nothing is observed and nothing is added: the wait stays parked.
+
+    On the specification stage (M3, ADR-039) the current revision of a
+    decision is the revision of *its phase's* artifacts — read through
+    ``artifacts`` — so the architecture round does not stale the requirements
+    approval; a ``waived`` decision is about the phase and binds to no
+    revision. The observation also names the phase the stage is in and the
+    round that follows it, so the resolution knows whether the stage ends or
+    re-enters for the next round.
     """
     if gate_facts is None:
         return None
@@ -129,21 +176,50 @@ def with_store_facts(
         observation = gate_facts(run, stage, change)
         if observation is None:
             return None
-        decisions = DecisionRepository(session).list_for_change(change_id)
+        facts = load_phase_facts(session, change, artifacts=artifacts)
+        phase: Phase | None = None
+        next_phase: Phase | None = None
+        if stage is Stage.SPECIFICATION:
+            # The round the parked attempt belongs to is the one its decision
+            # settles: the checkpoint names it (``StageResult.phase``). Only
+            # a checkpoint without a phase (pre-M3) falls back to the first
+            # unsettled phase — reading the decisions alone here made a
+            # requirements approval recorded *after* the round look like the
+            # architecture phase's business, and the wait never resolved
+            # (found on the M3 live run).
+            phase = waiting_phase_of(session, run, stage) or specification_phase(
+                run.route, facts.decisions, facts.revisions
+            )
+            next_phase = next_specification_phase(run.route, phase)
+
+        def current_revision_of(decision: Decision) -> str | None:
+            decided = decision_phase(decision)
+            if stage is Stage.SPECIFICATION and decided in SPECIFICATION_PHASES:
+                known = facts.revisions.get(decided)
+                if known is not None or artifacts is not None:
+                    return known
+            return observation.head_sha
+
         bound = tuple(
             decision
-            for decision in decisions
-            if decision.commit_sha is not None
-            and observation.head_sha is not None
-            and decision.commit_sha == observation.head_sha
+            for decision in facts.decisions
+            if decision.outcome is DecisionOutcome.WAIVED
+            or (
+                decision.commit_sha is not None
+                and decision.commit_sha == current_revision_of(decision)
+            )
         )
-        orders = load_rework_orders(session, change_id, phase_of_stage(stage))
+        orders = load_rework_orders(
+            session, change_id, phase if phase is not None else phase_of_stage(stage)
+        )
         return GateObservation(
             head_sha=observation.head_sha,
             merged=observation.merged,
             pipeline_status=observation.pipeline_status,
             approvals=(*observation.approvals, *bound),
             rework_orders=tuple(orders),
+            phase=phase,
+            next_phase=next_phase,
         )
 
     return observe
@@ -160,7 +236,7 @@ def _store_questions(
             change_id=change_id,
             phase=phase,
             run_id=result.run_id,
-            asked_by=STAGE_ROLE.get(result.stage, Role.PRODUCT),
+            asked_by=role_of(result.stage, result.phase),
         )
         stored.append(repository.add_question(question)[0])
     return stored
@@ -198,7 +274,7 @@ def record_stage_outcome(session: Session, advance: RunAdvance, *, change_id: st
     if advance.outcome is RunAdvanceOutcome.REPLAYED or advance.decision is None:
         return
     result = advance.result
-    phase = phase_of_stage(result.stage)
+    phase = result.phase if result.phase is not None else phase_of_stage(result.stage)
     repository = ConversationRepository(session)
     action = advance.decision.action
     if isinstance(action, ReworkAction):

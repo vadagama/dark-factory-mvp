@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from dark_factory.changes.conversations import ArtifactAnchor, Comment
 from dark_factory.changes.enums import AnchorState, AnswerKind, Gate, Phase
@@ -41,9 +41,25 @@ class ApprovalRequest(BaseModel):
 
     gate: Gate
     outcome: Literal["approved", "rejected", "waived"]
-    subject_revision: str = Field(min_length=1)
+    subject_revision: str | None = Field(default=None, min_length=1)
+    """The revision the decision binds to. Required for ``approved`` and ``rejected``;
+    a ``waived`` phase may have no artifacts at all (a UI-free change, T097), so a
+    waiver binds to the revision when one is given and stays unbound otherwise —
+    a waiver is about the phase, not about a document (ADR-032 p.5)."""
     comment: str | None = None
     expected_state_revision: int | None = None
+    phase: Phase | None = None
+    """The phase the decision approves (M3, ADR-039); default — the phase of ``gate``.
+
+    Required in practice for ``architecture``, which shares the ``specification``
+    gate with ``requirements``; must agree with ``gate`` (422 otherwise).
+    """
+
+    @model_validator(mode="after")
+    def _revision_unless_waived(self) -> "ApprovalRequest":
+        if self.outcome != "waived" and self.subject_revision is None:
+            raise ValueError("subject_revision is required for an approved or rejected decision")
+        return self
 
 
 class RunSummary(BaseModel):
@@ -301,6 +317,24 @@ class ReworkOrderRequest(BaseModel):
     question_ids: list[str] = Field(default_factory=list)
     instruction: str | None = None
     expected_revision: str | None = None
+
+
+class DecisionAlternativeRequest(BaseModel):
+    """Body of ``POST /changes/{change_id}/decisions/{decision_id}/alternative`` (T093).
+
+    «Запросить альтернативу»: a rework order of the architecture phase about one
+    ADR. ``instruction`` is required and non-blank — the agent must know what to
+    reconsider; ``comment_ids`` carries the operator's remarks along.
+    """
+
+    instruction: str = Field(min_length=1)
+    comment_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _instruction_is_not_blank(self) -> "DecisionAlternativeRequest":
+        if not self.instruction.strip():
+            raise ValueError("instruction must not be blank")
+        return self
 
 
 # --- artifacts (T082-T085, ADR-035) ----------------------------------------------------

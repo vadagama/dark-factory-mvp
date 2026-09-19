@@ -22,7 +22,7 @@ export interface NextStepProps {
  */
 export function NextStep({ guidance, onPerform, busy = false }: NextStepProps) {
   const { primary } = guidance;
-  const action = parseGuidanceApi(primary.api, guidance.subject);
+  const action = parseGuidanceApi(primary.api, guidance.subject, { cli: primary.cli, label: primary.label });
   const performable = action !== null;
 
   return (

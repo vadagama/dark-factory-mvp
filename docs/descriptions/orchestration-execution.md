@@ -83,13 +83,16 @@ Exit-коды (константы `cli/main.py`): `EXIT_OK = 0`, `EXIT_ERROR = 1
 | `input_revision` | `str \| None` | `--input-revision` или sha256 снапшота |
 | `required_gates` | `frozenset[Gate]` | `rules.gates.required_gates(route, stage)` |
 | `budget` | `BudgetSnapshot` | в CLI — дефолтный `BudgetSnapshot()` |
+| `phase` | `Phase \| None` | M3, ADR-039: операторская фаза, раундом которой является попытка стадии `specification`; драйвер `run advance` вычисляет её из решений и ревизий фаз (`state/phases.py: current_change_phase`), одиночный `stage run` не задаёт (`None`) |
 
 ```python
 def build_context(*, change: Change, stage: Stage, route: Route, run_id: str,
                   input_revision: str | None, budget: BudgetSnapshot,
                   attempt_number: int = 1, risk_class: RiskClass | None = None,
                   implementation_contract: ImplementationContract | None = None,
-                  enforce_contract_entry: bool = True) -> StageContext
+                  enforce_contract_entry: bool = True,
+                  conversation: ConversationInputs | None = None,
+                  phase: Phase | None = None) -> StageContext
 ```
 
 `implementation_contract` — контракт запуска, которому принадлежит попытка (T-063); `enforce_contract_entry` говорит, применяется ли к контексту гейт входа в Construction. Драйвер (`advance_run`) собирает run-backed контекст и кладёт в него `run.implementation_contract`, поэтому `None` там — действительно отсутствующий контракт и гейт гейтит (fail-closed); одиночный `factory stage run` передаёт `enforce_contract_entry=False`, потому что у снапшота нет поля контракта и нет запуска.
@@ -231,6 +234,7 @@ API:
 
 - `ContextBundle` (`context/bundle.py`, `schema_version = 1`) — версионируемый набор источников с провенансом: `ContextSource(kind, location, revision, content_hash, retrieved_at)`; `bundle_hash` — sha256 над канонической сериализацией отсортированных идентичностей `(kind, location, revision, content_hash)`, `retrieved_at` в хеш не входит; `build_bundle` отвергает точный дубликат источника через `ValueError`. Доставляется агентам как `TaskEnvelope.bundle_hash` (коллекция — `KnowledgePort.collect`), в `stages/` не входит.
 - `HarnessPort` (`ports/protocols.py`, DTO в `ports/agents.py`): `async run_stage(envelope: TaskEnvelope) -> AgentResult` и `health()`. `TaskEnvelope` (frozen): `schema_version=1`, `change_id`, `run_id`, `stage`, `role`, `instruction`, `skill_id: str | None = None`, `bundle_hash: str | None = None`; `AgentResult` (frozen): `ok: bool`, `output: str = ""`, `usage: Usage | None = None`. По контракту порта «deterministic stage steps bypass it» — `stages/` harness не вызывает.
+- Роль и скилл вызова выбирает `stages/agent.py`: `STAGE_ROLE`/`STAGE_SKILL` по стадии (`specification` и `planning` — `product` со `spec-authoring`/`change-request`, `construction` — `develop`/`implementation`, `review_verification` — `quality`/`code-review`, `release` — `ci_cd` без скилла), а с M3 `PHASE_ROLE`/`PHASE_SKILL` по `StageContext.phase` перекрывают их для раундов проектирования (`architecture` → `architect`/`solution-design`, `interface` → `design`/`ui-spec`; `role_of(stage, phase)` / `skill_of(stage, phase)`, ADR-039 п.1). Фаза без записи в `PHASE_ROLE` (например, `requirements`) остаётся у роли стадии.
 
 ## 9. Граничные случаи
 

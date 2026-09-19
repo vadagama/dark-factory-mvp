@@ -58,6 +58,7 @@ from dark_factory.ports import (
     EvidenceFile,
     ExecutionPort,
     ExecutionResult,
+    UnsafeWorkspacePathError,
     WorkspaceHandle,
     WorkspaceRequest,
 )
@@ -99,8 +100,9 @@ class WorkspaceError(RuntimeError):
     """A workspace operation failed at the boundary; the message stays value-free (ADR-009)."""
 
 
-class UnsafeWorkspacePath(ValueError):
-    """A port call addressed a path outside the isolated workspace."""
+class UnsafeWorkspacePath(UnsafeWorkspacePathError):
+    """A port call addressed a path outside the isolated workspace (a port error, so the
+    role tools can translate it into a model-facing result)."""
 
 
 def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:

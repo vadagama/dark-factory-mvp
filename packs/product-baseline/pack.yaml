@@ -6,7 +6,7 @@
 schema: dark-factory.dev/pack/v1
 id: pack:product-baseline
 name: product-baseline
-version: 0.1.0
+version: 0.2.0
 description: Product Baseline and ChangeSet templates of Native SDD Core (ADR-020) — the .factory/ skeleton, baseline node examples and the canonical ChangeSet layout for product repositories.
 contents:
   - path: README.md

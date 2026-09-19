@@ -19,6 +19,7 @@ from dark_factory.changes.enums import (
     ChangeSource,
     FindingSeverity,
     FindingStatus,
+    Phase,
     Provider,
     RiskClass,
     Route,
@@ -298,6 +299,11 @@ class StageResult(BaseModel):
     """The agent's "what changed / what remains" report after a rework round (T081)."""
     conversation_errors: list[str] = []
     """Malformed entries of the agent's structured blocks — observable, never dropped silently."""
+    phase: Phase | None = None
+    """The operator phase this attempt was a round of (M3, ADR-039): ``architecture`` or
+    ``interface`` for the design rounds of the specification stage. ``None`` (every record
+    written before M3, and every stage without rounds) reads as the phase of the stage
+    (``guidance.STAGE_PHASE``). Additive and optional, schema version unchanged."""
     produced_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("status")

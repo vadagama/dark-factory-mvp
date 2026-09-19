@@ -15,7 +15,8 @@ product-baseline/
     ├── change.yaml    # манифест, точка входа
     ├── intent.md      # без frontmatter (§7: вспомогательный документ)
     ├── spec/          # delta.yaml + артефакты дельты
-    ├── design/
+    ├── design/        # overview.md (ui: required|not_required), decisions/ADR-NNN-*.md,
+    │                  # ui/scenarios/SCN-NNN-*.md, ui/screens/SCR-NNN-*.md (M3)
     ├── tasks/
     ├── verification/
     └── evidence/

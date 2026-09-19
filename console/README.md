@@ -4,7 +4,8 @@ Operator web console of the Software Dark Factory (task T036, delivery per
 [ADR-021](../docs/adr/ADR-021-console-mvp-delivery.md); information
 architecture per ADR-037: milestone M1 — tasks T075/T076, milestone M2 — the
 ChangeSet workspace, the requirements phase and the markdown editor, tasks
-T088–T090). Products are the index; each product and change shows the
+T088–T090; milestone M3 — the architecture and interface phases and the UI
+gate, tasks T095–T097). Products are the index; each product and change shows the
 server-computed «Следующий шаг» (ADR-033); a new change is created from the
 product through an agent-assisted intake and then lives in the ChangeSet
 workspace (`/changes/:id`). The T036 screens (change card at `/changes/:id/card`,
@@ -13,8 +14,9 @@ moved under `/service`.
 
 Stack: **React 19 + TypeScript (strict) + Vite 8**, Radix primitives, plain CSS
 design tokens, `react-router` v7, `react-markdown` + `remark-gfm` for the
-rendered document modes of the editor. No Tailwind, no react-query/axios (see
-"Deliberate simplifications").
+rendered document modes of the editor, `mermaid` (lazy chunk) for the diagrams
+of the design overview. No Tailwind, no react-query/axios (see "Deliberate
+simplifications").
 
 ## Run
 
@@ -53,7 +55,7 @@ Global navigation (ADR-037): `Продукты · Требует внимани�
 | `/` | Products: readiness badge, repository, number of changes, «Добавить продукт» form | `GET /products`, `GET /changes` (grouped by `product_id`); `POST /products` |
 | `/products/:id` | Product page: header, **NextStep**, «Обзор», «Изменения», «База», «Доставки»; «Новая фича», «Проверить репозиторий» | `GET /products/{id}`, `/products/{id}/guidance`, `/changes?product_id=`; `POST /products/{id}/validate` |
 | `/products/:id/new-change` | Intake (T076): free text → «Помоги сформулировать» → brief fields, scenario, spend limit, risk class → «Создать задачу» | `GET /products/{id}`; `POST /briefs/formulate`; `POST /changes` |
-| `/changes/:id` | **ChangeSet workspace** (T088, ADR-037 p.4): top panel (title, id, current phase + state, budget fact/limit/forecast, blockers), left column of phases Ф0–Ф7 with state, open counts and iteration, centre tabs `Результат · Изменения · Проверки · История` (or the markdown editor of an opened artifact), collapsible right context panel (fragment discussion, comments, rework orders), bottom decision panel = **NextStep** with one CTA + the approval form | `GET /changes/{id}`, `/guidance`, `/approvals`, `/runs/{id}`, `/changes/{id}/questions`, `/comments`, `/rework-orders`, `/phase-gate?phase=`, `/artifacts`, `/artifacts/{path}`; `POST /changes/{id}/approvals`, `/questions/{qid}/answer`, `/comments`, `/comments/{cid}/close|reopen`, `/rework-orders`, `/artifact-views/{path}`; `PUT /artifacts/{path}`, `PUT|DELETE /artifact-drafts/{path}`; `GET /artifact-versions/{path}`, `/artifact-diff/{path}` |
+| `/changes/:id` | **ChangeSet workspace** (T088, ADR-037 p.4): top panel (title, id, current phase + state, budget fact/limit/forecast, blockers), left column of phases Ф0–Ф7 from the server projection (state, open counts, iteration), centre tabs `Результат · Изменения · Проверки · История` (or the markdown editor of an opened artifact), collapsible right context panel (fragment discussion, comments, rework orders), bottom decision panel = **NextStep** with one CTA + the approval form | `GET /changes/{id}`, `/guidance`, `/approvals`, `/runs/{id}`, `/changes/{id}/phases`, `/questions`, `/comments`, `/rework-orders`, `/phase-gate?phase=`, `/decisions`, `/ui`, `/artifacts`, `/artifacts/{path}`; `POST /changes/{id}/approvals`, `/questions/{qid}/answer`, `/comments`, `/comments/{cid}/close|reopen`, `/rework-orders`, `/decisions/{did}/alternative`, `/artifact-views/{path}`; `PUT /artifacts/{path}`, `PUT|DELETE /artifact-drafts/{path}`; `GET /artifact-versions/{path}`, `/artifact-diff/{path}` |
 | `/changes/:id/card` | M1 change card: **NextStep**, scenario/limit/product line, «Бриф» with inline editor, runs, stages, evidence, usage, blockers, stage chain (SC-007) | `GET /changes/{id}`, `/changes/{id}/guidance`, `/changes/{id}/trace`, `/runs/{id}`, `/runs/{id}/evidence`, `/runs/{id}/findings`; `PUT /changes/{id}/brief` |
 | `/changes/:id/gates` | Gates, open blocker findings, approvals history, version-bound approval form | `GET /runs/{id}/gates`, `/runs/{id}/findings`, `/changes/{id}/approvals`; `POST /changes/{id}/approvals` |
 | `/changes` | Legacy flat changes list + minimal intake (no longer the index) | `GET /changes`, `GET /runs`; `POST /changes` |
@@ -70,25 +72,34 @@ Global navigation (ADR-037): `Продукты · Требует внимани�
 ### ChangeSet workspace (T088, ADR-037)
 
 `src/pages/ChangeSetPage.tsx`. The selected phase defaults to the phase of the
-server `Guidance` (`done` → the last column); the left column projects each
-phase's state from server facts only (`lib/artifacts.ts::phaseState`:
-`approved` / `decision` / `active` / `rework` / `passed` / `pending` from the
-guidance phase and the `phase-gate` read model) and shows the open
-questions/comments counts and the iteration (`rework_rounds_used`). Budget
+server `Guidance` (`done` → the last column); the left column renders `GET
+/changes/{id}/phases` (T098) as is — the server state of every phase
+(`pending` / `active` / `needs_decision` / `approved` / `waived` /
+`not_required` / `stale` / `done` / `blocked`, labelled in
+`lib/artifacts.ts::PHASE_VIEW_STATE_LABELS`), the `state_reason` as the
+tooltip, the open questions/comments counts and the `iteration`. No phase
+state is computed in the Console; when the projection cannot be read the
+column says so instead of inventing one. Budget
 «факт» is the sum of the recorded run costs, «лимит» the intake limit,
 «прогноз» is honestly `—` until execution data exists (M4). Blockers are the
 `Guidance.blockers` count. No percentage of completion is rendered anywhere
 (ADR-037 p.6; the unit and e2e tests assert it).
 
 Phases: **Ф0 Инициатива** shows the brief (the M1 `BriefSection`), **Ф1
-Требования** is the T089 phase (below); Ф2–Ф7 are placeholders naming their
-milestone («появится в M3/M4/M5»). Tabs: «Результат» — the phase content;
-«Изменения» — the artifact tree (`GET /changes/{id}/artifacts`; `revision ===
-null` = no branch yet, distinct from an empty branch; 503 = the contour has no
+Требования** is the T089 phase, **Ф2 Архитектура** and **Ф3 Интерфейс** are
+the M3 phases (below); Ф4–Ф7 are placeholders naming their milestone
+(«появится в M4/M5»). Tabs: «Результат» — the phase content; «Изменения» —
+the artifact tree (`GET /changes/{id}/artifacts`; `revision === null` = no
+branch yet, distinct from an empty branch; 503 = the contour has no
 repository, shown as the server detail); «Проверки» — the `PhaseGate`
 (available/closed with every reason and its unblocking action, counts, rework
-rounds used of max, every approval with `current` / `stale` / `unbound`);
-«История» — decisions, rework orders, runs.
+rounds used of max, the phase `checks[]` — `planned` is «запланировано на
+исполнении» in the warning tone and never green — the `ui_requirement` with
+«Подтвердить пропуск UI», and every approval with `current` / `stale` /
+`unbound` and its phase; a waiver travels without `subject_revision` when the
+phase has no revision — it is about the phase, not a document, and an
+`unbound` waiver is in effect); «История» — decisions with their phase, rework
+orders (with the decisions they are about), runs.
 
 The bottom decision panel renders **only** `Guidance` through `NextStep`.
 `lib/guidance.ts` maps the new server `api` strings: `POST
@@ -97,8 +108,15 @@ The bottom decision panel renders **only** `Guidance` through `NextStep`.
 a mandatory reason; 409 shows the server detail and offers a reload), `POST
 /changes/{id}/rework-orders` → the rework form in the context panel, `GET
 /changes/{id}/questions?status=open` → scroll to the questions, `GET
-/changes/{id}/artifacts` → the «Изменения» tab. `POST /runs/{id}/withdraw`
-and run advance stay CLI until M4.
+/changes/{id}/artifacts` → the «Изменения» tab. M3: the same approval
+endpoint is refined by the server's own hints — `cli` `approve … --phase
+architecture|interface` fixes the phase of the approval (`ApprovalRequest.phase`
+is always sent, since the `specification` gate serves two phases), the label
+«Подтвердить пропуск UI» becomes `waive_phase` (the form opens prefilled with
+`waived` and the architect's `ui_requirement.reason`, gate `ui`, phase
+`interface`), `POST /changes/{id}/decisions/{did}/alternative` or the label
+«Запросить альтернативу» scrolls to the decisions overview. `POST
+/runs/{id}/withdraw` and run advance stay CLI until M4.
 
 ### Requirements phase (T089, ADR-034)
 
@@ -124,6 +142,49 @@ questions preselected, instruction) → `POST /rework-orders` bound to the tree
 revision; 409/422 show the server detail. Each order shows its status and,
 when finished, the agent summary «Что изменил / Что осталось» and the
 comments it claims to have addressed.
+
+### Architecture phase (T095/T093)
+
+`src/components/ArchitecturePhase.tsx`. «Обзор проектирования» renders
+`design/overview.md` read-only (react-markdown + GFM); a ```` ```mermaid ````
+fence becomes a diagram through `MermaidBlock`, which loads the `mermaid`
+package lazily (`import("mermaid")` → its own chunks, fetched only when a
+diagram is on screen) and always keeps the source on screen until the SVG
+lands — a diagram that fails to render shows the error and the source, never
+an empty box. «Открыть в редакторе» opens the same document in the
+`MarkdownEditor`. «Обзор решений» is `GET /changes/{id}/decisions`: one card
+per ADR with the derived status (`proposed` / `accepted` / `needs_revision` /
+`superseded`, Russian labels, distinct tones), the frontmatter status when it
+differs, impact chips, proposal / rationale / alternatives (table) /
+consequences, «Открыть ADR» (editor pane) and «Запросить альтернативу» — an
+inline form on the card (instruction + optional open comments of the phase)
+that posts `POST /decisions/{id}/alternative`; 409 (another order of the
+phase is pending) and 404 show the server text on the card, nothing leaves
+the screen. A card with `pending_alternative` shows the order state instead
+of the button; a finished order (`decision_ids` ∋ id) shows the agent summary
+«Что изменил / Что осталось» and `affected_artifacts` open the editor.
+`errors[]` of the read model is a warning. Approval is the guidance CTA
+(`approve_phase` with `phase: architecture`), not a button in the phase.
+
+### Interface phase (T096)
+
+`src/components/InterfacePhase.tsx`. `GET /changes/{id}/ui` rendered as the
+sub-tabs `Сценарии / Экраны / Связи`, «Сценарии» first: scenario cards with
+their steps, each step's screen chip switches to the gallery and focuses the
+screen card. «Экраны» is a grid of text cards: title, id, route, purpose,
+the five states `loading / empty / error / success / access` in a fixed
+order — a state that is absent or has no description is the explicit
+warning chip «<state>: не описано» — the elements (id, kind, label, UIKit
+component) with a «Комментарий» per element that selects `screen.path +
+EL-*` as the fragment for the context panel composer (the comment is posted
+by the panel with the anchor), and «Открыть на dev» only when a preview URL
+exists (`lib/artifacts.ts::previewHref`: absolute as is, relative joined to
+`dev_url`; otherwise the honest «dev-окружение появится после доставки»).
+A `detached` comment on an element is marked «привязка потеряна» on the
+element; one whose element disappeared is listed under the elements with the
+same mark — never re-attached (ADR-034 p.1). «Связи» is the table from → to
+with trigger and condition. `errors[]` is a warning; no branch / empty spec
+/ 503 are said in words.
 
 ### Markdown editor (T090, ADR-035)
 
@@ -290,10 +351,18 @@ and the test runs in the plain pytest CI job.
   workspace, phases Ф2–Ф7 are placeholders naming their milestone; the
   artifact routes answer 503 on a contour without a repository and the
   Console shows that detail instead of inventing documents.
-- **Phase gates are fetched per phase** (`GET /phase-gate?phase=` × 8) to fill
-  the left column; a failed one leaves that row without counts. Artifacts are
-  not polled (they are git reads): they are re-read after every write and on
-  the manual reload paths.
+- **Phase gates are fetched per phase** (`GET /phase-gate?phase=` × 8) for the
+  «Проверки» tab and the approval form; the left column itself is `GET
+  /changes/{id}/phases`. Artifacts are not polled (they are git reads): they
+  are re-read after every write and on the manual reload paths; the documents
+  read up front are the `spec`, `design` and `ui` nodes (anchors for the
+  composer, the design overview) — ADRs come through the decisions read model.
+- **Decisions and the UI spec are read by the phase components** (`useAsync`
+  keyed on the workspace reload nonce), so `GET /decisions` and `GET /ui` are
+  only requested while that phase is on screen.
+- **`mermaid` is the one heavy dependency of M3** and it is a lazy chunk:
+  the workspace bundle stays as before; the diagram engine is fetched the
+  first time a ```` ```mermaid ```` fence is rendered. In vitest it is mocked.
 - **Diff is rendered as the server's `unified` text** in a `<pre>`; a
   side-by-side «Сравнение» mode is deferred by ADR-035 p.8.
 - **Selection anchors are found inside the selection only** — no DOM range

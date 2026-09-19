@@ -19,7 +19,11 @@ from sqlalchemy import Engine, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dark_factory.changes.enums import (
+    DecisionOutcome,
+    DecisionSource,
+    Gate,
     GateStatus,
+    Phase,
     Provider,
     Route,
     RunStatus,
@@ -27,9 +31,15 @@ from dark_factory.changes.enums import (
     StageStatus,
     StopOutcome,
 )
-from dark_factory.changes.findings import GateResult
+from dark_factory.changes.findings import Decision, GateResult
 from dark_factory.changes.keys import operation_key
-from dark_factory.changes.next_action import ExecuteStageAction, StopAction
+from dark_factory.changes.next_action import (
+    ExecuteStageAction,
+    PhaseRoundAction,
+    ReworkAction,
+    StopAction,
+    WaitForInputAction,
+)
 from dark_factory.changes.run import Change, InvalidStatusTransition, StageResult
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.cli.main import EXIT_OK, EXIT_WAITING, RunAdvanceArgs, main
@@ -43,7 +53,9 @@ from dark_factory.orchestration.runner import (
     deterministic_stage_executor,
 )
 from dark_factory.orchestration.stages.context import StageContext
-from dark_factory.orchestration.state.change_store import ChangeRepository
+from dark_factory.orchestration.stages.gates import GateObservation
+from dark_factory.orchestration.state.change_store import ChangeRepository, DecisionRepository
+from dark_factory.orchestration.state.conversations import waiting_phase_of, with_store_facts
 from dark_factory.orchestration.state.engine import session_scope
 from dark_factory.orchestration.state.models import (
     Attempt,
@@ -74,7 +86,7 @@ TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
 # The head is the revision under test only by convention; ``MIGRATION_PARENT`` is
 # the revision below the runner-state migration whose columns are asserted, so it
 # stays two revisions back once a newer head is added (T065).
-MIGRATION_HEAD = "0006_conversations"
+MIGRATION_HEAD = "0008_stage_created_at"
 MIGRATION_PARENT = "0003_route_risk_classes"
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 
@@ -680,3 +692,181 @@ def test_the_cli_attaches_an_approved_contract_to_an_existing_run(
     assert main(["run", "status", "--run-id", run_id, "--json"]) == EXIT_OK
     record = json.loads(capsys.readouterr().out)
     assert record["implementation_contract"] == json.loads(contract.model_dump_json())
+
+
+def _rework_executor(context: StageContext) -> StageResult:
+    """Scripted executor whose attempt asks for a rework round of its own stage."""
+    return StageResult(
+        stage=context.stage,
+        run_id=context.run_id,
+        change_id=context.change.id,
+        attempt_number=context.attempt_number,
+        input_revision=context.input_revision,
+        status=StageStatus.FAILED,
+        next_action=ReworkAction(round=1, max_rounds=3, reason="operator send-back"),
+        produced_at=NOW,
+    )
+
+
+def test_a_rework_round_persists_the_spent_budget_and_a_new_stage_operation(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """The budget the flow spent is durable (FR-008/FR-016) and the round is a new operation."""
+    change = make_change()
+    _seed_change(session_factory, change)
+    run_id = _create_run(session_factory, change)
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return "head-after-round-1"
+
+    with session_scope(session_factory) as session:
+        advance = advance_run(
+            store=RunStore(session),
+            change=change,
+            run_id=run_id,
+            owner_id="test-owner",
+            executor=_rework_executor,
+            revision_of=revision_of,
+            now=NOW,
+        )
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+
+    with session_scope(session_factory) as session:
+        loaded = RunStore(session).load(run_id)
+    assert loaded is not None
+    assert loaded.budget.used_rework_rounds == 1, "the spent round survives the transaction"
+    assert [(s.status, s.input_revision) for s in loaded.stages] == [
+        (StageStatus.FAILED, RunStore.stage_input_revision(change)),
+        (StageStatus.PENDING, "head-after-round-1"),
+    ]
+
+
+def _parked_requirements_executor(context: StageContext) -> StageResult:
+    """Scripted executor: the requirements round produced its work and parks for the human."""
+    return StageResult(
+        stage=context.stage,
+        run_id=context.run_id,
+        change_id=context.change.id,
+        attempt_number=context.attempt_number,
+        input_revision=context.input_revision,
+        status=StageStatus.WAITING,
+        next_action=WaitForInputAction(reason="requirements produced"),
+        phase=Phase.REQUIREMENTS,
+        produced_at=NOW,
+    )
+
+
+def test_the_second_operation_of_a_stage_owns_its_checkpoint_and_names_its_round(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Two operations of one stage share attempt number 1 (M3, ADR-039).
+
+    Found on the M3 live run: the result lookup keyed by ``(run, stage, attempt)``
+    returned the *first* round's result for the second round, the driver read
+    the second round's waiting checkpoint as absent and re-executed it. And the
+    approval of the parked round, recorded after the round, must resolve *that*
+    round — the observation's phase is the checkpoint's, not the first unsettled
+    phase the decisions now read as.
+    """
+    change = make_change()
+    _seed_change(session_factory, change)
+    run_id = _create_run(session_factory, change)
+    head_after_round_1 = "head-after-round-1"
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return head_after_round_1
+
+    with session_scope(session_factory) as session:
+        first = advance_run(
+            store=RunStore(session),
+            change=change,
+            run_id=run_id,
+            owner_id="test-owner",
+            executor=_rework_executor,
+            revision_of=revision_of,
+            now=NOW,
+        )
+    assert first.outcome is RunAdvanceOutcome.ADVANCED
+
+    with session_scope(session_factory) as session:
+        second = advance_run(
+            store=RunStore(session),
+            change=change,
+            run_id=run_id,
+            owner_id="test-owner",
+            executor=_parked_requirements_executor,
+            revision_of=revision_of,
+            now=NOW,
+        )
+    assert second.outcome is RunAdvanceOutcome.WAITING
+    assert second.result.input_revision == head_after_round_1
+    assert second.result.attempt_number == 1, "a new operation starts at attempt 1 again"
+
+    # The checkpoint of the second operation is the committed result of *its* operation.
+    with session_scope(session_factory) as session:
+        store = RunStore(session)
+        committed = store.committed_result(
+            run_id=run_id,
+            stage=Stage.SPECIFICATION,
+            attempt_number=1,
+            input_revision=head_after_round_1,
+        )
+        assert committed is not None and committed.status is StageStatus.WAITING
+        parked = store.load(run_id)
+        assert parked is not None
+        assert waiting_phase_of(session, parked, Stage.SPECIFICATION) is Phase.REQUIREMENTS
+        # Without facts the checkpoint replays; nothing is re-executed.
+        replayed = advance_run(
+            store=store,
+            change=change,
+            run_id=run_id,
+            owner_id="test-owner",
+            executor=_parked_requirements_executor,
+            revision_of=revision_of,
+            now=NOW,
+        )
+        assert replayed.outcome is RunAdvanceOutcome.REPLAYED
+
+    # The operator approves the parked round after it ran; the decisions alone now read
+    # as the architecture phase, but the observation names the checkpoint's round.
+    with session_scope(session_factory) as session:
+        DecisionRepository(session).record(
+            Decision(
+                id="dec-req",
+                gate=Gate.SPECIFICATION,
+                outcome=DecisionOutcome.APPROVED,
+                decided_by=DecisionSource.HUMAN,
+                decided_at=NOW,
+                commit_sha=head_after_round_1,
+                phase=Phase.REQUIREMENTS,
+            ),
+            change_id=change.id,
+        )
+
+    def provider_facts(run: object, stage: Stage, change: Change) -> GateObservation:
+        return GateObservation(head_sha=head_after_round_1, merged=False, pipeline_status=None)
+
+    with session_scope(session_factory) as session:
+        store = RunStore(session)
+        facts = with_store_facts(provider_facts, session, change.id)
+        assert facts is not None
+        loaded = store.load(run_id)
+        assert loaded is not None
+        observation = facts(loaded, Stage.SPECIFICATION, change)
+        assert observation is not None
+        assert observation.phase is Phase.REQUIREMENTS
+        assert observation.next_phase is Phase.ARCHITECTURE
+        resolved = advance_run(
+            store=store,
+            change=change,
+            run_id=run_id,
+            owner_id="test-owner",
+            executor=_parked_requirements_executor,
+            revision_of=revision_of,
+            gate_facts=facts,
+            now=NOW,
+        )
+    assert resolved.outcome is RunAdvanceOutcome.ADVANCED
+    assert isinstance(resolved.result.next_action, PhaseRoundAction)
+    assert resolved.result.next_action.phase is Phase.ARCHITECTURE
+    assert resolved.decision is not None and resolved.decision.next_stage is Stage.SPECIFICATION

@@ -52,6 +52,7 @@ CONTRACT_STAGE_RESULT_FIELDS = {
     "questions",
     "rework_summary",
     "conversation_errors",
+    "phase",
 }
 
 

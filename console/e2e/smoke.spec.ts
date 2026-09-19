@@ -8,7 +8,17 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { E2E_HEAD, E2E_SPEC_CONTENT, E2E_SPEC_PATH, E2E_TOKEN, TOKEN_STORAGE_KEY, stubApi } from "./fixtures/api";
+import {
+  E2E_DEV_URL,
+  E2E_HEAD,
+  E2E_SCR1_PATH,
+  E2E_SPEC_CONTENT,
+  E2E_SPEC_PATH,
+  E2E_TOKEN,
+  E2E_UI_NOT_REQUIRED_REASON,
+  TOKEN_STORAGE_KEY,
+  stubApi,
+} from "./fixtures/api";
 
 test.beforeEach(async ({ page }) => {
   await stubApi(page);
@@ -394,8 +404,10 @@ test("changeset: the workspace shell — panels, phases, tabs, one CTA, no perce
   await page.getByTestId("tab-checks").click();
   await expect(page.getByTestId("phase-gate")).toContainText("закрыт");
   await expect(page.getByTestId("phase-gate-counts")).toContainText("0 из 3");
-  await page.getByTestId("phase-architecture").click();
-  await expect(page.getByTestId("phase-placeholder")).toContainText("появится в M3");
+  // Ф2/Ф3 are real workspaces since M3; the placeholders start at Ф4.
+  await page.getByTestId("phase-plan").click();
+  await expect(page.getByTestId("phase-placeholder")).toContainText("появится в M4");
+  await expect(page.getByTestId("phase-plan")).toContainText("не начата");
 
   const text = await page.locator("body").innerText();
   expect(text).not.toMatch(/\d+\s?%/);
@@ -509,4 +521,182 @@ test("editor: modes keep the content verbatim, the draft autosaves, the commit g
   await expect(page.getByTestId("editor-history")).toContainText("spec: initial requirements");
   await page.getByTestId("editor-show-diff").click();
   await expect(page.getByTestId("editor-diff")).toContainText("+- AC-3: the response carries Retry-After.");
+});
+
+// --- M3: architecture and interface phases, UI gate (T095–T097) --------------------
+
+test("architecture: decisions overview, ADR as document, request alternative inline", async ({ page }) => {
+  await seedToken(page);
+  const { posts } = await stubApi(page, { phase: "architecture" });
+  await page.goto("/changes/chg_demo_003");
+  await expect(page.getByRole("heading", { name: "Add rate limiting" })).toBeVisible();
+
+  // The left column comes from GET /phases: the earlier phase is approved, this one waits for a decision.
+  await expect(page.getByTestId("phase-architecture")).toHaveAttribute("aria-current", "true");
+  await expect(page.getByTestId("phase-architecture")).toContainText("ждёт решения");
+  await expect(page.getByTestId("phase-architecture")).toHaveAttribute("title", "Гейт открыт: решение оператора");
+  await expect(page.getByTestId("phase-requirements")).toContainText("согласована");
+  await expect(page.getByTestId("workspace-phase")).toContainText("Архитектура");
+
+  // The design overview renders with its mermaid diagram (lazy chunk, real engine in Chromium).
+  const overview = page.getByTestId("design-overview");
+  await expect(overview).toContainText("Лимит проверяется в middleware");
+  await expect(page.getByTestId("mermaid-rendered").locator("svg")).toBeVisible();
+  await expect(overview).toContainText("Компоненты");
+
+  // Decision cards with the derived status, alternatives and impact.
+  const first = page.getByTestId("decision-adr:prd_demo_002:0001");
+  await expect(first).toContainText("Token bucket per client");
+  await expect(first).toContainText("предложено");
+  await expect(page.getByTestId("alternatives-adr:prd_demo_002:0001")).toContainText("двойной всплеск на границе окна");
+  await expect(page.getByTestId("impact-adr:prd_demo_002:0001")).toContainText("public_api");
+
+  // The ADR opens as a document in the editor pane, with protected frontmatter keys.
+  await page.getByTestId("open-adr-adr:prd_demo_002:0001").click();
+  await expect(page.getByTestId("artifact-editor-pane")).toContainText("ADR-001-token-bucket.md");
+  await expect(page.getByTestId("editor-properties")).toContainText("защищено");
+  await expect(page.getByTestId("editor-rendered")).toContainText("Всплески трафика роняют API");
+  await page.getByTestId("editor-back").click();
+
+  // «Запросить альтернативу» is an inline form on the card: nothing leaves the screen.
+  const second = page.getByTestId("decision-adr:prd_demo_002:0002");
+  await second.getByTestId("alternative-toggle-adr:prd_demo_002:0002").click();
+  await page.getByTestId("alternative-instruction-adr:prd_demo_002:0002").fill("Рассмотреть счётчики в памяти процесса.");
+  await page.getByTestId("alternative-submit-adr:prd_demo_002:0002").click();
+  await expect(second).toContainText("Поручение rw_e2e_1 создано");
+  await expect(page.getByTestId("pending-adr:prd_demo_002:0002")).toContainText("ожидает раунда");
+  await expect(second).toContainText("требует пересмотра");
+  await expect(page.getByTestId("decisions-overview")).toBeVisible();
+  const alternative = posts.find((post) => decodeURIComponent(post.pathname) === "/api/v1/changes/chg_demo_003/decisions/adr:prd_demo_002:0002/alternative");
+  expect(alternative).toBeDefined();
+  expect(alternative?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(alternative?.body).toEqual({ instruction: "Рассмотреть счётчики в памяти процесса.", comment_ids: [] });
+
+  // A second order on the phase is refused with the server text, shown on the card.
+  await page.getByTestId("alternative-toggle-adr:prd_demo_002:0001").click();
+  await page.getByTestId("alternative-instruction-adr:prd_demo_002:0001").fill("Sliding window?");
+  await page.getByTestId("alternative-submit-adr:prd_demo_002:0001").click();
+  await expect(first).toContainText("rework order 'rw_e2e_1' of phase architecture is pending");
+
+  // The guidance follows the order; the history shows the phase of the recorded (rejected) decision.
+  await expect(page.getByTestId("next-step")).toContainText("запрошена альтернатива");
+  await page.getByTestId("tab-history").click();
+  await expect(page.getByTestId("history-decisions")).toContainText("Архитектура");
+  await expect(page.getByTestId("history-decisions")).toContainText("rejected");
+  await expect(page.getByTestId("history-tab")).toContainText("решения: adr:prd_demo_002:0002");
+
+  const text = await page.locator("body").innerText();
+  expect(text).not.toMatch(/\d+\s?%/);
+});
+
+test("interface: scenarios by default, screen gallery with states and dev link, comment on an element with a detached mark", async ({ page }) => {
+  await seedToken(page);
+  const { posts } = await stubApi(page, { phase: "interface" });
+  await page.goto("/changes/chg_demo_003");
+  await expect(page.getByTestId("phase-interface")).toHaveAttribute("aria-current", "true");
+  await expect(page.getByTestId("phase-interface")).toContainText("ждёт решения");
+  await expect(page.getByTestId("phase-architecture")).toContainText("согласована");
+
+  // «Сценарии» opens first; a step chip jumps to its screen in the gallery.
+  await expect(page.getByTestId("ui-tab-scenarios")).toHaveAttribute("aria-selected", "true");
+  const scenario = page.getByTestId("scenario-SCN-001");
+  await expect(scenario).toContainText("Клиент превышает лимит");
+  await expect(page.getByTestId("step-SCN-001-S1")).toContainText("Открыть страницу лимитов");
+  await page.getByTestId("step-SCN-001-S2").getByRole("button", { name: "SCR-002" }).click();
+  await expect(page.getByTestId("ui-tab-screens")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("screen-SCR-002")).toHaveClass(/screen-card--focused/);
+
+  // The gallery: five states, a missing one is an explicit «не описано»; dev link vs honest text.
+  const gallery = page.getByTestId("ui-gallery");
+  await expect(gallery.getByRole("article")).toHaveCount(2);
+  await expect(page.getByTestId("state-SCR-001-error")).toContainText("Сервис лимитов недоступен");
+  await expect(page.getByTestId("state-SCR-002-error")).toContainText("ошибка: не описано");
+  await expect(page.getByTestId("state-SCR-002-success")).toContainText("Таблица отказов");
+  const devLink = page.getByTestId("dev-link-SCR-001");
+  await expect(devLink).toHaveAttribute("href", `${E2E_DEV_URL}/limits`);
+  await expect(devLink).toHaveAttribute("target", "_blank");
+  await expect(devLink).toHaveAttribute("rel", "noreferrer");
+  await expect(page.getByTestId("dev-missing-SCR-002")).toContainText("dev-окружение появится после доставки");
+  await expect(page.getByTestId("element-SCR-001-EL-save")).toContainText("Button");
+
+  // The seeded remark points at an element the designer removed: the lost anchor is explicit, in the gallery and in the context panel.
+  await expect(page.getByTestId("orphaned-SCR-001")).toContainText("привязка потеряна");
+  await expect(page.getByTestId("orphaned-SCR-001")).toContainText("cmt_e2e_detached (EL-old-banner)");
+  await expect(page.getByTestId("comment-cmt_e2e_detached")).toContainText("якорь потерян");
+
+  // «Комментарий» on an element prefills the composer with the screen and the EL anchor; the POST carries them.
+  await page.getByTestId("comment-SCR-001-EL-limit-input").click();
+  await expect(page.getByTestId("context-fragment")).toContainText("EL-limit-input");
+  await page.getByTestId("comment-body").fill("Подсказать единицы измерения.");
+  await page.getByTestId("comment-submit").click();
+  // The seeded detached remark is cmt_e2e_1 in this variant's numbering; the new one is the second.
+  await expect(page.getByTestId("comment-cmt_e2e_2")).toContainText("Подсказать единицы измерения.");
+  await expect(page.getByTestId("element-SCR-001-EL-limit-input")).toContainText("замечаний: 1");
+  const comment = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/comments");
+  expect(comment?.body).toEqual({ artifact: E2E_SCR1_PATH, anchor_id: "EL-limit-input", revision: E2E_HEAD, body: "Подсказать единицы измерения.", phase: "interface" });
+
+  // Links: from → to with trigger and condition.
+  await page.getByTestId("ui-tab-links").click();
+  await expect(page.getByTestId("link-SCR-001->SCR-002")).toContainText("клик «История»");
+  await expect(page.getByTestId("link-SCR-001->SCR-002")).toContainText("есть отказы");
+
+  // Approving the interface records the decision on gate ui with the phase; the column follows.
+  await expect(page.getByTestId("next-step-primary")).toHaveText("Согласовать интерфейс");
+  await page.getByTestId("next-step-primary").click();
+  await expect(page.getByTestId("approval-revision")).toHaveText(E2E_HEAD.slice(0, 12));
+  await page.getByTestId("approval-submit").click();
+  await expect(page.getByTestId("approval-recorded")).toContainText("Решение записано");
+  const approval = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/approvals");
+  expect(approval?.body).toMatchObject({ gate: "ui", phase: "interface", outcome: "approved", subject_revision: E2E_HEAD });
+  await expect(page.getByTestId("phase-interface")).toContainText("согласована");
+});
+
+test("ui gate: planned checks are not green; backend-only shows Не требуется and waives with a reason", async ({ page }) => {
+  // A UI change: axe / visual regression are planned for execution, never a green status before it.
+  await seedToken(page);
+  await stubApi(page, { phase: "interface" });
+  await page.goto("/changes/chg_demo_003");
+  await page.getByTestId("tab-checks").click();
+  await expect(page.getByTestId("phase-gate")).toContainText("фаза: Интерфейс");
+  await expect(page.getByTestId("check-axe")).toContainText("запланировано на исполнении");
+  await expect(page.getByTestId("check-visual_regression")).toContainText("запланировано на исполнении");
+  await expect(page.getByTestId("phase-gate-checks").locator(".badge--success")).toHaveCount(0);
+  await expect(page.getByTestId("phase-gate-ui-requirement")).toContainText("UI требуется");
+  await expect(page.getByTestId("waive-ui")).toHaveCount(0);
+
+  // A backend-only change: the architect proposed not_required; the operator confirms with a waived decision.
+  const { posts } = await stubApi(page, { phase: "interface", backendOnly: true });
+  await page.goto("/changes/chg_demo_003");
+  await expect(page.getByTestId("phase-interface")).toContainText("ждёт решения");
+  await expect(page.getByTestId("phase-interface")).toHaveAttribute("title", "Архитектор предложил: UI не требуется — подтвердите пропуск");
+  await expect(page.getByTestId("interface-empty")).toContainText("UI-спеки на ветке пока нет");
+  await expect(page.getByTestId("next-step-primary")).toHaveText("Подтвердить пропуск UI");
+
+  await page.getByTestId("tab-checks").click();
+  const requirement = page.getByTestId("phase-gate-ui-not-required");
+  await expect(requirement).toContainText("Не требуется");
+  await expect(requirement).toContainText(`UI не требуется: ${E2E_UI_NOT_REQUIRED_REASON}`);
+  await expect(requirement).toContainText("источник: архитектор");
+  await expect(page.getByTestId("check-axe")).toContainText("не требуется");
+  await expect(page.getByTestId("phase-gate-checks").locator(".badge--success")).toHaveCount(0);
+
+  // No interface artifacts → no revision: the waiver is still possible and travels without subject_revision (M3).
+  await expect(page.getByTestId("phase-gate")).toContainText("ревизия —");
+  await expect(page.getByTestId("waive-ui")).toBeEnabled();
+  await page.getByTestId("waive-ui").click();
+  await expect(page.getByTestId("phase-gate")).toContainText("Пропуск подтверждён оператором.");
+  await expect(page.getByTestId("phase-gate-approvals")).toContainText("waived");
+  await expect(page.getByTestId("phase-gate-approvals")).toContainText("без ревизии");
+  await expect(page.getByTestId("phase-gate-approvals")).toContainText("Интерфейс");
+  const waiver = posts.find((post) => post.pathname === "/api/v1/changes/chg_demo_003/approvals");
+  expect(waiver?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(waiver?.body).toEqual({
+    gate: "ui",
+    phase: "interface",
+    outcome: "waived",
+    comment: E2E_UI_NOT_REQUIRED_REASON,
+    expected_state_revision: 1,
+  });
+  await expect(page.getByTestId("phase-interface")).toContainText("пропущена");
+  await expect(page.getByTestId("next-step")).toContainText("пропущена с основанием");
 });

@@ -56,7 +56,14 @@ from dark_factory.agents.profiles.registry import get_profile
 from dark_factory.agents.skills.manifest import SkillManifest
 from dark_factory.agents.skills.registry import get_skill
 from dark_factory.changes.conversations import QuestionDraft, ReworkSummary
-from dark_factory.changes.enums import ChangeRequestStatus, Role, Stage, StageStatus, StopOutcome
+from dark_factory.changes.enums import (
+    ChangeRequestStatus,
+    Phase,
+    Role,
+    Stage,
+    StageStatus,
+    StopOutcome,
+)
 from dark_factory.changes.keys import effect_key, operation_key
 from dark_factory.changes.next_action import (
     StopAction,
@@ -117,6 +124,39 @@ The stage is the unit of work and the skill is the unit of instruction, so the
 mapping lives with the executor: the calling side owns the "skill → envelope
 prompt" link (docs/descriptions/agents.md §6).
 """
+
+PHASE_ROLE: Final[Mapping[Phase, Role]] = {
+    Phase.ARCHITECTURE: Role.ARCHITECT,
+    Phase.INTERFACE: Role.DESIGN,
+}
+"""Role of a design round of the specification stage (M3, ADR-039, ADR-007).
+
+The requirements round keeps the stage's role (``product``); the architecture
+round is the architect's (ADR + design overview), the interface round the
+designer's (scenarios and screens). A phase absent here falls back to
+``STAGE_ROLE``.
+"""
+
+PHASE_SKILL: Final[Mapping[Phase, str]] = {
+    Phase.ARCHITECTURE: "solution-design",
+    Phase.INTERFACE: "ui-spec",
+}
+"""Skill of a design round (M3): the instruction of the round's call."""
+
+
+def role_of(stage: Stage, phase: Phase | None) -> Role:
+    """The role that runs ``stage`` in ``phase`` (the round's role, else the stage's)."""
+    if phase is not None and phase in PHASE_ROLE:
+        return PHASE_ROLE[phase]
+    return STAGE_ROLE[stage]
+
+
+def skill_of(stage: Stage, phase: Phase | None) -> str | None:
+    """The skill id of ``stage`` in ``phase``, or ``None`` when nothing is mapped."""
+    if phase is not None and phase in PHASE_SKILL:
+        return PHASE_SKILL[phase]
+    return STAGE_SKILL.get(stage)
+
 
 DEFAULT_TARGET_BRANCH: Final[str] = "main"
 """Base branch a change request targets (ADR-011: merge — human decision on ``main``)."""
@@ -211,12 +251,12 @@ class AgentStageExecutor:
             # and every publish effect — the gate belongs to Construction, so a
             # retry of this stop never re-runs the completed outgoing stage.
             return self._blocked(context, entry_reason)
-        role = STAGE_ROLE[context.stage]
+        role = role_of(context.stage, context.phase)
         try:
             profile = self._profile_of(role)
         except ProfileNotFoundError as exc:
             return self._blocked(context, f"stage {context.stage.value}: {exc}")
-        skill_id = STAGE_SKILL.get(context.stage)
+        skill_id = skill_of(context.stage, context.phase)
         if skill_id is None:
             return self._blocked(
                 context,
@@ -322,16 +362,17 @@ class AgentStageExecutor:
             from_revision=context.input_revision or "",
             idempotency_key=effect_key(identity, _EFFECT_BRANCH, branch),
         )
+        round_suffix = f"/{context.phase.value}" if context.phase is not None else ""
         commit_sha = await self._repository.publish_commit(
             repository,
             branch,
             changes,
-            message=f"factory: {context.change.id} ({context.stage.value})",
+            message=f"factory: {context.change.id} ({context.stage.value}{round_suffix})",
             idempotency_key=effect_key(identity, _EFFECT_COMMIT, branch),
         )
         description = self._descriptions.render(
             context,
-            role=STAGE_ROLE[context.stage],
+            role=role_of(context.stage, context.phase),
             source_branch=branch,
             target_branch=self._target_branch,
             commit_sha=commit_sha,
@@ -363,7 +404,7 @@ class AgentStageExecutor:
                 artifact_type=ArtifactKind.CHANGE_REQUEST.value,
                 uri=change_request.url or f"{repository.slug}#{change_request.number}",
                 revision=commit_sha,
-                producer=STAGE_ROLE[context.stage].value,
+                producer=role_of(context.stage, context.phase).value,
             )
         ]
         return artifacts, change_request
@@ -411,6 +452,8 @@ class AgentStageExecutor:
             f"Stage: {context.stage.value}",
             f"Attempt: {context.attempt_number}",
         ]
+        if context.phase is not None:
+            lines.append(f"Phase: {context.phase.value}")
         if context.change.description:
             lines.append(f"Description: {context.change.description}")
         brief = context.change.brief
@@ -538,6 +581,7 @@ class AgentStageExecutor:
             questions=list(questions),
             rework_summary=rework_summary,
             conversation_errors=list(conversation_errors),
+            phase=context.phase,
         )
 
     def _branch(self, context: StageContext) -> str:

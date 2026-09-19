@@ -48,6 +48,7 @@ from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
     NextAction,
+    PhaseRoundAction,
     ReleaseAction,
     RequestApprovalAction,
     ReworkAction,
@@ -87,6 +88,7 @@ type NextActionType = Literal[
     "wait_for_input",
     "wait_for_ci",
     "rework",
+    "phase_round",
     "request_approval",
     "merge",
     "release",
@@ -95,8 +97,12 @@ type NextActionType = Literal[
 """Discriminator values of the closed ``NextAction`` union (ADR-005 p.2)."""
 
 FLOW_TRANSITIONS: Final[dict[Stage, frozenset[NextActionType]]] = {
+    # ``phase_round`` (M3, ADR-039): the specification stage runs requirements →
+    # architecture → interface as rounds of one stage; the approval of a
+    # non-final phase re-enters the stage for the next round without spending
+    # a rework round. No other stage has rounds.
     Stage.SPECIFICATION: frozenset(
-        {"execute_stage", "wait_for_input", "rework", "request_approval", "stop"}
+        {"execute_stage", "wait_for_input", "rework", "phase_round", "request_approval", "stop"}
     ),
     Stage.PLANNING: frozenset(
         {"execute_stage", "wait_for_input", "wait_for_ci", "rework", "request_approval", "stop"}
@@ -197,7 +203,7 @@ def expected_result_status(action: NextAction) -> StageStatus:
     engine sees it. The mapping stays total for union exhaustiveness.
     """
     match action:
-        case ExecuteStageAction() | MergeAction() | ReleaseAction():
+        case ExecuteStageAction() | MergeAction() | ReleaseAction() | PhaseRoundAction():
             return StageStatus.SUCCEEDED
         case WaitForInputAction() | WaitForCIAction() | RequestApprovalAction():
             return StageStatus.WAITING
@@ -300,6 +306,8 @@ def _handle_action(
             return _park(stage_run, run, result.next_action)
         case ReworkAction(round=requested_round):
             return _handle_rework(run, stage_run, result, requested_round)
+        case PhaseRoundAction():
+            return _handle_phase_round(run, stage_run, result)
         case MergeAction():
             return _handle_merge(run, stage_run, result, now, merge_context)
         case ReleaseAction():
@@ -366,7 +374,16 @@ def _handle_rework(
     run.budget.used_rework_rounds += 1
     stage_run.apply_status(StageStatus.FAILED)
     rework_target = REWORK_TARGET[result.stage]
-    _start(run, rework_target)
+    if rework_target is result.stage:
+        # A rework round of the same stage is a *new operation*, not a retry of
+        # the failed attempt: the agent must publish a new commit, and the
+        # publish effects are keyed by the operation (run, stage, input
+        # revision). Re-using the failed row would key the round by the old
+        # revision and replay the previous commit — the reworked files would
+        # never reach the branch (found on the M3 live run, T091 step 4).
+        _restart(run, rework_target)
+    else:
+        _start(run, rework_target)
     return _decision(stage_run, run, result.next_action, rework_target)
 
 
@@ -435,6 +452,20 @@ def _park(stage_run: StageRun, run: ChangeRun, action: NextAction) -> FlowDecisi
     stage_run.apply_status(StageStatus.WAITING)
     run.apply_status(RunStatus.WAITING)
     return _decision(stage_run, run, action, None)
+
+
+def _handle_phase_round(run: ChangeRun, stage_run: StageRun, result: StageResult) -> FlowDecision:
+    """Complete the round and re-enter the same stage for the next phase (M3, ADR-039).
+
+    A phase round is progress inside the stage, not a send-back: no rework
+    round is spent and no gate is checked — the gates of the stage pass when
+    its last phase is settled (``stages.gates._resolve_human_gated``). The
+    finished round's stage run succeeds and a fresh operation of the same
+    stage starts, keyed by the revision the driver pins for it.
+    """
+    stage_run.apply_status(StageStatus.SUCCEEDED)
+    _restart(run, result.stage)
+    return _decision(stage_run, run, result.next_action, result.stage)
 
 
 def _first_stop_reason(*reasons: Callable[[], str | None]) -> str | None:
@@ -706,6 +737,19 @@ def _start(run: ChangeRun, stage: Stage) -> StageRun:
     active = [s for s in run.stages if s.stage == stage and s.status not in STAGE_TERMINAL_STATUSES]
     if active:
         return active[-1]
+    stage_run = StageRun(id=_stage_run_id(run, stage), stage=stage)
+    run.stages.append(stage_run)
+    return stage_run
+
+
+def _restart(run: ChangeRun, stage: Stage) -> StageRun:
+    """Start a *fresh* occurrence of ``stage`` even when an earlier one is not terminal.
+
+    ``_start`` re-uses a non-terminal (retryable) run so a blocked attempt is
+    retried as the same operation; a rework round or a phase round of the same
+    stage is a new operation instead — the driver pins it by the revision the
+    previous round advanced and keys its effects anew.
+    """
     stage_run = StageRun(id=_stage_run_id(run, stage), stage=stage)
     run.stages.append(stage_run)
     return stage_run

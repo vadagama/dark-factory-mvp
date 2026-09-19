@@ -61,6 +61,7 @@ from dark_factory.ports.errors import (
     PortError,
     ProvisioningOperationUnsupportedError,
     RunNotFoundError,
+    UnsafeWorkspacePathError,
 )
 from dark_factory.ports.events import DomainEvent, EventType
 from dark_factory.ports.protocols import (
@@ -159,6 +160,7 @@ __all__ = [
     "TaskEnvelope",
     "TelemetryPort",
     "TrackerPort",
+    "UnsafeWorkspacePathError",
     "Usage",
     "WorkflowEnginePort",
     "WorkspaceHandle",

@@ -307,7 +307,7 @@ class RunStore:
         (``orchestration.idempotency.REPLAYABLE_RESULT_STATUSES``), not the
         store's — this method only reads.
         """
-        result = self._results.get(run_id, stage, attempt_number)
+        result = self._results.get(run_id, stage, attempt_number, input_revision=input_revision)
         if result is None or result.input_revision != input_revision:
             return None
         return result
@@ -315,16 +315,18 @@ class RunStore:
     def _load_stages(self, execution_id: str, route: Route) -> list[StageRun]:
         """Stage rows of the run as domain stage runs, in route order.
 
-        Ordered by the position of the stage on the route and then by row id:
-        the flow reads the last non-terminal occurrence of a stage, and an S1
-        run has at most one occurrence per stage.
+        Ordered by the position of the stage on the route, then by creation
+        time and row id: the flow and the driver read the *last* occurrence of
+        a stage as the one in flight, so a rework round or a phase round (a new
+        operation of the same stage, M3) must sort after the round it follows —
+        ordering by the operation key alone would be arbitrary there.
         """
         sequence = {stage: index for index, stage in enumerate(route_profile(route).stages)}
         rows = sorted(
             self._session.execute(
                 select(StageRow).where(StageRow.execution_id == execution_id)
             ).scalars(),
-            key=lambda row: (sequence[Stage(row.stage)], row.id),
+            key=lambda row: (sequence[Stage(row.stage)], row.created_at, row.id),
         )
         return [
             StageRun(
@@ -610,6 +612,11 @@ class RunStore:
         # persisted revision by one. Keep them equal so the reconstructed run
         # reports the revision the domain reached, never a lower one.
         execution.state_revision = max(execution.state_revision, run.state_revision)
+        # The flow spends the budget in memory (rework rounds, tokens, cost —
+        # FR-008/FR-016); persist it with the decision, or the next advance
+        # reads the counters the run started with (found on the M3 live run:
+        # a rework round left ``used_rework_rounds`` at 0).
+        execution.budget = run.budget.model_dump(mode="json")
         self._outbox.publish(
             OutboxEventDraft(
                 event_id=_stage_completed_event_id(

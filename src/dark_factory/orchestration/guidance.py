@@ -19,8 +19,11 @@ here, the operator's step is the output (ADR-033 p.5).
 M1 scope (T074): the product states, the intake states of a change and the run
 states of a single run — including the waiting reason, ``blocked``, a spent
 limit and exhausted rework rounds. The phase is projected from the stage per
-ADR-032; the split of architecture and interface inside ``specification`` is
-T098 and stays ``requirements`` here.
+ADR-032; since M3 (T098, ADR-039) the split of architecture and interface
+inside ``specification`` is computed by ``orchestration.phases`` and handed in
+as ``phase`` — this module renders it (the approval labels, «Запросить
+альтернативу», «Подтвердить пропуск UI») and never derives it from the stage
+alone when the caller knows better.
 """
 
 from decimal import Decimal
@@ -34,6 +37,7 @@ from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
     NextAction,
+    PhaseRoundAction,
     ReleaseAction,
     RequestApprovalAction,
     ReworkAction,
@@ -293,6 +297,8 @@ def change_guidance(
     run: ChangeRun | None,
     waiting_on: NextAction | None = None,
     phase_gate: PhaseGate | None = None,
+    phase: GuidancePhase | None = None,
+    waiting_phase: GuidancePhase | None = None,
 ) -> Guidance:
     """Next step for a change (T074): intake → requirements → run states.
 
@@ -304,6 +310,10 @@ def change_guidance(
     with it, a parked human wait renders the approval step with its blockers
     (open blocking questions, a pending rework round, stale approvals) and a
     running rework round names itself; without it the M1 rendering stands.
+    ``phase`` (M3) is the phase the caller computed from the decisions and the
+    phase revisions (``orchestration.phases.current_phase``): with it the
+    design rounds of the specification stage render as «Архитектура» and
+    «Интерфейс»; without it the stage's first phase stands (the M2 reading).
     """
     subject = GuidanceSubject(kind="change", id=change.id)
     blockers: list[GuidanceBlocker] = []
@@ -327,7 +337,9 @@ def change_guidance(
 
     if run is None:
         return _intake_guidance(change, subject, product, blockers)
-    return _run_guidance(change, subject, run, waiting_on, blockers, phase_gate)
+    return _run_guidance(
+        change, subject, run, waiting_on, blockers, phase_gate, phase, waiting_phase
+    )
 
 
 def _intake_guidance(
@@ -415,8 +427,10 @@ def _run_guidance(
     waiting_on: NextAction | None,
     blockers: list[GuidanceBlocker],
     phase_gate: PhaseGate | None = None,
+    known_phase: GuidancePhase | None = None,
+    waiting_phase: GuidancePhase | None = None,
 ) -> Guidance:
-    phase = phase_of_run(run)
+    phase = known_phase if known_phase is not None else phase_of_run(run)
     phase_label = PHASE_LABEL[phase]
     status = GuidanceAction(
         label="Показать состояние",
@@ -501,6 +515,28 @@ def _run_guidance(
                 after=f"После завершения: результат фазы «{phase_label}» и следующий шаг.",
             )
         case RunStatus.WAITING:
+            if (
+                waiting_phase is not None
+                and known_phase is not None
+                and waiting_phase is not known_phase
+                and isinstance(waiting_on, RequestApprovalAction | WaitForInputAction)
+            ):
+                # M3 (ADR-039): the parked round is already settled — its
+                # approval was recorded after the round — and the decisions
+                # read as the next phase. Nothing is asked of the operator
+                # here but the advance that starts the next round.
+                return _next_round_guidance(
+                    change,
+                    subject,
+                    phase,
+                    phase,
+                    f"Фаза «{PHASE_LABEL[waiting_phase]}» согласована; следующий раунд ждёт"
+                    " запуска.",
+                    blockers,
+                    status,
+                    advance,
+                    withdraw,
+                )
             if phase_gate is not None and isinstance(
                 waiting_on, RequestApprovalAction | WaitForInputAction
             ):
@@ -654,9 +690,42 @@ def _approval_guidance(
         cli=f"factory change artifacts --id {change.id} list",
         api=f"GET /changes/{change.id}/artifacts",
     )
+    alternative = GuidanceAction(
+        label="Запросить альтернативу",
+        cli=f"factory change alternative --id {change.id} --decision <adr-id> --instruction …",
+        api=f"POST /changes/{change.id}/decisions/{{decision_id}}/alternative",
+    )
+    waive_ui = GuidanceAction(
+        label="Подтвердить пропуск UI",
+        cli=f"factory change approve --id {change.id} --phase interface --waive --comment …",
+        api=f"POST /changes/{change.id}/approvals",
+    )
+    ui_not_required = (
+        phase is GuidancePhase.INTERFACE
+        and gate.ui_requirement is not None
+        and not gate.ui_requirement.required
+        and gate.ui_requirement.source == "agent"
+        and not gate.waived
+    )
     for reason in gate.reasons:
         blockers.insert(
             0, GuidanceBlocker(what=reason.what, who=GuidanceActor.OPERATOR, how=reason.how)
+        )
+    if ui_not_required:
+        # T097: the architect proposed a UI-free change; the human confirms the
+        # skip (ADR-018 — an agent never closes a human gate), with the reason
+        # prefilled from the proposal. Exactly one primary, as everywhere.
+        reason_text = gate.ui_requirement.reason if gate.ui_requirement is not None else None
+        return Guidance(
+            subject=subject,
+            phase=phase,
+            headline="Фаза «Интерфейс» не требуется: подтвердите пропуск",
+            why=f"Архитектор указал ui: not_required — {reason_text or 'основание не указано'}."
+            " Проверки axe и визуальной регрессии не проводятся.",
+            primary=waive_ui,
+            secondary=(rework, artifacts, withdraw),
+            blockers=tuple(blockers),
+            after="После подтверждения: план (Implementation Contract и задачи).",
         )
     counts = (
         f"вопросов без ответа: {gate.open_questions} (блокирующих {gate.blocking_questions});"
@@ -671,23 +740,39 @@ def _approval_guidance(
     stale = sum(1 for view in gate.approvals if view.state == "stale")
     if stale:
         counts += f"; прежних согласований неактуально: {stale}"
-    if gate.approved:
+    phase_secondary: tuple[GuidanceAction, ...] = (
+        (alternative,) if phase is GuidancePhase.ARCHITECTURE else ()
+    )
+    if gate.approved or gate.waived:
         return Guidance(
             subject=subject,
             phase=phase,
-            headline=f"Фаза «{phase_label}» согласована на текущей ревизии",
-            why=f"Решение записано на ревизии {gate.current_revision}; {counts}.",
-            primary=advance.model_copy(update={"label": "Продолжить после согласования"}),
-            secondary=(rework, artifacts, status),
+            headline=(
+                f"Фаза «{phase_label}» согласована на текущей ревизии"
+                if gate.approved
+                else f"Фаза «{phase_label}» пропущена с основанием"
+            ),
+            why=(
+                f"Решение записано на ревизии {gate.current_revision}; {counts}."
+                if gate.approved
+                else f"Пропуск фазы записан оператором; {counts}."
+            ),
+            primary=advance.model_copy(
+                update={
+                    "label": "Продолжить после согласования",
+                    "cli": f"factory run advance --change-id {change.id}",
+                }
+            ),
+            secondary=(*phase_secondary, rework, artifacts, status),
             blockers=tuple(blockers),
-            after=f"Следующая фаза после «{phase_label}».",
+            after=_after_phase(phase),
         )
     if not gate.available:
         first = gate.reasons[0].what if gate.reasons else "гейт недоступен"
         secondary: list[GuidanceAction] = []
         if gate.blocking_questions:
             secondary.append(questions)
-        secondary.extend((rework, artifacts, withdraw))
+        secondary.extend((*phase_secondary, rework, artifacts, withdraw))
         primary = (
             questions
             if gate.blocking_questions
@@ -718,10 +803,26 @@ def _approval_guidance(
         headline=f"Фаза «{phase_label}» готова к согласованию",
         why=f"{_sentence(waiting_on.reason or 'агент подготовил результат')}; {counts}.",
         primary=approve,
-        secondary=(rework, artifacts, withdraw),
+        secondary=(*phase_secondary, rework, artifacts, withdraw),
         blockers=tuple(blockers),
-        after=f"После согласования: следующая фаза после «{phase_label}».",
+        after=_after_phase(phase),
     )
+
+
+_AFTER_PHASE: Final[dict[GuidancePhase, str]] = {
+    GuidancePhase.REQUIREMENTS: "После согласования: архитектура и ADR (раунд архитектора).",
+    GuidancePhase.ARCHITECTURE: "После согласования: интерфейс — сценарии и экраны (раунд"
+    " дизайнера); для backend-only изменения — подтверждение пропуска UI.",
+    GuidancePhase.INTERFACE: "После согласования: план (Implementation Contract и задачи).",
+    GuidancePhase.PLAN: "После утверждения: автономное исполнение.",
+    GuidancePhase.DEMONSTRATION: "После принятия: merge и доставка в dev.",
+    GuidancePhase.DELIVERY: "После доставки: baseline подтверждён, задача закрыта.",
+}
+
+
+def _after_phase(phase: GuidancePhase) -> str:
+    """«Что дальше» after the approval of ``phase`` (plan §4 rule 4), phase-specific."""
+    return _AFTER_PHASE.get(phase, f"Следующая фаза после «{PHASE_LABEL[phase]}».")
 
 
 def _waiting_guidance(
@@ -809,6 +910,10 @@ def _waiting_guidance(
                 blockers=tuple(blockers),
                 after="После ввода агент продолжит стадию.",
             )
+        case PhaseRoundAction(phase=next_phase, reason=reason):
+            return _next_round_guidance(
+                change, subject, phase, next_phase, reason, blockers, status, advance, withdraw
+            )
         case ReworkAction(round=round_number, max_rounds=max_rounds, reason=reason):
             return Guidance(
                 subject=subject,
@@ -884,6 +989,36 @@ def _waiting_guidance(
                 blockers=tuple(blockers),
                 after=None,
             )
+
+
+def _next_round_guidance(
+    change: Change,
+    subject: GuidanceSubject,
+    phase: GuidancePhase,
+    next_phase: GuidancePhase,
+    reason: str | None,
+    blockers: list[GuidanceBlocker],
+    status: GuidanceAction,
+    advance: GuidanceAction,
+    withdraw: GuidanceAction,
+) -> Guidance:
+    """The next round of the specification stage waits for its advance (M3, ADR-039)."""
+    next_label = PHASE_LABEL[next_phase]
+    return Guidance(
+        subject=subject,
+        phase=phase,
+        headline=f"Следующий раунд: «{next_label}»",
+        why=reason or f"Фаза согласована; агент готовит «{next_label}».",
+        primary=advance.model_copy(
+            update={
+                "label": f"Запустить раунд «{next_label}»",
+                "cli": f"factory run advance --change-id {change.id}",
+            }
+        ),
+        secondary=(status, withdraw),
+        blockers=tuple(blockers),
+        after=f"После раунда: результат фазы «{next_label}» и её согласование.",
+    )
 
 
 def _stop_reason(action: NextAction | None) -> str | None:

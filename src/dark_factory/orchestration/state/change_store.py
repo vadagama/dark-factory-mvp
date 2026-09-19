@@ -13,7 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from dark_factory.changes.enums import DecisionOutcome, DecisionSource, Gate, ProductStatus, Role
+from dark_factory.changes.enums import (
+    DecisionOutcome,
+    DecisionSource,
+    Gate,
+    Phase,
+    ProductStatus,
+    Role,
+)
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.intake import IntakeBrief
 from dark_factory.changes.product import Product
@@ -77,6 +84,7 @@ def _decision_from_row(row: DecisionRow) -> Decision:
         commit_sha=row.commit_sha,
         comment=row.comment,
         evidence_ids=list(row.evidence_ids),
+        phase=Phase(row.phase) if row.phase is not None else None,
     )
 
 
@@ -276,6 +284,7 @@ class DecisionRepository:
                 decided_at=decision.decided_at,
                 evidence_ids=list(decision.evidence_ids),
                 idempotency_key=idempotency_key,
+                phase=decision.phase.value if decision.phase is not None else None,
             )
         )
         self._session.flush()

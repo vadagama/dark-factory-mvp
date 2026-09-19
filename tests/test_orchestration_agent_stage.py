@@ -9,6 +9,7 @@ change request — is exercised without a network, a database or an LLM.
 import asyncio
 import hashlib
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 import pytest
 
@@ -57,6 +58,7 @@ from dark_factory.ports import (
     OpenChangeRequest,
     PortError,
     TaskEnvelope,
+    UnsafeWorkspacePathError,
     WorkspaceHandle,
     WorkspaceRequest,
 )
@@ -777,7 +779,9 @@ def test_write_file_key_addresses_the_path_too() -> None:
     assert asyncio.run(tools.read_file("src/b.py")) == "same"
 
 
-@pytest.mark.parametrize("path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", "src/../../x"])
+@pytest.mark.parametrize(
+    "path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", ".", "./", "src/../../x"]
+)
 def test_tools_refuse_paths_outside_the_workspace(path: str) -> None:
     tools, _ = _tools()
     # Rejected to the model as an error result, not raised: an exception would
@@ -792,7 +796,21 @@ def test_resolve_path_normalizes_safe_relative_paths() -> None:
     assert resolve_path("./src//app.py") == "src/app.py"
 
 
-@pytest.mark.parametrize("path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", "src/../../x"])
+def test_a_port_level_unsafe_path_is_reported_to_the_model_not_raised() -> None:
+    """The execution port refuses a path the tools' check let through (M3 live run)."""
+
+    class RefusingExecution(FakeExecution):
+        async def collect_evidence(self, *args: object, **kwargs: object) -> Any:
+            raise UnsafeWorkspacePathError("the path escapes the workspace")
+
+    tools, _ = _tools(RefusingExecution())
+    rendered = asyncio.run(tools.read_file("src/app.py"))
+    assert rendered == "error: the path escapes the workspace"
+
+
+@pytest.mark.parametrize(
+    "path", ["../etc/passwd", "/etc/passwd", "~/secrets", "", ".", "src/../../x"]
+)
 def test_resolve_path_still_rejects_unsafe_paths(path: str) -> None:
     # The isolation boundary itself: resolve_path keeps raising - only the
     # model-facing tools translate the rejection into an error result.

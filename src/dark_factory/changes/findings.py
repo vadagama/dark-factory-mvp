@@ -12,6 +12,7 @@ from dark_factory.changes.enums import (
     FindingStatus,
     Gate,
     GateStatus,
+    Phase,
     Role,
 )
 
@@ -56,6 +57,13 @@ class Decision(BaseModel):
     ADR-009 p.7, FR-011): a decision authorizes exactly the SHA it was
     recorded for — a new head SHA invalidates it. ``None`` means unbound,
     which never authorizes a merge at a specific SHA.
+
+    ``phase`` (T098, ADR-039) names the operator phase the decision approves
+    when one gate serves several phases: ``specification`` carries both the
+    requirements and the architecture approval, so the phase — not the gate —
+    tells them apart. ``None`` is a pre-M3 decision and reads as the phase of
+    its gate (``phase_gate.phase_of_gate``). Additive and optional: records
+    written before it parse unchanged.
     """
 
     id: str = Field(min_length=1)
@@ -67,3 +75,4 @@ class Decision(BaseModel):
     commit_sha: str | None = None
     comment: str | None = None
     evidence_ids: list[str] = []
+    phase: Phase | None = None

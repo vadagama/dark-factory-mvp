@@ -2,11 +2,13 @@
  * ChangeSet workspace helpers (T088–T090, ADR-032/ADR-034/ADR-035): pure,
  * testable functions with no domain "next step" logic — phases and their
  * labels, artifact path encoding, the frontmatter split used by the editor to
- * render the body, anchor lookup for a text selection and the phase-state
- * projection of the left column. Nothing here computes a percentage.
+ * render the body, anchor lookup for a text selection and the labels of the
+ * server's phase states. The left column renders `GET /changes/{id}/phases`
+ * as is — nothing here computes a phase state or a percentage.
  */
 
-import type { ArtifactKind, Gate, Phase, PhaseGate } from "../api/types";
+import type { ArtifactKind, Gate, Phase, PhaseViewState, UiStateKind } from "../api/types";
+import type { StatusTone } from "./statusTone";
 
 /** The operator phases F0–F7 of the left column (ADR-032); `done` is not a column entry. */
 export const PHASES: readonly Phase[] = [
@@ -46,8 +48,8 @@ export function phaseLabel(phase: Phase | null): string {
 export const PHASE_MILESTONE: Record<Phase, string | null> = {
   initiative: null,
   requirements: null,
-  architecture: "M3",
-  interface: "M3",
+  architecture: null,
+  interface: null,
   plan: "M4",
   execution: "M4",
   demonstration: "M5",
@@ -175,38 +177,60 @@ export function isScalarProperty(value: unknown): value is string | number | boo
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
-export type PhaseState = "approved" | "decision" | "active" | "rework" | "passed" | "pending" | "skipped";
-
-export const PHASE_STATE_LABELS: Record<PhaseState, string> = {
-  approved: "согласована",
-  decision: "ждёт решения",
-  active: "в работе",
-  rework: "доработка",
-  passed: "пройдена",
+/** Operator labels of the server phase states (`PhaseView.state`, T098); the state itself is never computed here. */
+export const PHASE_VIEW_STATE_LABELS: Record<PhaseViewState, string> = {
   pending: "не начата",
-  skipped: "пропущена",
+  active: "в работе",
+  needs_decision: "ждёт решения",
+  approved: "согласована",
+  waived: "пропущена",
+  not_required: "не требуется",
+  stale: "неактуально",
+  done: "пройдена",
+  blocked: "заблокирована",
+};
+
+/** Colour only for states that need attention (ADR-037 p.8); the label always carries the meaning. */
+export const PHASE_VIEW_STATE_TONES: Record<PhaseViewState, StatusTone> = {
+  pending: "muted",
+  active: "info",
+  needs_decision: "warning",
+  approved: "success",
+  waived: "muted",
+  not_required: "muted",
+  stale: "warning",
+  done: "neutral",
+  blocked: "danger",
+};
+
+/** The five screen states of a UI spec in the order the gallery shows them (T094). */
+export const UI_STATE_KINDS: readonly UiStateKind[] = ["loading", "empty", "error", "success", "access"];
+
+export const UI_STATE_LABELS: Record<UiStateKind, string> = {
+  loading: "загрузка",
+  empty: "пусто",
+  error: "ошибка",
+  success: "успех",
+  access: "доступ",
 };
 
 /**
- * Projection of a phase's state for the left column from server facts only:
- * the current phase of the guidance and the phase gate. `done` counts as
- * "every phase passed". No percentage is derived anywhere (ADR-037 p.6).
+ * The link «Открыть на dev» of a screen: an absolute `preview_url` as is, a
+ * relative one joined to the product `dev_url`; null when there is nothing
+ * to open (no `preview_url`, or a relative one without a dev environment) —
+ * the gallery then says so instead of linking nowhere.
  */
-export function phaseState(phase: Phase, current: Phase | null, gate: PhaseGate | null): PhaseState {
-  if (gate?.approved) {
-    return "approved";
+export function previewHref(previewUrl: string | null, devUrl: string | null): string | null {
+  if (!previewUrl) {
+    return null;
   }
-  if (gate?.approvals.some((approval) => approval.outcome === "waived" && approval.state === "current")) {
-    return "skipped";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(previewUrl)) {
+    return previewUrl;
   }
-  if (phase === current) {
-    if (gate?.rework_pending || gate?.rework_in_progress) {
-      return "rework";
-    }
-    return gate?.available ? "decision" : "active";
+  if (!devUrl) {
+    return null;
   }
-  const currentIndex = current === "done" ? PHASES.length : current ? PHASES.indexOf(current) : -1;
-  return PHASES.indexOf(phase) < currentIndex ? "passed" : "pending";
+  return `${devUrl.replace(/\/+$/, "")}/${previewUrl.replace(/^\/+/, "")}`;
 }
 
 /** Sum of the recorded run costs as a decimal string (4 places), or null when nothing was recorded. */

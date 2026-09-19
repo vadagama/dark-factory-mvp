@@ -381,6 +381,25 @@ realizes:
 ---
 ```
 
+### 10.1. Раскладка фаз «Архитектура» и «Интерфейс» (ADR-039, M3)
+
+Стадия `specification` исполняется раундами по фазам, и каждая фаза владеет своим поддеревом ChangeSet: `spec/**` — требования (`product`/`spec-authoring`), `design/**` без `design/ui` — архитектура (`architect`/`solution-design`), `design/ui/**` — интерфейс (`design`/`ui-spec`). Ревизия фазы — последний коммит, тронувший её файлы; согласование фазы привязывается к ней.
+
+```text
+design/
+├── overview.md                      # schema dark-factory.dev/design/v1, type design; ui: required | not_required, ui_reason
+├── decisions/ADR-NNN-<slug>.md      # schema dark-factory.dev/adr/v1, type adr; status: proposed, impact: [...]
+└── ui/
+    ├── scenarios/SCN-NNN-<slug>.md  # schema dark-factory.dev/ui-scenario/v1, type ui_scenario; steps[{id: S<n>, text, screen}]
+    └── screens/SCR-NNN-<slug>.md    # schema dark-factory.dev/ui-screen/v1, type ui_screen; route, preview_url, states{5}, elements[EL-*], transitions[]
+```
+
+- `overview.md`: `ui: not_required` + `ui_reason` — предложение архитектора пропустить фазу UI; подтверждает оператор решением `waived` (ADR-018: человеческий гейт закрывает человек), файл при этом не меняется. Тело — `## Обзор` с mermaid-схемой, `## Компоненты`, `## Решения` (ссылки на ADR).
+- ADR: агент пишет только `status: proposed`; `accepted`/`needs_revision` — производные статусы карточки (`GET /changes/{id}/decisions`), в git не записываются, чтобы согласование не порождало коммит, который само себя делает неактуальным. Секции `## Контекст / Решение / Обоснование / Альтернативы / Последствия` (английские заголовки допустимы); альтернативы — таблица `Вариант / Плюсы / Минусы / Почему не выбран` или подразделы `###`.
+- UI-узлы: один markdown с frontmatter на сценарий или экран; пять состояний экрана `loading | empty | error | success | access` — необъявленное показывается как «не описано», а не зелёным; `SCN-/SCR-/EL-/S<n>` — стабильные якоря замечаний.
+
+Шаблоны — `packs/product-baseline/changeset/design/**`.
+
 ## 11. Tasks
 
 Канонической декомпозицией является `tasks/graph.yaml`:
@@ -518,6 +537,10 @@ stateDiagram-v2
 ### 15.1. Документы-артефакты в интерфейсе (ADR-035, M2)
 
 Фабрика **не хранит** содержимое артефактов ChangeSet в своей БД: `orchestration/artifacts.py` читает дерево `.factory/changes/**` ветки изменения (`factory/<slug(change_id)>`), документ на ревизии, ревизии пути и diff через методы чтения `RepositoryPort` (`read_file`, `list_tree`, `list_commits`), а правка из API/CLI/Console становится одним коммитом через `publish_commit` (конфликт по `base_revision` не разрешается молча). Frontmatter отдаётся как свойства документа; `schema`, `id`, `type`, `product`, `change` защищены от правки через интерфейс. В БД фабрики живут только обсуждение (вопросы, замечания с якорем `artifact + anchor_id + revision`, поручения), черновик автосейва (`artifact_draft`, вне git) и отметки «просмотрено»; новая ревизия делает прежние согласования неактуальными (read-model гейта фазы), а не удаляет их.
+
+### 15.2. Решения и UI-спека в интерфейсе (ADR-039, M3)
+
+Карточка архитектурного решения и UI-спека — read-model'ы над файлами ChangeSet, а не записи в БД: `context/decisions.py` разбирает ADR (frontmatter `id`/`status`/`impact`, секции по заголовкам, таблицу альтернатив), `context/ui_spec.py` — узлы `SCN-*`/`SCR-*` (шаги, состояния, элементы, переходы), `context/design.py` — `ui`/`ui_reason` из `design/overview.md`; `orchestration/decisions.py` и `orchestration/ui_spec.py` собирают их через `ArtifactService` на голове ветки изменения и отдают как `GET /changes/{id}/decisions` / `factory change decisions` и `GET /changes/{id}/ui` / `factory change ui`. В БД живут только факты, которых нет в git: решения оператора по фазе (`decision.phase`, миграция `0007_phase_rounds`), поручения с `decision_ids` («Запросить альтернативу») и обсуждение с якорями `SCN-/SCR-/EL-/S<n>`. Статус карточки (`proposed | accepted | needs_revision | superseded`) вычисляется из этих фактов и ревизий фаз и в файл не пишется: согласование не порождает коммит и не делает само себя неактуальным. Ревизия фазы — последний коммит, тронувший её артефакты, поэтому раунд другой фазы согласование не устаревает, а правка своих артефактов — устаревает.
 
 ## 16. Связанные документы
 

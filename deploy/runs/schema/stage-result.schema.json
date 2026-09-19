@@ -558,6 +558,53 @@
       "title": "MergeAction",
       "type": "object"
     },
+    "Phase": {
+      "description": "User-facing phase of a ChangeSet (ADR-032): a projection over ``Stage``.\n\nThe eight operator phases F0..F8 plus ``done``. ``Stage`` is the executable\nmodel and does not change; the phase is what the operator navigates by and\nwhat a question, a comment or a rework order is bound to (ADR-034 p.1).\nWire values are stable: they travel in ``Guidance`` and in the discussion\nentities.",
+      "enum": [
+        "initiative",
+        "requirements",
+        "architecture",
+        "interface",
+        "plan",
+        "execution",
+        "demonstration",
+        "delivery",
+        "done"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "PhaseRoundAction": {
+      "description": "Re-enter the same stage for its next operator phase (ADR-039, ADR-032 p.3).\n\nThe ``specification`` stage runs requirements \u2192 architecture \u2192 interface\nas *rounds* of one stage: the approval of a non-final phase ends the\nattempt and starts a new operation of the same stage at the revision the\napproval was bound to \u2014 without spending a rework round (a phase round is\nprogress, not a send-back). ``phase`` is the phase the next round prepares.",
+      "properties": {
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "type": {
+          "const": "phase_round",
+          "default": "phase_round",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "title": "PhaseRoundAction",
+      "type": "object"
+    },
     "Provider": {
       "description": "Source control / CI provider of a repository (ADR-019).",
       "enum": [
@@ -1176,6 +1223,7 @@
         "mapping": {
           "execute_stage": "#/$defs/ExecuteStageAction",
           "merge": "#/$defs/MergeAction",
+          "phase_round": "#/$defs/PhaseRoundAction",
           "release": "#/$defs/ReleaseAction",
           "request_approval": "#/$defs/RequestApprovalAction",
           "rework": "#/$defs/ReworkAction",
@@ -1199,6 +1247,9 @@
           "$ref": "#/$defs/ReworkAction"
         },
         {
+          "$ref": "#/$defs/PhaseRoundAction"
+        },
+        {
           "$ref": "#/$defs/RequestApprovalAction"
         },
         {
@@ -1212,6 +1263,17 @@
         }
       ],
       "title": "Next Action"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Phase"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "produced_at": {
       "format": "date-time",
