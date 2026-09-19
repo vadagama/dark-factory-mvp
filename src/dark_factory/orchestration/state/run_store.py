@@ -54,6 +54,7 @@ import hashlib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Final
 
 from sqlalchemy import select
@@ -62,6 +63,7 @@ from sqlalchemy.orm import Session
 from dark_factory.changes.enums import Provider, Route, RunStatus, Stage, StageStatus
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.run import (
+    RUN_TERMINAL_STATUSES,
     STAGE_STATUS_TRANSITIONS,
     STAGE_TERMINAL_STATUSES,
     Change,
@@ -74,6 +76,7 @@ from dark_factory.changes.run_records import to_json
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.flows.routes import route_profile
 from dark_factory.orchestration.flow import FlowDecision
+from dark_factory.orchestration.state.change_store import AuditRepository
 from dark_factory.orchestration.state.models import Attempt
 from dark_factory.orchestration.state.models import Stage as StageRow
 from dark_factory.orchestration.state.repositories import (
@@ -102,6 +105,43 @@ without wiring handlers (T-090/T-063).
 
 DEFAULT_LEASE_TTL: Final[timedelta] = timedelta(minutes=5)
 """Lease lifetime of one run advance; the job renews or loses the lease (ADR-006 p.6)."""
+
+WITHDRAW_ACTION: Final[str] = "run.withdraw"
+"""Audit action of an operator withdrawal (T064, TD-030): one append-only row per call."""
+
+WITHDRAW_RESOURCE_TYPE: Final[str] = "run"
+"""Audit resource type of the withdrawal; the run id is the resource id (T064, TD-030)."""
+
+
+class UnknownRunError(StateError):
+    """No execution row with that id exists (T064, TD-030)."""
+
+
+class RunNotWithdrawableError(StateError):
+    """The run is terminal but not canceled: a finished run is never rewritten (T064, TD-030)."""
+
+
+class WithdrawOutcome(StrEnum):
+    """What one withdrawal did with the run (T064, TD-030)."""
+
+    WITHDRAWN = "withdrawn"
+    """The run and its non-terminal stages were canceled by this call."""
+
+    REPLAYED = "replayed"
+    """The run was already canceled: no state moved, the decision is unchanged."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunWithdrawal:
+    """Result of one operator withdrawal: what happened and the run it left behind.
+
+    ``run`` is the run as persisted after the call: ``canceled`` with
+    ``finished_at`` set on a withdrawal, and the untouched terminal run on a
+    replay (T064, TD-030).
+    """
+
+    outcome: WithdrawOutcome
+    run: ChangeRun
 
 
 def generated_run_id(change_id: str, input_revision: str) -> str:
@@ -201,6 +241,7 @@ class RunStore:
         self._results = StageResultRepository(session)
         self._outbox = OutboxRepository(session)
         self._leases = LeaseRepository(session)
+        self._audit = AuditRepository(session)
 
     # --- reads -------------------------------------------------------------
 
@@ -593,3 +634,157 @@ class RunStore:
             consumers=consumers,
         )
         return True
+
+    # --- operator transitions ----------------------------------------------
+
+    def withdraw_run(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        owner_id: str,
+        role: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+        lease_ttl: timedelta = DEFAULT_LEASE_TTL,
+        now: datetime,
+    ) -> RunWithdrawal:
+        """Retract a parked run: cancel it and every non-terminal stage (T064, TD-030).
+
+        The operator-side counterpart of an advance. A run parked on an external
+        wait (``waiting``/``blocked``, or ``running`` with no way forward) cannot
+        move again by itself, so this is the only transition that ends it without
+        an external event. It is a *terminal decision*, not a stage result: the
+        flow is not consulted, no ``StageResult`` is written and the committed
+        history is left exactly as it was — only the run and its non-terminal
+        stage rows move to ``canceled`` through the domain tables, so a withdrawn
+        run can never be advanced again (its status is terminal, ADR-006 p.3).
+
+        Three guards, in order:
+
+        - an unknown run is :class:`UnknownRunError` (the caller maps it to a 404
+          or to the invalid-input exit code);
+        - a run that is already ``canceled`` is an idempotent repeat: no state row
+          moves and the revision does not move, only the append-only audit row
+          records the replay — the terminal decision is never rewritten;
+        - any other terminal run (``succeeded``/``failed``/``superseded``) is
+          :class:`RunNotWithdrawableError`: a finished run is neither resurrected
+          nor reclassified by a withdrawal.
+
+        Otherwise the run lease is taken with its fencing token (ADR-006 p.6) and
+        the run is re-derived under it (ADR-024, условие 2), so a concurrent
+        advance that committed in the window is seen instead of overwritten; the
+        run status then moves under the optimistic ``state_revision`` guard
+        (``ExecutionRepository.update_status``), which is where the persisted
+        status is checked against ``RUN_STATUS_TRANSITIONS``. The decision is
+        recorded append-only in ``audit_log`` inside the caller's transaction
+        (ADR-009 p.7): ``run.withdraw`` with ``outcome`` ``created``/``replayed``
+        and ``details`` carrying the operator reason and never a secret. Nothing
+        here commits.
+        """
+        run = self._withdrawable_run(run_id)
+        if run is None:
+            return self._replay_withdrawal(
+                run_id, actor=actor, role=role, reason=reason, idempotency_key=idempotency_key
+            )
+        fencing_token = self.acquire_lease(run_id=run_id, owner_id=owner_id, ttl=lease_ttl)
+        # Re-derived under the lease: a concurrent advance may have committed the
+        # very attempt that parked or finished the run between the two reads.
+        # Should the guard raise here, the lease row goes with the caller's
+        # rollback (nothing in this module commits) — it cannot leak.
+        run = self._withdrawable_run(run_id)
+        if run is None:
+            self.release_lease(run_id=run_id, owner_id=owner_id, fencing_token=fencing_token)
+            return self._replay_withdrawal(
+                run_id, actor=actor, role=role, reason=reason, idempotency_key=idempotency_key
+            )
+        expected_revision = run.state_revision
+        for stage_run in run.stages:
+            if stage_run.status not in STAGE_TERMINAL_STATUSES:
+                self.advance_stage(stage_run.id, StageStatus.CANCELED, now=now)
+        self._executions.update_status(
+            run_id,
+            RunStatus.CANCELED,
+            expected_revision=expected_revision,
+            fencing_token=fencing_token,
+        )
+        self.release_lease(run_id=run_id, owner_id=owner_id, fencing_token=fencing_token)
+        self._audit_withdrawal(
+            run_id,
+            actor=actor,
+            role=role,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            outcome="created",
+        )
+        withdrawn = self._reloaded(run_id)
+        return RunWithdrawal(outcome=WithdrawOutcome.WITHDRAWN, run=withdrawn)
+
+    def _withdrawable_run(self, run_id: str) -> ChangeRun | None:
+        """Guard of one withdrawal: unknown/terminal runs never pass (T064, TD-030).
+
+        ``None`` means the run is already ``canceled`` — the idempotent repeat
+        the caller records without touching any state row; otherwise the run to
+        withdraw. Raises for an unknown run and for a terminal run that is not
+        canceled, the two refusals of the transition.
+        """
+        run = self.load(run_id)
+        if run is None:
+            raise UnknownRunError(f"run {run_id!r} does not exist")
+        if run.status is RunStatus.CANCELED:
+            return None
+        if run.status in RUN_TERMINAL_STATUSES:
+            raise RunNotWithdrawableError(
+                f"run {run_id!r} is terminal ({run.status.value}); "
+                "a finished run is never withdrawn"
+            )
+        return run
+
+    def _replay_withdrawal(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        role: str | None,
+        reason: str | None,
+        idempotency_key: str | None,
+    ) -> RunWithdrawal:
+        """Record a repeat of an already-applied withdrawal; no state row moves."""
+        self._audit_withdrawal(
+            run_id,
+            actor=actor,
+            role=role,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            outcome="replayed",
+        )
+        return RunWithdrawal(outcome=WithdrawOutcome.REPLAYED, run=self._reloaded(run_id))
+
+    def _audit_withdrawal(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        role: str | None,
+        reason: str | None,
+        idempotency_key: str | None,
+        outcome: str,
+    ) -> None:
+        """Append one withdrawal decision to the audit log (ADR-009 p.7, T064)."""
+        self._audit.append(
+            actor=actor,
+            role=role,
+            action=WITHDRAW_ACTION,
+            resource_type=WITHDRAW_RESOURCE_TYPE,
+            resource_id=run_id,
+            outcome=outcome,
+            idempotency_key=idempotency_key,
+            details={"reason": reason} if reason is not None else {},
+        )
+
+    def _reloaded(self, run_id: str) -> ChangeRun:
+        """The run as persisted now; a vanished row is a programming error."""
+        run = self.load(run_id)
+        if run is None:  # pragma: no cover - defensive, the row was just read
+            raise UnknownRunError(f"run {run_id!r} disappeared")
+        return run

@@ -43,7 +43,11 @@ from dark_factory.orchestration.state.models import (
 from dark_factory.orchestration.state.models import (
     Decision as DecisionRow,
 )
+from dark_factory.orchestration.state.models import (
+    Stage as StageRow,
+)
 from dark_factory.orchestration.state.repositories import ExecutionRepository
+from dark_factory.orchestration.state.run_store import WITHDRAW_ACTION
 from dark_factory.orchestration.state.stage_results import StageResultRepository
 
 OPERATOR = {"Authorization": "Bearer op-token"}
@@ -70,7 +74,7 @@ def _client(session_factory: sessionmaker[Session]) -> TestClient:
                 ApiToken(
                     actor="alice",
                     role="operator",
-                    scopes=frozenset({"changes:write", "approvals:write"}),
+                    scopes=frozenset({"changes:write", "approvals:write", "runs:write"}),
                 ),
             ),
             (
@@ -151,6 +155,35 @@ def _seed_run(
 def _seed_stage_result(session_factory: sessionmaker[Session], result: StageResult) -> bool:
     with session_scope(session_factory) as session:
         return StageResultRepository(session).record(result)
+
+
+def _seed_stage(
+    session_factory: sessionmaker[Session],
+    run_id: str,
+    stage: Stage,
+    status: StageStatus,
+) -> None:
+    """Seed one logical stage operation of a run, without driving the flow."""
+    with session_scope(session_factory) as session:
+        row = ExecutionRepository(session).get_or_create_stage(
+            execution_id=run_id, stage=stage, input_revision="rev-1"
+        )
+        row.status = status.value
+
+
+def _run_state(session_factory: sessionmaker[Session], run_id: str) -> tuple[str, int]:
+    with session_scope(session_factory) as session:
+        row = session.get(Execution, run_id)
+        assert row is not None
+        return row.status, row.state_revision
+
+
+def _stage_status(session_factory: sessionmaker[Session], run_id: str, stage: Stage) -> str:
+    with session_scope(session_factory) as session:
+        row = session.execute(
+            select(StageRow).where(StageRow.execution_id == run_id, StageRow.stage == stage.value)
+        ).scalar_one()
+        return str(row.status)
 
 
 def _audit_outcomes(session_factory: sessionmaker[Session], action: str) -> list[str]:
@@ -524,3 +557,63 @@ def test_stage_result_is_idempotent_by_attempt_id(session_factory: sessionmaker[
         stored = StageResultRepository(session).list_for_run("run-1")
     assert len(stored) == 1
     assert stored[0].status is StageStatus.SUCCEEDED
+
+
+def test_run_withdraw_cancels_the_run_and_replays_idempotently(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """``POST /runs/{id}/withdraw`` (T064, TD-030): a terminal operator decision."""
+    _seed_change(session_factory, "chg-1")
+    _seed_run(session_factory, "run-1", "chg-1")
+    _seed_stage(session_factory, "run-1", Stage.SPECIFICATION, StageStatus.WAITING)
+    client = _client(session_factory)
+    headers = {**OPERATOR, "Idempotency-Key": "wd-1"}
+
+    created = client.post(f"{API}/runs/run-1/withdraw", headers=headers)
+    assert created.status_code == 200
+    body = created.json()
+    assert body["status"] == "canceled"
+    assert body["finished_at"] is not None
+    assert _run_state(session_factory, "run-1") == ("canceled", 3)  # seeded revision 2 + 1
+    assert _stage_status(session_factory, "run-1", Stage.SPECIFICATION) == "canceled"
+    assert _audit_outcomes(session_factory, WITHDRAW_ACTION) == ["created"]
+
+    replayed = client.post(f"{API}/runs/run-1/withdraw", headers=headers)
+    assert replayed.status_code == 200
+    assert replayed.json() == body
+    # The repeat moved neither the run nor the stage; only the replay was recorded.
+    assert _run_state(session_factory, "run-1") == ("canceled", 3)
+    assert _audit_outcomes(session_factory, WITHDRAW_ACTION) == ["created", "replayed"]
+
+
+def test_run_withdraw_of_an_unknown_run_is_404(
+    session_factory: sessionmaker[Session],
+) -> None:
+    client = _client(session_factory)
+
+    response = client.post(f"{API}/runs/unknown/withdraw", headers=OPERATOR)
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "type": "about:blank",
+        "title": "Not Found",
+        "status": 404,
+        "detail": "Run 'unknown' does not exist",
+    }
+    assert _audit_outcomes(session_factory, WITHDRAW_ACTION) == []
+
+
+def test_run_withdraw_of_a_finished_run_is_409(session_factory: sessionmaker[Session]) -> None:
+    """A finished run is never resurrected or reclassified by a withdrawal."""
+    _seed_change(session_factory, "chg-1")
+    _seed_run(session_factory, "run-1", "chg-1", RunStatus.SUCCEEDED)
+    client = _client(session_factory)
+
+    response = client.post(f"{API}/runs/run-1/withdraw", headers=OPERATOR)
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["status"] == 409
+    assert "is terminal" in payload["detail"]
+    assert _run_state(session_factory, "run-1") == ("succeeded", 2)
+    assert _audit_outcomes(session_factory, WITHDRAW_ACTION) == []

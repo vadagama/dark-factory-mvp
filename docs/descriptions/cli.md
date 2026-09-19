@@ -16,6 +16,7 @@
 | Продолжение ожидающего запуска | `stage resume` — заглушка, exit 2 |
 | Инспекция запуска | `run status` (T-092) |
 | Продвижение запуска ровно на одну стадию | `run advance` (T-092) |
+| Снятие (отзыв) ошибочного или невалидного запуска | `run withdraw` (T064) |
 | Публикация индекса run-записи в `dark-factory-runs` | `run publish` (T-061) |
 | Диагностика окружения и конфигурации | `doctor` |
 | Один идемпотентный проход Reconciler | `reconcile` |
@@ -35,7 +36,7 @@ flowchart TD
     P --> D["dispatch\nисчерпывающий match\nпо типизированным args"]
     D --> SR["stage run\ncli/stage.py"]
     D --> STUB["stage resume\nnot_implemented, exit 2"]
-    D --> ADV["run advance, run status\ncli/runner.py"]
+    D --> ADV["run advance, run status,\nrun withdraw\ncli/runner.py"]
     D --> PUB["run publish\ncli/runs.py"]
     D --> REC["reconcile\ncli/reconcile.py"]
     D --> OUT["outbox dispatch/replay/skip\ncli/outbox.py"]
@@ -66,7 +67,7 @@ flowchart TD
 | Команда | Доступ к данным |
 |---|---|
 | `stage run` | файл change-снапшота + `--evidence-dir`; PostgreSQL state store не используется (подключение — «durable state-store wiring», ещё не сделано) |
-| `run advance`, `run status` | PostgreSQL через `orchestration/state/run_store.py`: change из intake и run-стейт (execution/stage/attempt/stage_result/outbox); `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` |
+| `run advance`, `run status`, `run withdraw` | PostgreSQL через `orchestration/state/run_store.py`: change из intake и run-стейт (execution/stage/attempt/stage_result/outbox/audit_log); `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` |
 | `reconcile`, `outbox *`, `api serve` | PostgreSQL через `orchestration/state/engine.py`: `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` = `postgresql+psycopg://dark_factory:dark_factory@localhost:5432/dark_factory` |
 | `doctor` | только переменные окружения; соединение с БД не открывается (офлайн-проверки) |
 | `ci_job` | файл `stage_result.json` + `$GITHUB_OUTPUT` |
@@ -92,6 +93,7 @@ flowchart TD
 | `stage resume` | `--run-id`*, `--next-action`* (`wa`/`ci`/`input`), `--json` | Заглушка not_implemented | 2 |
 | `run status` | `--run-id`*, `--json` | Запуск из PostgreSQL: статус и стадии | 0/2 |
 | `run advance` | `--change-id` XOR `--run-id` (обязательна ровно одна), `--json`; контракт-опции (T-016): `--contract-json <path|->`, `--approve-contract`; release-опции (T-092 S4): `--expected-digest` XOR `--digest-json`, наблюдение `--observed-digest`/`--argo-sync`/`--argo-health`, пробы `--smoke-url`/`--smoke-digest-url`/`--smoke-digest-header`, `--application`, `--runs-root` | Ровно одна стадия запуска durable-раннером; контракт-опции — прикрепление Implementation Contract, release-опции — GitOps-промоушен, резолюция waiting-релиза и публикация run-записи | 0/10/20/1/2 |
+| `run withdraw` | `--run-id`*, `--reason`, `--json` | Операторское снятие паркованного запуска (T064): run и non-terminal стадии → `canceled`, решение — append-only в audit log | 0/1/2 |
 | `reconcile` | `--json` | Один проход Reconciler | 0/2 |
 | `outbox dispatch` | `--once`, `--json`, `--limit`, `--cleanup` | Одна пачка доставки outbox | 0/2 |
 | `outbox replay` | `--event-id`*, `--consumer`, `--json` | dead/failed → pending | 0/1/2 |
@@ -147,7 +149,7 @@ flowchart TD
 
 Каждый файл несёт полную операционную идентичность (`run_id`, `stage`, `input_revision`), поэтому replay проверяет идентичность перекомпоновкой ключа из сохранённого результата: чужая, битая или частичная запись считается «нет committed-результата» и ведёт к свежему исполнению под защитой effect ledger.
 
-### 3.2. `run advance` и `run status` (T-092) — durable-раннер
+### 3.2. `run advance`, `run status` и `run withdraw` (T-092, T064) — durable-раннер
 
 `run advance` — первый CLI-потребитель durable state store в роли *driver*: ровно одна стадия одного запуска за транзакцию. Обязательна ровно одна из `--change-id`/`--run-id` (mutually exclusive group, иначе argparse → exit 2).
 
@@ -162,6 +164,10 @@ flowchart TD
 - **Вывод**: текст — `run <id>: <outcome> (stage=…, stage_status=…, run_status=…, next_action=…, next_stage=…)` плюс `reason: …` для wait/stop; при replay — `run <id>: replayed (stage=…, result_status=…, next_action=…; nothing was written)`. `--json` — один объект с фиксированным набором ключей (`run_id`, `change_id`, `outcome`, `persisted`, `stage`, `result_status`, `next_action`, `attempt_number`, `stage_status`, `run_status`, `next_stage`, `reason`); при replay `persisted=false` и `null` в четырёх полях решения — flow не спрашивали, писать было нечего.
 
 `run status` читает запуск из state store и печатает статус и стадии: текст — заголовок `run <id>: <status> (change_id=…, route=…, provider=…, state_revision=…)` и по строке на стадию (`stage: status (attempt=…, input_revision=…, state_revision=…)`); `--json` — документ доменной `ChangeRun` (`changes/run.py`). Команда только читает: exit `0` или `2` (неизвестный run / недоступный store).
+
+**`run withdraw` (T064, TD-030)** — операторское снятие запуска, которого не дождаться внешним событием: `waiting`/`blocked` run (как `chg_t043_p02` пилота) остался бы в этом состоянии навсегда. Переход живёт в ядре (`RunStore.withdraw_run`), а не в CLI/API: run и каждая non-terminal стадия переводятся в `canceled` по доменным таблицам под optimistic `state_revision` и fencing-token lease (ADR-006 п.4/п.6); коммитнутая история (`stage_result`, терминальные стадии) не перезаписывается, flow не спрашивают и новый `StageResult` не пишется. Идемпотентность: повтор уже снятого run — `replayed`, состояние и `state_revision` не двигаются, пишется только append-only строка решения. Негативный исход: терминальный не-`canceled` run (`succeeded`/`failed`/`superseded`) отвергается — снятие не воскрешает и не переклассифицирует завершённый run. Решение пишется в `audit_log` (`run.withdraw`, `resource_type=run`, `outcome` `created`/`replayed`, `details.reason`; ADR-009 п.7) — без секретов; `actor` у CLI — `cli` (аутентифицированной личности у локального CLI нет), `role` не заполняется.
+
+Exit codes: `0` — run снят (`withdrawn`) или уже был снят (replay); `1` — run терминальный и не `canceled` (отказ, ничего не записано); `2` — неизвестный run, неверный ввод, недоступный или отказавший store. `--reason` необязателен и записывается в `details`. Вывод: текст — `run <id>: withdrawn (status=canceled, canceled_stages=…)` либо `run <id>: replayed (status=canceled; the run was already withdrawn, nothing was written)`; `--json` — один объект с фиксированным набором ключей (`run_id`, `change_id`, `outcome`, `persisted`, `status`, `state_revision`, `canceled_stages`), `persisted=false` на replay.
 
 **Release-опции `run advance` (T-092 S4, ADR-024 §7)** — все необязательны, без них поведение прежнее:
 
@@ -258,9 +264,9 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 
 ## 4. Парсинг и обработка ошибок (`main.py`)
 
-- **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне: `stage {run,resume}`, `run {status,publish}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
+- **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне: `stage {run,resume}`, `run {advance,status,publish,withdraw}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
 - **Выборы значений**: `--stage`, `--route`, `--next-action` ограничены `choices` из StrEnum (`Stage`, `Route`, `ResumeNextAction`) — недопустимое значение отсекается argparse'ом с exit 2, совпадающим с контрактом. `--help` на любом уровне → exit 0.
-- **Типизированные аргументы**: `parse_command(argv)` = `build_command_args(build_parser().parse_args(argv))`. Плоский namespace превращается в один из одиннадцати frozen-датаклассов union `CommandArgs` (`StageRunArgs`, `StageResumeArgs`, `RunStatusArgs`, `RunPublishArgs`, `ReconcileArgs`, `OutboxDispatchArgs`, `OutboxReplayArgs`, `OutboxSkipArgs`, `DoctorArgs`, `ApiServeArgs`, `ReleaseVerifyArgs`). Чтение полей идёт через `_option_str`/`_option_int`/`_required_str`/`_flag`: нарушение типа после argparse — программистская ошибка, `AssertionError`.
+- **Типизированные аргументы**: `parse_command(argv)` = `build_command_args(build_parser().parse_args(argv))`. Плоский namespace превращается в один из двенадцати frozen-датаклассов union `CommandArgs` (`StageRunArgs`, `StageResumeArgs`, `RunStatusArgs`, `RunPublishArgs`, `RunWithdrawArgs`, `ReconcileArgs`, `OutboxDispatchArgs`, `OutboxReplayArgs`, `OutboxSkipArgs`, `DoctorArgs`, `ApiServeArgs`, `ReleaseVerifyArgs`). Чтение полей идёт через `_option_str`/`_option_int`/`_required_str`/`_flag`: нарушение типа после argparse — программистская ошибка, `AssertionError`.
 - **Диспетчеризация**: `dispatch(command)` — исчерпывающий `match` по всем вариантам `CommandArgs`; ветка по умолчанию — `assert_never`, поэтому новая команда требует нового кейса на этапе компиляции.
 - **Заглушки**: `_not_implemented(command, planned_task)` печатает диагностику (текст — stderr, JSON — stdout) и возвращает exit 2.
 - **Циклические импорты**: `cli.stage`, `cli.reconcile`, `cli.outbox`, `cli.api`, `cli.runs` импортируют args-датаклассы и коды выхода из `main`, поэтому `main` импортирует их лениво — внутри обработчиков.
@@ -285,6 +291,10 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 | Committed `failed`/`blocked` или запись отсутствует | свежее исполнение — новая попытка той же операции |
 | `run advance`: committed `succeeded`/`waiting` той операции, которую продвижение исполнило бы | replay (exit по статусу результата), в БД не пишется ничего — включая строку lease |
 | `run advance`: коммитнутый `failed`/`blocked` предыдущей попытки | следующее продвижение — новая попытка (`attempt_number + 1`) той же логической операции (ADR-006 p.7) |
+| `run withdraw`: run уже `canceled` | идемпотентный replay: exit 0, состояние и `state_revision` не двигаются, в audit пишется `replayed` |
+| `run withdraw`: run терминальный, но не `canceled` | отказ: exit 1, ничего не записано (ни состояния, ни audit) — завершённый run не переписывается |
+| `run withdraw`: неизвестный run | exit 2, тег `invalid_input`; в audit ничего не пишется |
+| `run withdraw`: конкурентный advance держит lease запуска | exit 2 (`invalid_input`) — store отказал, снятие не выполнено |
 | `--json` у `stage run` | `operation_key=…` в stderr; stdout — ровно один JSON |
 | `doctor`: `DATABASE_URL` не задан или пустой | `warn`, exit 0; ошибка схеме URL — `error`, exit 2 |
 | `ci_job`: `status = waiting` | exit 0, без аннотации — waiting не ошибка |
@@ -308,6 +318,7 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 
 - [test_runtime_entrypoint.py](../../tests/test_runtime_entrypoint.py) — точка входа процесса `factory`: `run advance` собирает runtime и передаёт швы в CLI, runtime закрывается (в том числе когда команда упала), команда без швов runtime не собирает и швов не передаёт, ошибка разбора не собирает runtime, швы доходят до `runner.run_advance_command`, а без швов `cli.main` ведёт себя как раньше;
 - [test_cli_parser.py](../../tests/test_cli_parser.py) — дерево команд, дефолты, choices, exit-коды argparse, заглушки not_implemented, декларация console-script (`factory` → `runtime.entrypoint:main`) и `python -m`;
+- [test_cli_runner.py](../../tests/test_cli_runner.py) — `run advance`/`run status`/`run withdraw`: контракт аргументов, маппинг исхода на exit-код, рендер текста и `--json`, отказы (неизвестный run, терминальный run, отказавший store) без echo секретов;
 - [test_cli_stage.py](../../tests/test_cli_stage.py) — контракт StageResult, детерминизм `input_revision`, evidence-dir, коды выхода, обработка повреждений evidence;
 - [test_cli_doctor.py](../../tests/test_cli_doctor.py) — статусы трёх проверок, маскирование секретов, коды выхода;
 - [test_cli_ci_job.py](../../tests/test_cli_ci_job.py) — классификация кодов, валидация StageResult, outputs, `::error::`-аннотации;
@@ -316,9 +327,9 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 - [test_cli_run_records.py](../../tests/test_cli_run_records.py) — резолв коммитов манифеста (env → `GITHUB_SHA` → git HEAD), сборка записи, маппинг статусов run/stage, round-trip release-секции;
 - [test_cli_release.py](../../tests/test_cli_release.py) — exit-коды, invalid-ветки, e2e DoD (успешный и неуспешный smoke → статусы + evidence), rollback-сигнал, короткое замыкание проб, отсутствие эха секретов;
 - [test_cli_runs.py](../../tests/test_cli_runs.py) — `run publish`: exit-коды, форма `--json`, fallback на `DARK_FACTORY_RUNS_ROOT`, отсутствие эха секрета, созданные файлы записи;
-- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify` и `run publish`, их флагов и отсутствующих обязательных опций.
+- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify`, `run publish` и `run withdraw`, их флагов и отсутствующих обязательных опций.
 
-Интеграционные проги dispatch/reconcile над реальной БД живут в отдельных integration-тестах (unit-слои этих файлов БД не касаются).
+Интеграционные проги `run advance`/`run withdraw` над реальной БД живут в `tests/integration/test_runner_advance.py` и `tests/integration/test_run_withdraw.py`; unit-слои этих файлов БД не касаются.
 
 ## 7. Связанные решения
 

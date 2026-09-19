@@ -33,6 +33,7 @@ from dark_factory.cli.main import (
     EXIT_WAITING,
     RunAdvanceArgs,
     RunStatusArgs,
+    RunWithdrawArgs,
     main,
 )
 from dark_factory.cli.release_facts import CliReleaseFactsProvider
@@ -41,6 +42,12 @@ from dark_factory.orchestration.flow import FlowDecision
 from dark_factory.orchestration.runner import RunAdvance, RunAdvanceOutcome
 from dark_factory.orchestration.stages.gates import GateObservation
 from dark_factory.orchestration.state.repositories import ContractConflictError, LeaseLostError
+from dark_factory.orchestration.state.run_store import (
+    RunNotWithdrawableError,
+    RunWithdrawal,
+    UnknownRunError,
+    WithdrawOutcome,
+)
 from tests.changes_factories import make_change, make_contract, make_manifest, make_run
 
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
@@ -172,6 +179,61 @@ def _stub(monkeypatch: pytest.MonkeyPatch, outcome: RunAdvanceOutcome) -> None:
 
 def _last_store() -> StubStore:
     store = StubStore.last
+    assert store is not None
+    return store
+
+
+def _withdrawal(outcome: WithdrawOutcome) -> RunWithdrawal:
+    """The run ``withdraw_run`` leaves behind: canceled, with the stages it canceled."""
+    run = make_run()
+    run.status = RunStatus.CANCELED
+    run.state_revision = 2
+    run.stages.append(
+        StageRun(
+            id=f"{RUN_ID}:specification:1",
+            stage=Stage.SPECIFICATION,
+            status=StageStatus.CANCELED,
+            attempt_number=1,
+            input_revision=REVISION,
+        )
+    )
+    return RunWithdrawal(outcome=outcome, run=run)
+
+
+class StubWithdrawStore:
+    """Store stand-in for ``run withdraw``: only the operator transition is used."""
+
+    last: ClassVar["StubWithdrawStore | None"] = None
+    outcome: ClassVar[WithdrawOutcome] = WithdrawOutcome.WITHDRAWN
+    error: ClassVar[Exception | None] = None
+
+    def __init__(self, session: StubSession) -> None:
+        self.session = session
+        self.calls: list[dict[str, Any]] = []
+        StubWithdrawStore.last = self
+
+    def withdraw_run(self, run_id: str, **kwargs: Any) -> RunWithdrawal:
+        self.calls.append({"run_id": run_id, **kwargs})
+        if StubWithdrawStore.error is not None:
+            raise StubWithdrawStore.error
+        return _withdrawal(StubWithdrawStore.outcome)
+
+
+def _stub_withdraw(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    outcome: WithdrawOutcome = WithdrawOutcome.WITHDRAWN,
+    error: Exception | None = None,
+) -> None:
+    """Stub the store seam of ``run withdraw``; both class attributes are always set."""
+    StubWithdrawStore.outcome = outcome
+    StubWithdrawStore.error = error
+    StubWithdrawStore.last = None
+    monkeypatch.setattr(runner_module, "RunStore", StubWithdrawStore)
+
+
+def _last_withdraw_store() -> StubWithdrawStore:
+    store = StubWithdrawStore.last
     assert store is not None
     return store
 
@@ -969,3 +1031,204 @@ def test_run_advance_refuses_to_swap_the_contract_of_a_run(
 
     assert code == EXIT_INVALID_INPUT
     assert "different implementation contract" in capsys.readouterr().err
+
+
+# --- run withdraw (T064, TD-030) --------------------------------------------
+
+
+def test_run_withdraw_cancels_the_run_and_records_the_decision(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(monkeypatch)
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason="mistakenly started", json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_OK
+    assert capsys.readouterr().out.strip() == (
+        "run run-001: withdrawn (status=canceled, canceled_stages=specification)"
+    )
+    call = _last_withdraw_store().calls[0]
+    assert call["run_id"] == RUN_ID
+    assert call["actor"] == runner_module.CLI_ACTOR
+    assert call["role"] is None
+    assert call["reason"] == "mistakenly started"
+    assert call["owner_id"] == "test-owner"
+    assert isinstance(call["now"], datetime)
+
+
+def test_run_withdraw_json_reports_the_outcome(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(monkeypatch)
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=True),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_OK
+    assert json.loads(capsys.readouterr().out) == {
+        "run_id": RUN_ID,
+        "change_id": CHANGE_ID,
+        "outcome": "withdrawn",
+        "persisted": True,
+        "status": "canceled",
+        "state_revision": 2,
+        "canceled_stages": ["specification"],
+    }
+
+
+def test_run_withdraw_replays_an_already_canceled_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(monkeypatch, outcome=WithdrawOutcome.REPLAYED)
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=True),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "replayed"
+    assert payload["persisted"] is False
+    assert payload["status"] == "canceled"
+
+
+def test_run_withdraw_text_says_a_replay_wrote_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(monkeypatch, outcome=WithdrawOutcome.REPLAYED)
+
+    runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert capsys.readouterr().out.strip() == (
+        "run run-001: replayed (status=canceled;"
+        " the run was already withdrawn, nothing was written)"
+    )
+
+
+def test_run_withdraw_refuses_an_unknown_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(monkeypatch, error=UnknownRunError("run 'run-missing' does not exist"))
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id="run-missing", reason=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "unknown run" in capsys.readouterr().err
+
+
+def test_run_withdraw_refuses_a_finished_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(
+        monkeypatch, error=RunNotWithdrawableError("run 'run-001' is terminal (succeeded)")
+    )
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    # The refusal has its own documented code: the request is well formed, the
+    # run's state is what forbids it (T064, TD-030).
+    assert code == runner_module.EXIT_NOT_WITHDRAWABLE == 1
+    assert "is terminal" in capsys.readouterr().err
+
+
+def test_run_withdraw_json_reports_a_finished_run_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_withdraw(
+        monkeypatch, error=RunNotWithdrawableError("run 'run-001' is terminal (canceled)")
+    )
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=True),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "not_withdrawable",
+        "detail": "run 'run-001' is terminal (canceled)",
+    }
+
+
+def test_run_withdraw_reports_a_write_the_store_refused(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A lost lease or a stale revision is a store error, not a withdrawal: the
+    # command reports it instead of raising a traceback.
+    _stub_withdraw(monkeypatch, error=LeaseLostError("lease execution/run-001 is held"))
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    assert "refused the withdrawal" in capsys.readouterr().err
+
+
+def test_run_withdraw_refuses_an_unreachable_state_store(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _UnreachableEngine:
+        def connect(self) -> None:
+            raise SQLAlchemyError("connection refused")
+
+        def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr(runner_module, "create_state_engine", lambda url: _UnreachableEngine())
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:secret@db.example/dark_factory")
+
+    code = runner_module.run_withdraw_command(
+        RunWithdrawArgs(run_id=RUN_ID, reason=None, json_output=True), owner_id="test-owner"
+    )
+
+    assert code == EXIT_INVALID_INPUT
+    captured = capsys.readouterr()
+    # The URL and the exception text may carry credentials — never echoed (ADR-009).
+    assert "secret" not in captured.out
+    assert "not reachable" in captured.out
+
+
+def test_main_dispatches_run_withdraw_to_the_runner_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def _fake_command(args: RunWithdrawArgs, **kwargs: Any) -> int:
+        seen["run_id"] = args.run_id
+        seen["reason"] = args.reason
+        print(runner_module.render_withdraw_json(_withdrawal(WithdrawOutcome.WITHDRAWN)))
+        return EXIT_OK
+
+    monkeypatch.setattr(runner_module, "run_withdraw_command", _fake_command)
+
+    assert (
+        main(["run", "withdraw", "--run-id", RUN_ID, "--reason", "bad pilot change", "--json"])
+        == EXIT_OK
+    )
+    assert seen == {"run_id": RUN_ID, "reason": "bad pilot change"}
+    assert json.loads(capsys.readouterr().out)["outcome"] == "withdrawn"
