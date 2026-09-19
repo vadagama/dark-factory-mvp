@@ -64,10 +64,16 @@ flowchart LR
 | GET | `/changes/{change_id}/trace` | Полная SC-007-цепочка по всем run change | `ChangeTrace` | открыто |
 | GET | `/changes/{change_id}/approvals` | Решения по change | `Decision[]` | открыто |
 | POST | `/changes/{change_id}/approvals` | Запись version-bound решения оператора | `Decision`; 201, 200 replay, 409 | Bearer + `approvals:write` + роль `operator` |
+| GET | `/products` | Реестр продуктов; пагинация `limit`/`offset` (T066, ADR-030) | `Product[]` | открыто |
+| POST | `/products` | Регистрация продукта с дедупом по `id` | `Product`; 201 created, 200 replay | Bearer + `products:write` + роль `operator` |
+| GET | `/products/{product_id}` | Один продукт | `Product`; 404 неизвестный | открыто |
+| POST | `/products/{product_id}/validate` | Наблюдение репозитория через `RepositoryProvisioningPort` и запись готовности `validating → ready/error` (T066, ADR-030/ADR-031) | `ProductValidationView`; 200, 404, 409 устаревшая ревизия, 503 провижининг не сконфигурирован | Bearer + `products:write` + роль `operator` |
 | GET | `/ci/stages` | Каталог этапов CI фабрики и текущее состояние их переключателей (T059, ADR-027) | `CiStagesView`; `available=false` + `reason`, когда контур не сконфигурирован | открыто |
 | PUT | `/ci/stages/{job}` | Включение/выключение одного этапа CI (идемпотентное целевое состояние) | `CiStageView`; 404 неизвестный этап, 502 ошибка GitHub, 503 не сконфигурировано | Bearer + `ci:write` + роль `operator` |
 
 `/ci/*` — единственные эндпоинты, которые ходят во внешнего провайдера (repository variables GitHub), а не в state store: каталог этапов берётся из кода (`dark_factory.ci.stages`), состояние — из переменных `CI_SKIP_<JOB>` репозитория фабрики. Неизвестный `job` — всегда 404: имя переменной выводит каталог, запрос не может назвать произвольную переменную. Без GitHub App (`DARK_FACTORY_GITHUB_*` + `DARK_FACTORY_GITHUB_REPOSITORY_SLUG`) чтение отдаёт каталог с `available=false`, а запись отвечает 503 — фиктивный выключатель не показывается.
+
+Продукты (`/products`, T066) — реестр продуктов (ADR-030): верхний уровень навигации, из которого начинается любое изменение. Регистрация идемпотентна по клиентскому `id` (повтор → 200 и audit `replayed`), требует роли `operator` и скоупа `products:write`. Валидация — **единственный** эндпоинт продуктов, который ходит не только в state store: она наблюдает репозиторий через `RepositoryProvisioningPort` (ADR-031) и записывает исход в статус продукта; без сконфигурированного порта отвечает 503 и **не меняет** статус — фиктивная готовность не показывается (ADR-031 p.6). Отказом считается только `UNAVAILABLE`: пустой репозиторий и отсутствующий baseline — штатные состояния, в которых baseline создаётся позже (ADR-031 p.4), поэтому продукт становится `ready`; детальный `state` наблюдения (`empty`/`baseline_absent`/`baseline_current`/`baseline_stale`) возвращается в поле `validation`. Повторная валидация разрешена — она ничего не мутирует (ADR-031 p.5).
 
 Тела и параметры:
 
@@ -77,7 +83,9 @@ flowchart LR
 | `ApprovalRequest` (тело) | `POST .../approvals` | `gate` (7 значений Gate), `outcome` (approved/rejected/waived), `subject_revision` — обязателен (min_length=1), опц. `comment`, `expected_state_revision` |
 | `Idempotency-Key` (заголовок) | все POST | опционален; повтор возвращает прежний результат |
 | `CiStageToggleRequest` (тело) | `PUT /ci/stages/{job}` | `enabled` — строгий bool (`strict=True`): `"yes"`/`1` не коэрцятся, ответ 422 |
-| `limit` / `offset` | `GET /runs`, `GET /changes` | 1–200 (default 50) / ≥ 0 (default 0); сортировка `(created_at, id)` |
+| `ProductCreateRequest` (тело) | `POST /products` | `id` (min_length=1, клиентский — по нему дедуп), `name`, `repository` (`RepositoryRef`), опц. `description`, `repository_url`, `baseline_ref`, `dev_env_ref`; `status`/`state_revision`/`created_at` — серверные |
+| `ProductValidateRequest` (тело) | `POST /products/{id}/validate` | тело опционально; опц. `expected_state_revision` — оптимистическая проверка (409 при расхождении) |
+| `limit` / `offset` | `GET /runs`, `GET /changes`, `GET /products` | 1–200 (default 50) / ≥ 0 (default 0); сортировка `(created_at, id)` |
 | `status`, `stage` | `GET /runs` | значения `RunStatus` (8) и `Stage` (5); stage-фильтр — подзапрос по таблице `stage` |
 | `severity`, `status` | `GET /runs/{run_id}/findings` | `FindingSeverity` (4 значения), `FindingStatus` (4 значения) |
 
@@ -90,7 +98,7 @@ flowchart LR
 | Переменная среды | `DARK_FACTORY_API_TOKENS` |
 | Формат | JSON-массив записей `{token, actor, role, scopes}` |
 | Роли | только `operator` и `service` (иное значение — ошибка разбора конфига) |
-| Скоупы | `changes:write`, `approvals:write`, `ci:write`, `runs:write` |
+| Скоупы | `changes:write`, `approvals:write`, `ci:write`, `runs:write`, `products:write` |
 | Заголовок | `Authorization: Bearer <token>`, схема без учёта регистра |
 | Хранение | только SHA-256-дайджесты; сравнение `hmac.compare_digest`; сырые токены не хранятся и не логируются |
 | Пустая/отсутствующая переменная | пустой store — любая мутация отвечает 401 (fail closed) |
@@ -105,6 +113,7 @@ flowchart LR
 | Approval от роли `service` | 403, detail «The operator role is required» — агенты никогда не аппрувят |
 | Withdraw от роли `service` | 403, detail «The operator role is required» — агенты исполняют конвейер и не снимают работу, которая их гейтит (T064) |
 | Запись переключателя этапа CI от роли `service` | 403, detail «The operator role is required» — агенты не перенастраивают пайплайн, который их гейтит (ADR-027) |
+| Регистрация/валидация продукта от роли `service` | 403, detail «The operator role is required» — продукт регистрирует человек, агент его не выдумывает (ADR-030 p.6) |
 
 `ApiToken(actor, role, scopes)` возвращается зависимостью и попадает в аудит. Нюансы разбора заголовка: `Bearer` без значения — 401, схема сравнивается в нижнем регистре.
 
@@ -132,6 +141,7 @@ API читает и пишет только PostgreSQL (ADR-004) через SQLA
 | `usage` | SQL `SUM` по попыткам: prompt_tokens, completion_tokens, cost (Decimal, может быть NULL), manual_interventions → `UsageAggregate` |
 | `stage_result` | источник гейтов, findings, evidence, trace; PK — attempt_id, попытки никогда не перезаписываются (FR-014) |
 | `change` | intake: payload — полный документ `Change` (JSONB), дедуп по `id` и частичному unique-индексу `external_ref` |
+| `product` | реестр продуктов: payload — полный документ `Product` (JSONB), статус готовности — колонка `status` (CHECK из `ProductStatus`), дедуп по `id`; `change.product_id` — продукт-владелец (nullable, без FK) |
 | `decision` | решения; колонка `role` — API-роль (operator/service), не агентная; частичный unique-индекс на `idempotency_key` |
 | `audit_log` | append-only аудит мутаций (см. §7) |
 
@@ -153,7 +163,7 @@ API читает и пишет только PostgreSQL (ADR-004) через SQLA
 ## 7. Аудит и подписи решений
 
 - Каждая мутация пишет одну строку в `audit_log` **в той же транзакции**, что и изменение состояния (`AuditRepository.append`): actor и role берутся из токена, фиксируются `action`, `resource_type`, `resource_id`, `idempotency_key` и `outcome` (`created`/`replayed`); `details` не содержит секретов.
-- Действия: `change.intake` (`CHANGE_INTAKE_ACTION`), `approval.record` (`APPROVAL_RECORD_ACTION`) и `run.withdraw` (`WITHDRAW_ACTION`, T064) — последнее с `resource_type="run"`, `resource_id=<run id>` и необязательным `details.reason`.
+- Действия: `change.intake` (`CHANGE_INTAKE_ACTION`), `approval.record` (`APPROVAL_RECORD_ACTION`), `run.withdraw` (`WITHDRAW_ACTION`, T064) с `resource_type="run"` и `product.add` / `product.validate` (`PRODUCT_ADD_ACTION` / `PRODUCT_VALIDATE_ACTION`, T066) с `resource_type="product"`.
 - Решение оператора хранится version-bound (ADR-009 п.7, FR-003): `Decision.decided_by` всегда `human` (`DecisionSource.HUMAN`), `commit_sha = subject_revision` — решение привязано к конкретной версии, новая версия требует нового решения; `comment` и `idempotency_key` сохраняются рядом.
 - Оптимистическая конкуренция (ADR-006 п.4): `expected_state_revision` из тела сравнивается с `change.state_revision`; при совпадении решение записывается и `state_revision` инкрементируется.
 
@@ -188,6 +198,10 @@ flowchart TD
 | Необработанное исключение | 500 «An unexpected error occurred.» без деталей |
 | Повторный `POST /changes` с тем же `id` или `external_ref` | 200 (не 201) с существующим Change, audit outcome=replayed |
 | Повторный approval с тем же `Idempotency-Key` | 200 с тем же Decision, второй записи нет |
+| Повторный `POST /products` с тем же `id` | 200 (не 201) с существующим Product, audit outcome=replayed |
+| `POST /products/{id}/validate` без сконфигурированного провижининга | 503 (title Service Unavailable), статус продукта не меняется, audit не пишется |
+| `POST /products/{id}/validate`: `expected_state_revision` не совпал или продукт изменился конкурентно | 409 «state_revision mismatch», статус не меняется |
+| Продукт не существует (`GET`/`validate`) | 404 с detail «Product 'x' does not exist» |
 | БД недоступна | сессия откатывается, необработанная ошибка → 500; на «GET /api/v1/runs отвечает 500» построена readiness-проба чарта |
 
 ## 9. Где искать проверки
@@ -195,6 +209,8 @@ flowchart TD
 - [`tests/test_api_auth.py`](../../tests/test_api_auth.py) — AuthN/AuthZ и форма контракта без БД: 401/403, fail-closed пустого store, malformed-заголовки, RFC 7807-тела, состав путей OpenAPI (включая 401/403 скоупа `runs:write` и роли `operator` для withdraw, T064);
 - [`tests/integration/test_api.py`](../../tests/integration/test_api.py) — сквозные сценарии против PostgreSQL (требует `DARK_FACTORY_TEST_DATABASE_URL`, без него пропускаются): intake/replay/external_ref-дедуп, идемпотентность и 409 approvals, агрегаты `RunCard`, канонический порядок trace, фильтры `/runs`, идемпотентность `stage_result` по attempt_id, снятие run через `POST /runs/{id}/withdraw` (200/200-replay/404/409);
 - [`tests/integration/test_run_withdraw.py`](../../tests/integration/test_run_withdraw.py) — row-level поведение перехода `withdraw` над PostgreSQL: `waiting`/`blocked`/`running` → `canceled`, non-terminal стадии → `canceled`, терминальные не переписываются, коммитнутая `StageResult`-история неприкосновенна, повтор идемпотентен, терминальный не-`canceled` run отвергается, неизвестный run — `UnknownRunError`, решение — в append-only `audit_log`;
+- [`tests/test_api_products_auth.py`](../../tests/test_api_products_auth.py) — эндпоинты продуктов без БД: 401/403 (скоуп `products:write`, роль `operator`), fail-closed, состав путей OpenAPI;
+- [`tests/integration/test_products_api.py`](../../tests/integration/test_products_api.py) — реестр продуктов против PostgreSQL: создание и replay по `id`, list/get/404, валидация `created → validating → ready/error` через `FakeRepositoryProvisioning`, повторная валидация, 503 без порта, 409 устаревшей ревизии, audit `product.add`/`product.validate`;
 - [`tests/test_chart_dark_factory.py`](../../tests/test_chart_dark_factory.py) — контракт деплоя API: пробы (`/openapi.json` liveness, `/api/v1/runs` readiness), `DATABASE_URL` из секрета, отсутствие токен-секрета по умолчанию, команда `factory api serve --host 0.0.0.0 --port 8000`, опциональная обвязка `ciToggles` (slug + `envFrom` секрета App);
 - [`tests/test_api_ci_stages.py`](../../tests/test_api_ci_stages.py) — эндпоинты переключателей этапов CI: каталог и состояние, `available=false` без конфигурации, 401/403 (scope `ci:write` и роль `operator`), 404 неизвестного этапа, 502 провайдера, строгий bool в теле;
 - [`tests/test_adapters_github_variables.py`](../../tests/test_adapters_github_variables.py) — адаптер repository variables: пагинация, PATCH→POST при 404, идемпотентный DELETE, маппинг ошибок без эха токена.
