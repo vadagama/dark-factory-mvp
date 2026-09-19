@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+import dark_factory.cli._common as cli_common
 import dark_factory.cli.outbox as outbox_module
 from dark_factory.cli.main import (
     EXIT_INVALID_INPUT,
@@ -114,7 +115,7 @@ def test_unreachable_state_store_fails_with_invalid_configuration(
     def _failing_engine(url: str) -> _UnreachableEngine:
         return _UnreachableEngine()
 
-    monkeypatch.setattr(outbox_module, "create_state_engine", _failing_engine)
+    monkeypatch.setattr(cli_common, "create_state_engine", _failing_engine)
 
     code = outbox_module.run_dispatch_command(
         OutboxDispatchArgs(once=False, json_output=True, limit=None, cleanup=False)

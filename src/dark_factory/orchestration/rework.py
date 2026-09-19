@@ -2,7 +2,7 @@
 
 The loop level above the flow transitions. The flow
 (``dark_factory.orchestration.flow``) applies an accepted ``ReworkAction``:
-it spends one rework round through ``dark_factory.rules.limits`` and sends
+it spends one rework round through ``dark_factory.orchestration.rules.limits`` and sends
 the work to the rework target stage. This module adds the loop-level policy
 decision the flow does not make: after a completed review pass, is one more
 rework round worth spending, or does the loop stop in ``Blocked`` with
@@ -43,7 +43,7 @@ from dark_factory.changes.escalations import EscalationViolation
 from dark_factory.changes.findings import Finding
 from dark_factory.changes.usage import BudgetSnapshot
 from dark_factory.orchestration.policy.escalation import escalation_stop_reason
-from dark_factory.rules.limits import rework_violation
+from dark_factory.orchestration.rules.limits import rework_violation
 
 
 @dataclass(frozen=True)

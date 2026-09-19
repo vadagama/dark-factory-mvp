@@ -17,7 +17,7 @@
 | Подсистема | Роль |
 |---|---|
 | `changes/usage.py::BudgetSnapshot` | run-level snapshot, переносимый между CI-джобами; флаги `*_exhausted` — **советующий** вход Flow (T-004) и координатора |
-| `rules/limits.py` | сами пороги и тексты причин (`continuation_violations`) |
+| `orchestration/rules/limits.py` | сами пороги и тексты причин (`continuation_violations`) |
 | `orchestration/budget/` | run/role-лимиты и allowance, резервации, вердикт — **авторитетный** учёт расхода попытки |
 | `orchestration/stages/` | превращает вердикт в `StageResult` (stop + findings), не храня состояние журнала |
 
@@ -136,7 +136,7 @@ flowchart TD
 
 Внутри каждого scope порядок задаёт `continuation_violations`: token → cost → deadline. Так как эффективные лимиты роли включают run-бюджет, нарушение run-лимита видно **дважды** — в run scope и в role scope роли (пример: проверка роли без allowance при исчерпанном run-бюджете даёт и `token budget exhausted: 100/100`, и `role develop: token budget exhausted: 100/100`). Причины role scope получают префикс `role {role.value}: `. Ровно на token/cost budget продолжение уже запрещено, ровно в момент deadline — ещё разрешено (строгое `now > deadline`).
 
-Rework-лимит координатор не проверяет: он остаётся в `checks.budget_exhaustions`. Из `rules/limits.py` координатор переиспользует только `continuation_violations`.
+Rework-лимит координатор не проверяет: он остаётся в `checks.budget_exhaustions`. Из `orchestration/rules/limits.py` координатор переиспользует только `continuation_violations`.
 
 ## 6. Консерватизм при неизвестном расходе (FR-018)
 
@@ -173,7 +173,7 @@ Rework-лимит координатор не проверяет: он оста�
 
 ## 8. Детерминизм
 
-- `now` — всегда явный параметр `check`/`reserve`/`aggregate`; настенные часы не читаются (как в `rules/limits.py`).
+- `now` — всегда явный параметр `check`/`reserve`/`aggregate`; настенные часы не читаются (как в `orchestration/rules/limits.py`).
 - Идентификатор резервации выводится из ключа вызывающего, не из источника случайности.
 - Координатор stateful — один журнал на инстанс; глобального мутабельного состояния нет.
 - `BudgetAggregate` frozen и round-trip-сериализуем (`model_dump_json` → `model_validate_json`).

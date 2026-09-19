@@ -8,11 +8,12 @@ The stage-level flow table (stage x NextAction) is built on top of this in T-004
 """
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from dark_factory.changes.clock import utc_now
 from dark_factory.changes.enums import (
     ChangeSource,
     FindingSeverity,
@@ -151,10 +152,6 @@ class InvalidStatusTransition(ValueError):
     """A status pair outside the transition table was requested."""
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 class Change(BaseModel):
     """A unit of work flowing through the factory (intake output, hld-mvp 8)."""
 
@@ -168,7 +165,7 @@ class Change(BaseModel):
     """Optional owning product (ADR-030 p.2); ``None`` for pre-T065 changes."""
     risk_class: RiskClass
     change_request: ChangeRequestRef | None = None
-    created_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class StageRun(BaseModel):
@@ -192,7 +189,7 @@ class StageRun(BaseModel):
         self.status = target
         self.state_revision += 1
         if target in STAGE_TERMINAL_STATUSES:
-            self.finished_at = _now()
+            self.finished_at = utc_now()
 
     def begin_retry(self, attempt_number: int) -> None:
         """Advance the stage run to a retry attempt of the same logical operation.
@@ -238,8 +235,8 @@ class ChangeRun(BaseModel):
     stages: list[StageRun] = []
     budget: BudgetSnapshot = Field(default_factory=BudgetSnapshot)
     implementation_contract: ImplementationContract | None = None
-    created_at: datetime = Field(default_factory=_now)
-    updated_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
 
     def apply_status(self, target: RunStatus) -> None:
@@ -250,7 +247,7 @@ class ChangeRun(BaseModel):
             )
         self.status = target
         self.state_revision += 1
-        self.updated_at = _now()
+        self.updated_at = utc_now()
         if target in RUN_TERMINAL_STATUSES:
             self.finished_at = self.updated_at
 
@@ -287,7 +284,7 @@ class StageResult(BaseModel):
     defaults to ``None``) and older readers ignore the new key, so
     ``schema_version`` stays ``1``."""
     usage: Usage | None = None
-    produced_at: datetime = Field(default_factory=_now)
+    produced_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("status")
     @classmethod

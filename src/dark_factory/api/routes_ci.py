@@ -1,7 +1,7 @@
 """CI stage toggle endpoints (T059, ADR-026/ADR-027).
 
 The console switches the factory's own CI stages through these endpoints: the
-catalog (``dark_factory.ci.stages``) decides what a stage is, and the toggle port
+catalog (``dark_factory.orchestration.ci``) decides what a stage is, and the toggle port
 writes the repository variable the workflow reads as ``vars.CI_SKIP_<JOB>``
 (ADR-026).
 
@@ -26,7 +26,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from dark_factory.api.auth import SCOPE_CI_WRITE, ApiToken, ApiTokenStore, require_write
 from dark_factory.api.dto import CiStagesView, CiStageToggleRequest, CiStageView
-from dark_factory.ci.stages import CI_STAGES, SKIP_VALUE, CiStage, is_skipped_value, stage_by_job
+from dark_factory.orchestration.ci import (
+    CI_STAGES,
+    SKIP_VALUE,
+    CiStage,
+    is_skipped_value,
+    stage_by_job,
+)
 from dark_factory.ports import CiStageTogglePort, PortError
 
 UNAVAILABLE_REASON: Final[str] = (

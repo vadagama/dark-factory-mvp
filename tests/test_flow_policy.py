@@ -59,7 +59,6 @@ from dark_factory.changes.next_action import (
 )
 from dark_factory.changes.refs import ChangeRequestRef, RepositoryRef
 from dark_factory.changes.run import ChangeRun, StageResult
-from dark_factory.flows.routes import STAGE_SEQUENCE
 from dark_factory.orchestration.flow import apply_result, expected_result_status
 from dark_factory.orchestration.policy.escalation import (
     BoundaryChange,
@@ -75,7 +74,8 @@ from dark_factory.orchestration.policy.escalation import (
     ui_verification_violation,
 )
 from dark_factory.orchestration.policy.merge import MergeRequestContext
-from dark_factory.rules.gates import required_gates
+from dark_factory.orchestration.routes import STAGE_SEQUENCE
+from dark_factory.orchestration.rules.gates import required_gates
 from tests.changes_factories import NOW, make_contract, make_merge_approval, make_run
 
 SHA = "731ac91"
@@ -518,7 +518,9 @@ def test_a_trusted_path_in_the_scope_is_raised_to_r4_off_the_quick_route() -> No
     run = _run_with_risk(
         Route.QUICK,
         RiskClass.R1,
-        scope=ChangeScope(in_scope=("src/dark_factory/rules/gates.py",), out_of_scope=()),
+        scope=ChangeScope(
+            in_scope=("src/dark_factory/orchestration/rules/gates.py",), out_of_scope=()
+        ),
     )
     result = _result(Stage.SPECIFICATION, ExecuteStageAction(next_stage=Stage.PLANNING), run.route)
     stop = _blocked_stop(run, result)

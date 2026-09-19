@@ -111,7 +111,7 @@ artifacts(job_ref) -> list[ArtifactRef]
 | `review_verification` | Verification |
 | `release` | Release |
 
-`stage_gate(stage)` принимает строку и валидирует её через `Stage(stage)`; неизвестная стадия — `ValueError`. Полная route-политика гейтов остаётся в `rules/gates.py`: маршрут добавляет гейты, которые CI-задание не оценивает (например, UI). Адаптеры: `FakeCI` (идемпотентен по ключу — replay возвращает job ref первого вызова; незасеянное задание сообщает `pending`) и `GitHubCI`.
+`stage_gate(stage)` принимает строку и валидирует её через `Stage(stage)`; неизвестная стадия — `ValueError`. Полная route-политика гейтов остаётся в `orchestration/rules/gates.py`: маршрут добавляет гейты, которые CI-задание не оценивает (например, UI). Адаптеры: `FakeCI` (идемпотентен по ключу — replay возвращает job ref первого вызова; незасеянное задание сообщает `pending`) и `GitHubCI`.
 
 ### 3.3. `TrackerPort`
 

@@ -1,13 +1,13 @@
 """Flow rules: gate policy, deterministic limits and merge protection (T-004, T-026)."""
 
-from dark_factory.rules.gates import required_gates, unsatisfied_gates
-from dark_factory.rules.limits import (
+from dark_factory.orchestration.rules.gates import required_gates, unsatisfied_gates
+from dark_factory.orchestration.rules.limits import (
     LimitRule,
     LimitViolation,
     continuation_violations,
     rework_violation,
 )
-from dark_factory.rules.merge_protection import (
+from dark_factory.orchestration.rules.merge_protection import (
     DEFAULT_MERGE_PROTECTION,
     MergeProtectionPolicy,
     MergeProtectionRule,

@@ -1,12 +1,12 @@
-# Правила Factory Flow — `rules/`
+# Правила Factory Flow — `orchestration/rules/`
 
-**Исходники:** [`src/dark_factory/rules/`](../../src/dark_factory/rules/)
+**Исходники:** [`src/dark_factory/orchestration/rules/`](../../src/dark_factory/orchestration/rules/)
 
 **Главный потребитель:** [`orchestration/flow.py`](../../src/dark_factory/orchestration/flow.py)
 
 ## 1. Назначение
 
-`rules/` содержит детерминированные политики, которые отвечают на вопрос: **может ли автономный Flow продолжать работу?**
+`orchestration/rules/` содержит детерминированные политики, которые отвечают на вопрос: **может ли автономный Flow продолжать работу?**
 
 Подсистема разделена на три файла:
 
@@ -18,9 +18,9 @@
 
 ```mermaid
 flowchart LR
-    INPUT["Route + Stage + RiskClass\nGateResult[] + BudgetSnapshot + now"] --> GATES["rules/gates.py"]
-    INPUT --> LIMITS["rules/limits.py"]
-    OBSERVED["Наблюдаемые настройки\nbranch protection"] --> MP["rules/merge_protection.py"]
+    INPUT["Route + Stage + RiskClass\nGateResult[] + BudgetSnapshot + now"] --> GATES["orchestration/rules/gates.py"]
+    INPUT --> LIMITS["orchestration/rules/limits.py"]
+    OBSERVED["Наблюдаемые настройки\nbranch protection"] --> MP["orchestration/rules/merge_protection.py"]
     GATES --> FLOW["orchestration/flow.py"]
     LIMITS --> FLOW
     MP --> MERGE["orchestration/policy/merge.py\nчерез адаптер провайдера"]
@@ -276,7 +276,7 @@ flowchart TD
 
 Wait-action может перевести run в ожидание даже при уже исчерпанном бюджете. При этом usage текущего результата всё равно будет накоплен. Проверка сработает при следующем действии продвижения.
 
-Эскалации и autonomy budget контракта живут не в `rules/`, а в [`orchestration/policy/escalation.py`](../../src/dark_factory/orchestration/policy/escalation.py) — Flow вызывает их вместе с правилами `rules/`, поэтому они включены в порядок принятия решения. Гейт входа в Construction — не проверка Flow, а префлайт исполнителя стадии (T-063, `stages/checks.construction_entry_reason`): он останавливает попытку Construction до любого внешнего эффекта.
+Эскалации и autonomy budget контракта живут не в `orchestration/rules/`, а в [`orchestration/policy/escalation.py`](../../src/dark_factory/orchestration/policy/escalation.py) — Flow вызывает их вместе с правилами `orchestration/rules/`, поэтому они включены в порядок принятия решения. Гейт входа в Construction — не проверка Flow, а префлайт исполнителя стадии (T-063, `stages/checks.construction_entry_reason`): он останавливает попытку Construction до любого внешнего эффекта.
 
 ## 7. Как нарушение представляется
 
@@ -338,6 +338,6 @@ next_stage = None
 ## 11. Связь с другими модулями
 
 - [routes.md](routes.md) — топология маршрутов и стадий, из которой берутся гейты;
-- [quality.md](quality.md) — кто вычисляет результаты гейтов, которые проверяет `rules/`;
+- [quality.md](quality.md) — кто вычисляет результаты гейтов, которые проверяет `orchestration/rules/`;
 - [orchestration-flow-and-state.md](orchestration-flow-and-state.md) — главный потребитель: как Flow применяет правила;
-- [orchestration-operations.md](orchestration-operations.md) — merge policy и эскалации рядом с правилами `rules/`.
+- [orchestration-operations.md](orchestration-operations.md) — merge policy и эскалации рядом с правилами `orchestration/rules/`.

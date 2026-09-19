@@ -37,6 +37,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
+from dark_factory.cli._common import os_error_reason
 from dark_factory.cli.main import (
     EXIT_BLOCKED,
     EXIT_ERROR,
@@ -180,7 +181,7 @@ def load_stage_result(path: str) -> StageResultView:
     except UnicodeDecodeError as exc:
         raise StageJobError(f"stage result {path!r} is not valid UTF-8") from exc
     except OSError as exc:
-        raise StageJobError(f"cannot read stage result {path!r}: {_os_error_reason(exc)}") from exc
+        raise StageJobError(f"cannot read stage result {path!r}: {os_error_reason(exc)}") from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -245,7 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(args.outputs_file).write_text(outputs, encoding="utf-8")
         except OSError as exc:
             return _fail_invalid(
-                f"cannot write the outputs file {args.outputs_file!r}: {_os_error_reason(exc)}"
+                f"cannot write the outputs file {args.outputs_file!r}: {os_error_reason(exc)}"
             )
     outcome = outcome_for_status(view.status)
     if outcome in (StageJobOutcome.BLOCKED, StageJobOutcome.FAILED):
@@ -306,11 +307,6 @@ def _usage_int(value: object) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return 0
-
-
-def _os_error_reason(exc: OSError) -> str:
-    """Short OS error text without echoing the raw exception (ADR-009 hygiene)."""
-    return exc.strerror or exc.__class__.__name__
 
 
 def _one_line(text: str) -> str:

@@ -20,7 +20,6 @@ from dark_factory.cli import run_records
 from dark_factory.cli.main import EXIT_ERROR, EXIT_INVALID_INPUT, EXIT_OK, ReleaseVerifyArgs, main
 from dark_factory.quality.release import (
     ReleaseObservation,
-    SmokeOutcome,
     build_release_evidence,
     evaluate_release,
 )
@@ -106,7 +105,7 @@ def _evidence_stub():
         observed_digest=DIGEST,
         argo_sync_raw="Synced",
         argo_health_raw="Healthy",
-        smoke=SmokeOutcome.of([SmokeProbeEvidence(name="http-health", passed=True)]),
+        smoke=[SmokeProbeEvidence(name="http-health", passed=True)],
     )
     decision = evaluate_release(observation)
     return build_release_evidence(
@@ -121,7 +120,7 @@ class TestRendering:
             observed_digest=DIGEST,
             argo_sync_raw="Synced",
             argo_health_raw="Healthy",
-            smoke=SmokeOutcome.of([SmokeProbeEvidence(name="http-health", passed=True)]),
+            smoke=[SmokeProbeEvidence(name="http-health", passed=True)],
         )
         decision = evaluate_release(observation)
         evidence = build_release_evidence(
@@ -171,7 +170,7 @@ class TestRendering:
             observed_digest=DIGEST,
             argo_sync_raw="Synced",
             argo_health_raw="Healthy",
-            smoke=SmokeOutcome.of([SmokeProbeEvidence(name="http-health", passed=True)]),
+            smoke=[SmokeProbeEvidence(name="http-health", passed=True)],
         )
         decision = evaluate_release(observation)
         evidence = build_release_evidence(observation, decision, verified_at=NOW)

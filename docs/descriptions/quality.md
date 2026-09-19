@@ -2,11 +2,11 @@
 
 **Исходники:** [quality/](../../src/dark_factory/quality/)
 
-**Главный потребитель:** [`rules/gates.py`](../../src/dark_factory/rules/gates.py) — политика обязательных гейтов; решение применяет [`orchestration/flow.py`](../../src/dark_factory/orchestration/flow.py). Оценочные функции `quality` из `src/` пока не вызываются — потребители только в тестах (§6.4).
+**Главный потребитель:** [`orchestration/rules/gates.py`](../../src/dark_factory/orchestration/rules/gates.py) — политика обязательных гейтов; решение применяет [`orchestration/flow.py`](../../src/dark_factory/orchestration/flow.py). Оценочные функции `quality` из `src/` пока не вызываются — потребители только в тестах (§6.4).
 
 ## 1. Назначение
 
-`quality/` **вычисляет результаты проверок**. Отвечает на вопрос «какова оценка этой работы?», но не решает «можно ли продолжать» — это политика `rules/`: она потребляет готовые результаты гейтов и говорит Flow, блокировать ли переход (детали — [rules.md](rules.md)).
+`quality/` **вычисляет результаты проверок**. Отвечает на вопрос «какова оценка этой работы?», но не решает «можно ли продолжать» — это политика `orchestration/rules/`: она потребляет готовые результаты гейтов и говорит Flow, блокировать ли переход (детали — [rules.md](rules.md)).
 
 | Файл | Слой | Содержание |
 |---|---|---|
@@ -41,7 +41,7 @@ flowchart TD
     CS["ChangeSet"] --> SGG["evaluate_specification_gate()"]
     CONTRACT["ImplementationContract\nопционален"] --> SGG
     SGG --> GD["GateDecision\n→ gates/specification.yaml"]
-    GR --> UG["rules/gates.py\nunsatisfied_gates()"]
+    GR --> UG["orchestration/rules/gates.py\nunsatisfied_gates()"]
     UG --> FLOW["orchestration/flow.py\n_block_reason()"]
     FLOW -->|"гейт не удовлетворён"| STOP["StopAction(blocked)"]
     FLOW -->|"все passed / skipped"| NEXT["Продвижение, merge policy"]
@@ -240,7 +240,7 @@ Timestamps отсутствуют: историю ведёт Git. `GateFinding`:
 
 ## 6. Как результаты гейтов попадают в обязательные гейты Flow
 
-### 6.1. Обязательные гейты маршрута (`rules/gates.py`)
+### 6.1. Обязательные гейты маршрута (`orchestration/rules/gates.py`)
 
 - `required_gates(route, stage) -> frozenset[Gate]` — базовый набор стадии плюс добавки маршрута: Specification→`specification`, Planning→`planning`, Construction→`code`, Review/Verification→`review`+`verification`, Release→`release`; `standard` добавляет `ui` на Construction, `quick` — ничего.
 - `unsatisfied_gates(route, stage, results) -> list[Gate]` — последний результат по каждому гейту выигрывает; удовлетворяют `passed` и `skipped`; `failed`, `pending` и отсутствие результата — нет; сортировка по `gate.value`.

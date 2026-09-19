@@ -16,7 +16,7 @@ from dark_factory.changes.findings import GateResult
 from dark_factory.changes.product import Product
 from dark_factory.changes.refs import ArtifactRef, RepositoryRef
 from dark_factory.changes.run import Change
-from dark_factory.ci.stages import CiStage, CiStageGroup, CiStageWeight
+from dark_factory.orchestration.ci import CiStage, CiStageGroup, CiStageWeight
 from dark_factory.ports import RepositoryValidation
 
 

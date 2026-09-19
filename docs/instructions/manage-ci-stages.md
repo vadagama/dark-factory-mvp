@@ -196,7 +196,7 @@ uvx pip-audit -r pip-audit-requirements.txt
 - `.github/workflows/ci.yml` — сами условия (`if: vars.CI_SKIP_*`) и состав этапов.
 - [ADR-026](../adr/ADR-026-parameterizable-ci-stages.md) — решение: почему repository variables, opt-out и fail-safe.
 - [ADR-027](../adr/ADR-027-console-ci-stage-toggles.md) — экран «Этапы CI» в консоли: те же переменные за API (`ci:write` + operator, fail-closed).
-- `src/dark_factory/ci/stages.py` — каталог этапов (что API отдаёт консоли); `console/src/pages/CiStagesPage.tsx` — сам экран.
+- `src/dark_factory/orchestration/ci.py` — каталог этапов (что API отдаёт консоли); `console/src/pages/CiStagesPage.tsx` — сам экран.
 - [ADR-011](../adr/ADR-011-risk-based-merge-release-policy.md) — merge человеком, релиз по зелёным гейтам.
 - [docs/development-workflow.md](../development-workflow.md) — git-цикл задачи.
 - `tests/test_ci_stage_toggles.py` — тест, который следит, чтобы у каждого этапа был переключатель, а список в этой инструкции не разошёлся с `ci.yml`.

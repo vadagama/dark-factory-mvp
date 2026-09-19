@@ -36,6 +36,7 @@ from dark_factory.changes.enums import (
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import Change, ChangeRun
 from dark_factory.orchestration.policy.risk import effective_change_risk_class
+from dark_factory.orchestration.rules.gates import required_human_gates
 from dark_factory.orchestration.stages.gates import GateObservation
 from dark_factory.ports import (
     MergeRequestPort,
@@ -43,7 +44,6 @@ from dark_factory.ports import (
     PipelineStatus,
     ReviewObservation,
 )
-from dark_factory.rules.gates import required_human_gates
 
 _APPROVAL_OUTCOMES: Final[Mapping[str, DecisionOutcome]] = {
     "approved": DecisionOutcome.APPROVED,

@@ -14,10 +14,11 @@ Environment variables:
 - ``DARK_FACTORY_LLM_MODEL`` — model name served by the proxy (e.g. ``openai/gpt-4o-mini``).
 """
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
+
+from dark_factory.adapters._env import missing_env_vars, resolve_env
 
 LLM_BASE_URL_ENV_VAR: Final[str] = "DARK_FACTORY_LLM_BASE_URL"
 """OpenAI-compatible base URL of the LiteLLM proxy (ADR-002 §6)."""
@@ -35,11 +36,6 @@ _REQUIRED_ENV_VARS: Final[tuple[str, ...]] = (
 )
 
 
-def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
-    """The given mapping or, by default, the process environment."""
-    return os.environ if env is None else env
-
-
 @dataclass(frozen=True, slots=True)
 class HarnessConfig:
     """Endpoint configuration of the harness adapter (LiteLLM proxy, ADR-002 §6)."""
@@ -51,13 +47,12 @@ class HarnessConfig:
     @classmethod
     def missing_env_vars(cls, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
         """Names of the required env vars that are unset or blank, in a stable order."""
-        source = _env(env)
-        return tuple(name for name in _REQUIRED_ENV_VARS if not (source.get(name) or "").strip())
+        return missing_env_vars(_REQUIRED_ENV_VARS, env)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "HarnessConfig | None":
         """Config read from ``env`` (default: the process environment); ``None`` when incomplete."""
-        source = _env(env)
+        source = resolve_env(env)
         if cls.missing_env_vars(env):
             return None
         return cls(

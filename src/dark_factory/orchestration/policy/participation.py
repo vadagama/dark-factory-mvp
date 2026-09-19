@@ -2,7 +2,7 @@
 
 The phase table is a direct transcription of ADR-018 p.1; the stage mapping
 projects it onto the five flow stages. Human-in-the-loop phases surface as
-human gates of the flow profiles (``dark_factory.flows.routes.HUMAN_GATES``);
+human gates of the flow profiles (``dark_factory.orchestration.routes.HUMAN_GATES``);
 human-on-the-loop phases stay autonomous with escalation on exceptions
 (ADR-018 p.5). Prod is a manual post-MVP phase (T-091) and has no stage.
 """

@@ -4,7 +4,8 @@ import pytest
 
 from dark_factory.changes.enums import RiskClass, Route, Stage
 from dark_factory.context.sdd.strictness import PROFILE_ROUTE, WorkflowProfile
-from dark_factory.flows.routes import (
+from dark_factory.orchestration.policy.risk import effective_change_risk_class
+from dark_factory.orchestration.routes import (
     HUMAN_GATES,
     ROUTE_PROFILES,
     ROUTE_STRICTNESS,
@@ -13,8 +14,7 @@ from dark_factory.flows.routes import (
     route_profile,
     select_route,
 )
-from dark_factory.orchestration.policy.risk import effective_change_risk_class
-from dark_factory.rules.gates import HUMAN_GATES as RULES_HUMAN_GATES
+from dark_factory.orchestration.rules.gates import HUMAN_GATES as RULES_HUMAN_GATES
 from tests.changes_factories import make_contract
 
 EXPECTED_SEQUENCE: tuple[Stage, ...] = (

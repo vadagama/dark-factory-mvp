@@ -20,14 +20,16 @@ raw exception, which may contain credentials (ADR-009).
 
 import asyncio
 import json
-import os
 import sys
 from collections.abc import Callable
-from typing import Final
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from dark_factory.cli._common import (
+    StateStoreUnreachableError,
+    open_state_store,
+    report_state_store_unreachable,
+)
 from dark_factory.cli.main import (
     EXIT_ERROR,
     EXIT_INVALID_INPUT,
@@ -43,40 +45,20 @@ from dark_factory.orchestration.events.models import (
     DispatchReport,
 )
 from dark_factory.orchestration.events.repository import DeliveryRepository
-from dark_factory.orchestration.state.engine import (
-    DEFAULT_DATABASE_URL,
-    create_session_factory,
-    create_state_engine,
-    session_scope,
-)
-
-DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
-"""State-store URL variable; the same one ``factory doctor`` checks (ADR-004)."""
-
-
-def _database_url() -> str:
-    """Configured state-store URL; the local default when unset (ADR-004)."""
-    raw = os.environ.get(DATABASE_URL_ENV_VAR)
-    return raw if raw and raw.strip() else DEFAULT_DATABASE_URL
+from dark_factory.orchestration.state.engine import session_scope
 
 
 def _run_with_store(operation: Callable[[sessionmaker[Session]], int], *, command: str) -> int:
-    """Run ``operation`` against the state store; exit 2 fast when it is unreachable."""
+    """Run ``operation`` against the state store; exit 2 fast when it is unreachable.
+
+    The diagnostic goes to stderr in every mode: the JSON document of a
+    finished command is only ever its report, never an error object.
+    """
     try:
-        engine = create_state_engine(_database_url())
-        with engine.connect():
-            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
-    except SQLAlchemyError:
-        # The exception text may embed the URL with credentials (ADR-009).
-        print(
-            f"factory {command}: the state store is not reachable or misconfigured", file=sys.stderr
-        )
-        return EXIT_INVALID_INPUT
-    factory = create_session_factory(engine)
-    try:
-        return operation(factory)
-    finally:
-        engine.dispose()
+        with open_state_store() as factory:
+            return operation(factory)
+    except StateStoreUnreachableError:
+        return report_state_store_unreachable(command, json_output=False)
 
 
 def render_text(report: DispatchReport) -> str:

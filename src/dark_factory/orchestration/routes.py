@@ -2,7 +2,7 @@
 
 ``RouteProfile`` is the topology slice of the FlowProfile (data-model 1: stage
 sequence per route). All MVP routes traverse the same five AI-DLC-like phases;
-they differ in gate policy (``dark_factory.rules.gates``) and in the risk-class
+they differ in gate policy (``dark_factory.orchestration.rules.gates``) and in the risk-class
 band they allow. A future route that skips stages only changes its profile here
 — the transition table and the engine are unaffected.
 
@@ -24,7 +24,7 @@ from typing import Final
 from dark_factory.changes.enums import Gate, RiskClass, Route, Stage
 from dark_factory.changes.risk import RISK_ORDER
 from dark_factory.context.sdd.strictness import PROFILE_ROUTE, WorkflowProfile
-from dark_factory.rules.gates import HUMAN_GATES
+from dark_factory.orchestration.rules.gates import HUMAN_GATES
 
 __all__ = [
     "HUMAN_GATES",
