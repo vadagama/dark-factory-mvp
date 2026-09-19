@@ -268,7 +268,7 @@ Runner копирует контракт в `ChangeRun.implementation_contract` 
 
 ## 10. Что хранит `state/`
 
-PostgreSQL — authoritative operational state (ADR-004). CI показывает observed state, но не заменяет state store. `base.py` задаёт stable naming convention ограничений (детерминированные имена для Alembic); CHECK-констрейнты рендерятся из значений доменных enum-ов (`_values`) — единый источник истины; `ALL_MODELS` — 12 таблиц для схемы и миграций.
+PostgreSQL — authoritative operational state (ADR-004). CI показывает observed state, но не заменяет state store. `base.py` задаёт stable naming convention ограничений (детерминированные имена для Alembic); CHECK-констрейнты рендерятся из значений доменных enum-ов (`_values`) — единый источник истины; `ALL_MODELS` — 13 таблиц для схемы и миграций.
 
 ```mermaid
 erDiagram
@@ -277,6 +277,7 @@ erDiagram
     execution ||--o{ usage_record : accumulates
     outbox ||--o{ event_delivery : fans_out
     change ||--o{ decision : decides
+    product ||--o{ change : groups
 ```
 
 | Таблица | Ключевые поля | Заметки |
@@ -290,17 +291,19 @@ erDiagram
 | `effect_ledger` | effect_key, status, external_ref | без FK; `effect_key` unique |
 | `outbox` | event_id, event_type, aggregate_id, aggregate_version, sequence | unique (aggregate_id, sequence) |
 | `event_delivery` | event_id + consumer_id, status, attempts | по строке на consumer |
-| `change` | id, external_ref, risk_class, payload | `external_ref` — partial unique |
+| `change` | id, external_ref, risk_class, product_id, payload | `external_ref` — partial unique; `product_id` — продукт-владелец (nullable, без FK) |
+| `product` | id, repository, status, status_reason, payload | реестр продуктов (T065, ADR-030); `status` — CHECK из `ProductStatus` |
 | `decision` | id, change_id, gate, outcome, commit_sha, idempotency_key | `idempotency_key` — partial unique |
 | `audit_log` | id, actor, action, resource_type + resource_id, outcome | append-only |
 
 State-specific enum-ы: `EffectStatus` (`planned`, `in_progress`, `succeeded`, `unknown`) и `DeliveryStatus` (`pending`, `delivered`, `failed`, `dead`, `waived`) — persistence-статусы, а не wire contract.
 
-## 11. `change_store.py`: intake, решения, аудит (T035, ADR-009 п.7)
+## 11. `change_store.py`: intake, продукты, решения, аудит (T035/T065, ADR-009 п.7)
 
 Репозитории тонкие и идемпотентные; потребители — HTTP API (`api/routes_changes.py`) и будущий durable wiring.
 
 - **`ChangeRepository`**: intake Change-документа; повтор по `id` возвращает существующую строку (`ON CONFLICT DO NOTHING` по PK → `(existing, False)`); дедуп по `external_ref` — partial unique index (FR-017, максимум один change на запись трекера); `get_raw()` отдаёт ORM-строку с `state_revision` для optimistic-concurrency проверок.
+- **`ProductRepository`** (T065, ADR-030): реестр продуктов; регистрация идемпотентна по `id` (`ON CONFLICT DO NOTHING` по PK → `(existing, False)`); `get()`/`list()` читают продукт; `update_status()` двигает `created → validating → ready | error` под optimistic `state_revision` (`SELECT … FOR UPDATE`), причина сбоя — в `status_reason`; аудит — забота API, репозиторий его не пишет.
 - **`DecisionRepository`**: version-bound approval; replay по `Idempotency-Key` (partial unique index: тот же ключ → то же решение, `created=False`); `actor_role` — роль API-вызывающего (`operator`/`service`), это не агентная роль (ADR-007).
 - **`AuditRepository`**: append-only аудит мутаций — одна строка в **транзакции caller-а** (`change.intake`, `approval.record`), `details` без секретов.
 
