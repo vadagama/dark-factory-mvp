@@ -1,0 +1,53 @@
+schema: dark-factory.dev/task-graph/v1
+tasks:
+  - id: TASK-001
+    title: "M0: снять блокеры пилота (B1, B2, TD-030)"
+    repository: dark-factory-mvp
+    type: implementation
+    satisfies: []
+    depends_on: []
+  - id: TASK-002
+    title: "M1: продукт, провижининг репозитория и intake"
+    repository: dark-factory-mvp
+    type: implementation
+    satisfies:
+      - req:dark-factory:changeset-workspace:product-registry
+      - req:dark-factory:changeset-workspace:repository-provisioning
+      - req:dark-factory:changeset-workspace:change-intake
+      - req:dark-factory:changeset-workspace:operator-guidance
+    depends_on:
+      - TASK-001
+  - id: TASK-003
+    title: "M2: обсуждения по спеке и документы-артефакты"
+    repository: dark-factory-mvp
+    type: implementation
+    satisfies:
+      - req:dark-factory:changeset-workspace:spec-conversations
+      - req:dark-factory:changeset-workspace:document-artifacts
+    depends_on:
+      - TASK-002
+  - id: TASK-004
+    title: "M3: фазы архитектуры и интерфейса"
+    repository: dark-factory-mvp
+    type: implementation
+    satisfies:
+      - req:dark-factory:changeset-workspace:design-and-ui-phases
+    depends_on:
+      - TASK-003
+  - id: TASK-005
+    title: "M4: план и управляемое исполнение"
+    repository: dark-factory-mvp
+    type: implementation
+    satisfies:
+      - req:dark-factory:changeset-workspace:plan-and-execution
+    depends_on:
+      - TASK-004
+  - id: TASK-006
+    title: "M5: демонстрация, доставка, помощник merge и закрытие"
+    repository: dark-factory-mvp
+    type: implementation
+    satisfies:
+      - req:dark-factory:changeset-workspace:acceptance-and-delivery
+      - req:dark-factory:changeset-workspace:merge-assistant
+    depends_on:
+      - TASK-005

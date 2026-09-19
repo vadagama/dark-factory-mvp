@@ -1,0 +1,33 @@
+schema: dark-factory.dev/reconciliation-plan/v1
+baseline_revision: "82dc76fe9b460135258e9e3ddc223dc07d6b607d20ac909911360965c9ee7bde"
+operations:
+  - operation: add
+    target: req:dark-factory:changeset-workspace:product-registry
+    artifact: requirements/REQ-001-product-registry.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:repository-provisioning
+    artifact: requirements/REQ-002-repository-provisioning.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:change-intake
+    artifact: requirements/REQ-003-change-intake.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:operator-guidance
+    artifact: requirements/REQ-004-operator-guidance.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:spec-conversations
+    artifact: requirements/REQ-005-spec-conversations.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:document-artifacts
+    artifact: requirements/REQ-006-document-artifacts.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:design-and-ui-phases
+    artifact: requirements/REQ-007-design-and-ui-phases.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:plan-and-execution
+    artifact: requirements/REQ-008-plan-and-execution.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:acceptance-and-delivery
+    artifact: requirements/REQ-009-acceptance-and-delivery.md
+  - operation: add
+    target: req:dark-factory:changeset-workspace:merge-assistant
+    artifact: requirements/REQ-010-merge-assistant.md

@@ -1,0 +1,46 @@
+schema: dark-factory.dev/verification-plan/v1
+requirements:
+  - requirement: req:dark-factory:changeset-workspace:product-registry
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+      - type: integration-test
+  - requirement: req:dark-factory:changeset-workspace:repository-provisioning
+    checks:
+      - type: acceptance-scenario
+      - type: contract-test
+      - type: integration-test
+  - requirement: req:dark-factory:changeset-workspace:change-intake
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+  - requirement: req:dark-factory:changeset-workspace:operator-guidance
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+  - requirement: req:dark-factory:changeset-workspace:spec-conversations
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+      - type: integration-test
+  - requirement: req:dark-factory:changeset-workspace:document-artifacts
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+  - requirement: req:dark-factory:changeset-workspace:design-and-ui-phases
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+  - requirement: req:dark-factory:changeset-workspace:plan-and-execution
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
+      - type: integration-test
+  - requirement: req:dark-factory:changeset-workspace:acceptance-and-delivery
+    checks:
+      - type: acceptance-scenario
+      - type: integration-test
+  - requirement: req:dark-factory:changeset-workspace:merge-assistant
+    checks:
+      - type: acceptance-scenario
+      - type: unit-test
