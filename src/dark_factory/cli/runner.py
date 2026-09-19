@@ -652,7 +652,13 @@ def _resolve_run(
             change_id=change.id,
             route=DEFAULT_RUN_ROUTE,
             provider=change.product.provider,
-            budget=BudgetSnapshot(),
+            # The operator's spend limit (T071) is the run budget; without one
+            # the default snapshot stays unconstrained, as before.
+            budget=(
+                change.spend_limit.to_budget()
+                if change.spend_limit is not None
+                else BudgetSnapshot()
+            ),
             input_revision=store.stage_input_revision(change),
             initial_stage_revision=initial_stage_revision,
             implementation_contract=contract,

@@ -44,19 +44,52 @@ const SEVERITY_TONES: Record<string, StatusTone> = {
   info: "neutral",
 };
 
+/** Product readiness (ADR-030 p.1): the failure cause is text, the tone only flags it. */
+const PRODUCT_TONES: Record<string, StatusTone> = {
+  created: "neutral",
+  validating: "info",
+  ready: "success",
+  error: "danger",
+};
+
+/** Brief completeness (T071): a draft is a warning — requirements cannot start from it. */
+const BRIEF_TONES: Record<string, StatusTone> = {
+  draft: "warning",
+  complete: "success",
+};
+
+/** Observed repository state (ADR-031 p.4). */
+const REPOSITORY_TONES: Record<string, StatusTone> = {
+  unavailable: "danger",
+  empty: "warning",
+  baseline_absent: "warning",
+  baseline_current: "success",
+  baseline_stale: "warning",
+};
+
+const TABLES: Record<string, Record<string, StatusTone>> = {
+  run: RUN_TONES,
+  stage: STAGE_TONES,
+  gate: GATE_TONES,
+  decision: DECISION_TONES,
+  severity: SEVERITY_TONES,
+  product: PRODUCT_TONES,
+  brief: BRIEF_TONES,
+  repository: REPOSITORY_TONES,
+};
+
+export type StatusKind =
+  | "run"
+  | "stage"
+  | "gate"
+  | "decision"
+  | "severity"
+  | "product"
+  | "brief"
+  | "repository"
+  | "generic";
+
 /** One mapping per wire enum keeps surprising values visible (neutral). */
-export function statusTone(status: string, kind: "run" | "stage" | "gate" | "decision" | "severity" | "generic"): StatusTone {
-  const table =
-    kind === "run"
-      ? RUN_TONES
-      : kind === "stage"
-        ? STAGE_TONES
-        : kind === "gate"
-          ? GATE_TONES
-          : kind === "decision"
-            ? DECISION_TONES
-            : kind === "severity"
-              ? SEVERITY_TONES
-              : undefined;
-  return table?.[status] ?? "neutral";
+export function statusTone(status: string, kind: StatusKind): StatusTone {
+  return TABLES[kind]?.[status] ?? "neutral";
 }

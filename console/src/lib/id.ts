@@ -22,3 +22,8 @@ export function uuidV4(): string {
 export function newChangeId(): string {
   return `chg_${uuidV4().replaceAll("-", "").slice(0, 12)}`;
 }
+
+/** Product id pattern matches the CLI convention: `prd_<12 hex chars>`; editable in the form. */
+export function newProductId(): string {
+  return `prd_${uuidV4().replaceAll("-", "").slice(0, 12)}`;
+}

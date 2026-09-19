@@ -30,9 +30,28 @@ API — операторский контроль и точка данных д�
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| `POST` | `/changes` | intake: создать Change из снапшота задачи (FR-001) |
+| `POST` | `/changes` | intake: создать Change из снапшота задачи (FR-001); с T071 — с `product_id`, брифом `IntakeBrief`, сценарием `specs_only|full` и лимитом `spend_limit` (USD) |
+| `GET` | `/changes` | список изменений; фильтр `product_id` (T071) |
 | `GET` | `/changes/{change_id}` | карточка изменения: scope, ограничения, статус, ссылки |
 | `GET` | `/changes/{change_id}/trace` | полная трассируемая цепочка (SC-007) |
+| `PUT` | `/changes/{change_id}/brief` | заменить бриф задачи (T071/T072); статус брифа выводится сервером |
+| `GET` | `/changes/{change_id}/guidance` | «следующий шаг» задачи — серверный `Guidance` (T074, ADR-033) |
+
+### Briefs
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `POST` | `/briefs/formulate` | «Помоги сформулировать»: `{source_text}` → `IntakeBrief` через harness (T072); без harness или при отказе — 200 с `status=draft` и `error` |
+
+### Products
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `GET` | `/products` | реестр продуктов (T066, ADR-030) |
+| `POST` | `/products` | регистрация продукта; дедуп по `id` |
+| `GET` | `/products/{product_id}` | продукт и его готовность |
+| `POST` | `/products/{product_id}/validate` | наблюдение репозитория и запись готовности `validating → ready|error` (ADR-031); 503 без порта провижининга |
+| `GET` | `/products/{product_id}/guidance` | «следующий шаг» продукта — `Guidance` (T074) |
 
 ### Approvals
 
@@ -71,7 +90,9 @@ API — операторский контроль и точка данных д�
 | Операция | Кто |
 |---|---|
 | Чтение runs/evidence/gates | оператор, Console |
-| Intake change | оператор, трекер (через adapter) |
+| Intake change, бриф, «Помоги сформулировать» | оператор, трекер (через adapter): scope `changes:write` |
+| Регистрация и валидация продукта | авторизованный оператор: scope `products:write` + роль `operator` |
+| Чтение `Guidance` | открыто (read-model, ничего не исполняет — ADR-033 p.2) |
 | Approval/decision | авторизованный оператор (не агент) |
 | Переключение этапов CI | авторизованный оператор (не агент): scope `ci:write` + роль `operator` |
 | Merge/deploy | **вне API ядра** — доверенный финализатор / человек (FR-010, FR-023) |

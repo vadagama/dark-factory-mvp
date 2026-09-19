@@ -2,6 +2,8 @@
 
 from dark_factory.changes.enums import (
     BoundaryArea,
+    BriefAuthor,
+    BriefStatus,
     ChangeRequestStatus,
     ChangeSource,
     DecisionClass,
@@ -21,6 +23,7 @@ from dark_factory.changes.enums import (
     Role,
     Route,
     RunStatus,
+    Scenario,
     Stage,
     StageStatus,
     StopOutcome,
@@ -33,6 +36,7 @@ from dark_factory.changes.implementation_contract import (
     ContractBudget,
     ImplementationContract,
 )
+from dark_factory.changes.intake import IntakeBrief, SpendLimit
 from dark_factory.changes.keys import attempt_id, effect_key, operation_key
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
@@ -81,6 +85,8 @@ __all__ = [
     "AcceptanceCriterion",
     "ArtifactRef",
     "BoundaryArea",
+    "BriefAuthor",
+    "BriefStatus",
     "BudgetSnapshot",
     "Change",
     "ChangeRequestRef",
@@ -107,6 +113,7 @@ __all__ = [
     "GateStatus",
     "HumanParticipation",
     "ImplementationContract",
+    "IntakeBrief",
     "InvalidStatusTransition",
     "MergeAction",
     "NextAction",
@@ -123,6 +130,8 @@ __all__ = [
     "RunManifest",
     "RunRecord",
     "RunStatus",
+    "Scenario",
+    "SpendLimit",
     "Stage",
     "StageResult",
     "StageRun",

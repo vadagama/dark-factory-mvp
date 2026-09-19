@@ -42,7 +42,7 @@
 | Поле | Тип | `None` означает |
 |---|---|---|
 | `token_budget` | `int \| None`, `ge=1` | измерение не ограничено |
-| `cost_budget` | `Decimal \| None` | измерение не ограничено |
+| `cost_budget` | `Decimal \| None` | измерение не ограничено; с T071 лимит intake (`Change.spend_limit.cost_budget_usd`, USD) копируется сюда при создании run (`factory run advance --change-id`) |
 | `deadline` | `datetime \| None` | измерение не ограничено |
 
 `configured` — `True`, если задано хотя бы одно измерение. `token_budget=0` отвергается, как и в `BudgetSnapshot` (`ge=1`): нулевой лимит бессмыслен.

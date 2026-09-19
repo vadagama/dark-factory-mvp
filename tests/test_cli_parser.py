@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from dark_factory.changes.enums import Provider, Route, Stage
+from dark_factory.changes.enums import Provider, RiskClass, Route, Scenario, Stage
 from dark_factory.cli.main import (
     ApiServeArgs,
+    ChangeCreateArgs,
+    ChangeStatusArgs,
     DoctorArgs,
     OutboxDispatchArgs,
     OutboxReplayArgs,
@@ -303,6 +305,97 @@ def test_product_validate_show_and_list_parse_options() -> None:
     )
 
 
+def test_change_create_parses_all_options() -> None:
+    args = parse_command(
+        [
+            "change",
+            "create",
+            "--product",
+            "prd-calc",
+            "--title",
+            "Percent button",
+            "--problem",
+            "no percent",
+            "--goal",
+            "percent works",
+            "--constraint",
+            "keep keyboard",
+            "--constraint",
+            "no new deps",
+            "--out-of-scope",
+            "scientific mode",
+            "--scenario",
+            "specs_only",
+            "--limit-usd",
+            "12.50",
+            "--token-limit",
+            "50000",
+            "--risk-class",
+            "R2",
+            "--description",
+            "desc",
+            "--id",
+            "chg_abc",
+            "--json",
+        ]
+    )
+    assert args == ChangeCreateArgs(
+        product_id="prd-calc",
+        title="Percent button",
+        problem="no percent",
+        goal="percent works",
+        constraints=("keep keyboard", "no new deps"),
+        out_of_scope=("scientific mode",),
+        brief_json=None,
+        scenario=Scenario.SPECS_ONLY,
+        limit_usd="12.50",
+        token_limit=50000,
+        risk_class=RiskClass.R2,
+        description="desc",
+        change_id="chg_abc",
+        json_output=True,
+    )
+
+
+def test_change_create_defaults_and_brief_json() -> None:
+    args = parse_command(
+        [
+            "change",
+            "create",
+            "--product",
+            "prd-calc",
+            "--title",
+            "T",
+            "--limit-usd",
+            "5",
+            "--brief-json",
+            "-",
+        ]
+    )
+    assert args == ChangeCreateArgs(
+        product_id="prd-calc",
+        title="T",
+        problem=None,
+        goal=None,
+        constraints=(),
+        out_of_scope=(),
+        brief_json="-",
+        scenario=Scenario.FULL,
+        limit_usd="5",
+        token_limit=None,
+        risk_class=RiskClass.R1,
+        description=None,
+        change_id=None,
+        json_output=False,
+    )
+
+
+def test_change_status_parses_options() -> None:
+    assert parse_command(["change", "status", "--id", "chg_abc", "--json"]) == ChangeStatusArgs(
+        change_id="chg_abc", json_output=True
+    )
+
+
 def test_run_publish_parses_options() -> None:
     assert parse_command(
         [
@@ -482,6 +575,11 @@ def test_release_verify_defaults() -> None:
         ["product", "add", "--id", "prd-1", "--name", "Calc", "--repository", "a/b"],
         ["product", "validate"],
         ["product", "show"],
+        ["change"],
+        ["change", "create"],
+        ["change", "create", "--product", "prd-1", "--title", "T"],
+        ["change", "create", "--product", "prd-1", "--limit-usd", "5"],
+        ["change", "status"],
         ["outbox", "replay"],
         ["outbox", "replay", "--consumer", "tracker"],
         ["outbox", "skip"],
@@ -513,6 +611,30 @@ def test_missing_required_argument_exits_with_code_2(argv: list[str]) -> None:
             "a/b",
         ],
         ["product", "list", "--limit", "many"],
+        [
+            "change",
+            "create",
+            "--product",
+            "p",
+            "--title",
+            "T",
+            "--limit-usd",
+            "5",
+            "--scenario",
+            "x",
+        ],
+        [
+            "change",
+            "create",
+            "--product",
+            "p",
+            "--title",
+            "T",
+            "--limit-usd",
+            "5",
+            "--risk-class",
+            "R9",
+        ],
     ],
 )
 def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
@@ -537,6 +659,9 @@ def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
         ["product", "validate", "--help"],
         ["product", "list", "--help"],
         ["product", "show", "--help"],
+        ["change", "--help"],
+        ["change", "create", "--help"],
+        ["change", "status", "--help"],
         ["reconcile", "--help"],
         ["outbox", "--help"],
         ["outbox", "dispatch", "--help"],

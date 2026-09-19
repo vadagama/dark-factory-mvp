@@ -13,6 +13,10 @@ import type {
   Evidence,
   Finding,
   GateResult,
+  Guidance,
+  IntakeBrief,
+  Product,
+  ProductValidationView,
   RunCard,
   RunSummary,
   RunTrace,
@@ -30,6 +34,190 @@ export const change: Change = {
   risk_class: "R2",
   change_request: null,
   created_at: "2026-09-01T10:00:00Z",
+  product_id: "prd_demo_001",
+  brief: null,
+  scenario: "full",
+  spend_limit: { cost_budget_usd: "25.0000", token_budget: null },
+};
+
+// -- products, briefs, guidance (T065–T076) ----------------------------------
+
+export const product: Product = {
+  id: "prd_demo_001",
+  name: "Demo service",
+  description: "Synthetic product for component tests",
+  repository: { provider: "github", slug: "acme/demo-service" },
+  repository_url: "https://github.com/acme/demo-service",
+  baseline_ref: "baseline/2026-09",
+  dev_env_ref: null,
+  status: "ready",
+  status_reason: null,
+  state_revision: 3,
+  created_at: "2026-08-30T09:00:00Z",
+};
+
+/** Registered but never validated: guidance says "validate". */
+export const productCreated: Product = {
+  ...product,
+  id: "prd_demo_002",
+  name: "Legacy API",
+  description: null,
+  repository: { provider: "gitlab", slug: "acme/legacy-api" },
+  repository_url: null,
+  baseline_ref: null,
+  status: "created",
+  state_revision: 1,
+  created_at: "2026-09-02T08:00:00Z",
+};
+
+export const productValidated: ProductValidationView = {
+  ...product,
+  status: "ready",
+  state_revision: 4,
+  validation: {
+    repository: product.repository,
+    state: "baseline_current",
+    default_branch: "main",
+    head_revision: "abc1234def",
+  },
+};
+
+export const briefComplete: IntakeBrief = {
+  problem: "Нет проверки живости сервиса",
+  goal: "Эндпоинт /health отвечает 200 при готовности",
+  constraints: ["Без новых зависимостей"],
+  out_of_scope: ["Метрики readiness"],
+  source_text: "Нужен health endpoint для демо-сервиса",
+  status: "complete",
+  formulated_by: "agent",
+  error: null,
+};
+
+/** The agent harness is not configured: still a 200, but a draft with the cause. */
+export const briefDraftWithError: IntakeBrief = {
+  problem: null,
+  goal: null,
+  constraints: [],
+  out_of_scope: [],
+  source_text: "Нужен health endpoint для демо-сервиса",
+  status: "draft",
+  formulated_by: null,
+  error: "Agent harness is not configured on this contour",
+};
+
+export const changeWithBrief: Change = {
+  ...change,
+  brief: briefComplete,
+  scenario: "specs_only",
+  spend_limit: { cost_budget_usd: "25.0000", token_budget: 150000 },
+};
+
+export const productGuidanceReady: Guidance = {
+  schema_version: 1,
+  subject: { kind: "product", id: "prd_demo_001" },
+  phase: null,
+  headline: "Продукт готов к работе",
+  why: "Репозиторий проверен фабрикой; задач у продукта: 1.",
+  primary: {
+    label: "Новая фича",
+    cli: "factory change create --product prd_demo_001 …",
+    api: "POST /changes",
+    enabled: true,
+    reason: null,
+  },
+  secondary: [
+    {
+      label: "Проверить репозиторий",
+      cli: "factory product validate --id prd_demo_001",
+      api: "POST /products/prd_demo_001/validate",
+      enabled: true,
+      reason: null,
+    },
+  ],
+  blockers: [],
+  after: "После создания задачи: агент сформулирует бриф, затем фаза «Требования».",
+};
+
+export const productGuidanceCreated: Guidance = {
+  schema_version: 1,
+  subject: { kind: "product", id: "prd_demo_002" },
+  phase: null,
+  headline: "Продукт зарегистрирован, репозиторий ещё не проверен",
+  why: "Фабрика не подтверждала доступ к репозиторию: готовность не наблюдалась.",
+  primary: {
+    label: "Проверить репозиторий",
+    cli: "factory product validate --id prd_demo_002",
+    api: "POST /products/prd_demo_002/validate",
+    enabled: true,
+    reason: null,
+  },
+  secondary: [
+    {
+      label: "Показать продукт",
+      cli: "factory product show --id prd_demo_002",
+      api: "GET /products/prd_demo_002",
+      enabled: true,
+      reason: null,
+    },
+  ],
+  blockers: [
+    {
+      what: "Репозиторий не проверен",
+      who: "operator",
+      how: "Запустите проверку: фабрика попробует дойти до репозитория.",
+    },
+  ],
+  after: "После проверки: продукт станет ready, и можно создать первую задачу.",
+};
+
+/** A change whose brief is complete: the primary is a CLI-only run advance. */
+export const changeGuidanceStart: Guidance = {
+  schema_version: 1,
+  subject: { kind: "change", id: "chg_demo_001" },
+  phase: "initiative",
+  headline: "Бриф готов — можно запускать фазу «Требования»",
+  why: "Проблема и цель сформулированы; сценарий specs-only: задача завершится после согласования спецификаций.",
+  primary: {
+    label: "Запустить фазу «Требования»",
+    cli: "factory run advance --change-id chg_demo_001",
+    api: null,
+    enabled: true,
+    reason: null,
+  },
+  secondary: [
+    { label: "Дополнить бриф", cli: null, api: "PUT /changes/chg_demo_001/brief", enabled: true, reason: null },
+  ],
+  blockers: [],
+  after: "После запуска: агент product соберёт требования; согласование — на гейте specification.",
+};
+
+/** A draft brief: the primary is the brief editor, blocked on the operator. */
+export const changeGuidanceDraft: Guidance = {
+  schema_version: 1,
+  subject: { kind: "change", id: "chg_demo_001" },
+  phase: "initiative",
+  headline: "Бриф не завершён",
+  why: "Не заполнены: problem, goal.",
+  primary: {
+    label: "Дополнить бриф",
+    cli: null,
+    api: "PUT /changes/chg_demo_001/brief",
+    enabled: true,
+    reason: null,
+  },
+  secondary: [
+    {
+      label: "Запустить фазу «Требования»",
+      cli: "factory run advance --change-id chg_demo_001",
+      api: null,
+      enabled: false,
+      reason: "Бриф не завершён: требования нельзя начать без problem и goal.",
+    },
+  ],
+  blockers: [
+    { what: "Бриф — черновик", who: "operator", how: "Заполните problem и goal или попросите агента сформулировать." },
+  ],
+  after: null,
 };
 
 export const runSummary: RunSummary = {
@@ -138,9 +326,9 @@ export const runCardSecond: RunCard = {
   open_blockers: 0,
 };
 
-export function makeChangeCard(decisionsCount: number): ChangeCard {
+export function makeChangeCard(decisionsCount: number, base: Change = change): ChangeCard {
   return {
-    ...change,
+    ...base,
     runs: [{ run_id: "run_demo_001", status: "succeeded" }],
     decisions_count: decisionsCount,
   };

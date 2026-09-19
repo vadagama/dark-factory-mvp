@@ -117,3 +117,4 @@ def test_openapi_schema_contains_the_product_paths() -> None:
     assert set(paths[f"{API}/products"]) == {"get", "post"}
     assert set(paths[f"{API}/products/{{product_id}}"]) == {"get"}
     assert set(paths[f"{API}/products/{{product_id}}/validate"]) == {"post"}
+    assert set(paths[f"{API}/products/{{product_id}}/guidance"]) == {"get"}

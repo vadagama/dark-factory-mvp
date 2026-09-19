@@ -18,6 +18,7 @@
 | Продвижение запуска ровно на одну стадию | `run advance` (T-092) |
 | Снятие (отзыв) ошибочного или невалидного запуска | `run withdraw` (T064) |
 | Регистрация продукта, проверка готовности его репозитория, реестр | `product add` / `validate` / `list` / `show` (T070, ADR-030) |
+| Заведение задачи с брифом, сценарием и лимитом; «следующий шаг» | `change create` / `change status` (T073, ADR-033) |
 | Публикация индекса run-записи в `dark-factory-runs` | `run publish` (T-061) |
 | Диагностика окружения и конфигурации | `doctor` |
 | Один идемпотентный проход Reconciler | `reconcile` |
@@ -40,6 +41,7 @@ flowchart TD
     D --> ADV["run advance, run status,\nrun withdraw\ncli/runner.py"]
     D --> PUB["run publish\ncli/runs.py"]
     D --> PRD["product add/validate/list/show\ncli/products.py"]
+    D --> CHG["change create/status\ncli/changes.py + cli/guidance.py"]
     D --> REC["reconcile\ncli/reconcile.py"]
     D --> OUT["outbox dispatch/replay/skip\ncli/outbox.py"]
     D --> DOC["doctor\ncli/doctor.py"]
@@ -63,6 +65,8 @@ flowchart TD
     RSTORE --> PG
     PRD --> PSTORE["orchestration/state/change_store.py\nProductRepository + AuditRepository\norchestration/products.py — готовность"]
     PSTORE --> PG
+    CHG --> GSTORE["orchestration/state/guidance.py\nфакты → orchestration/guidance.py\n(та же проекция, что у API)"]
+    GSTORE --> PG
     DOC --> ENV["переменные окружения\nофлайн, без БД"]
 ```
 
@@ -73,6 +77,7 @@ flowchart TD
 | `stage run` | файл change-снапшота + `--evidence-dir`; PostgreSQL state store не используется (подключение — «durable state-store wiring», ещё не сделано) |
 | `run advance`, `run status`, `run withdraw` | PostgreSQL через `orchestration/state/run_store.py`: change из intake и run-стейт (execution/stage/attempt/stage_result/outbox/audit_log); `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` |
 | `product add`, `product validate`, `product list`, `product show` | PostgreSQL через `orchestration/state/change_store.py` (`ProductRepository`, `AuditRepository`); `product validate` дополнительно наблюдает репозиторий через шов `provisioning` (`RepositoryProvisioningPort`), который связывает `runtime.entrypoint` — без него команда отказывает (exit 2), статус не меняется |
+| `change create`, `change status` | PostgreSQL через `orchestration/state/change_store.py` (`ProductRepository`, `ChangeRepository`, `AuditRepository`) и `orchestration/state/guidance.py` (последний run и его результат — для `Guidance`) |
 | `reconcile`, `outbox *`, `api serve` | PostgreSQL через `orchestration/state/engine.py`: `DATABASE_URL`, иначе `DEFAULT_DATABASE_URL` = `postgresql+psycopg://dark_factory:dark_factory@localhost:5432/dark_factory` |
 | `doctor` | только переменные окружения; соединение с БД не открывается (офлайн-проверки) |
 | `ci_job` | файл `stage_result.json` + `$GITHUB_OUTPUT` |
@@ -103,6 +108,8 @@ flowchart TD
 | `product validate` | `--id`*, `--json` | Наблюдение репозитория через шов `provisioning` и запись готовности `validating → ready/error` (ADR-030 p.4, ADR-031); audit `product.validate` | 0/1/2 |
 | `product list` | `--limit` (1–200, по умолчанию 50), `--offset` (≥ 0), `--json` | Реестр продуктов: по строке на продукт или массив документов `Product` | 0/2 |
 | `product show` | `--id`*, `--json` | Один продукт: статус, причина ошибки, ссылки baseline/dev-контура | 0/2 |
+| `change create` | `--product`*, `--title`*, `--limit-usd`*, бриф: `--problem`, `--goal`, `--constraint` (повторяемый), `--out-of-scope` (повторяемый) **или** `--brief-json <path\|->`; `--scenario` (`specs_only`/`full`, default `full`), `--token-limit`, `--risk-class` (default `R1`), `--description`, `--id`, `--json` | Intake задачи для продукта с брифом, сценарием и лимитом (T073/T071); идемпотентно по `--id`; печатает блок «Следующий шаг» | 0/2 |
+| `change status` | `--id`*, `--json` | Задача, её последний run и блок «Следующий шаг» (`Guidance`, T074) | 0/2 |
 | `reconcile` | `--json` | Один проход Reconciler | 0/2 |
 | `outbox dispatch` | `--once`, `--json`, `--limit`, `--cleanup` | Одна пачка доставки outbox | 0/2 |
 | `outbox replay` | `--event-id`*, `--consumer`, `--json` | dead/failed → pending | 0/1/2 |
@@ -282,6 +289,14 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 
 `--json` печатает ровно один документ на stdout: `add` — `{"outcome", "persisted", "product"}`; `validate` — `{"outcome", "product", "validation"}` (наблюдение `RepositoryValidation`: `state`, `default_branch`, `head_revision`); `show` — `Product`; `list` — массив `Product`. Недоступный или отказавший store — exit 2 с фиксированным текстом без URL (ADR-009). Композиция: `runtime.entrypoint` собирает runtime только для `product validate` (ради порта провижининга) и освобождает его в `finally`; `add`/`list`/`show` идут core-путём без сборки.
 
+### 3.11. `change create | status` (T073, T071, T074, ADR-033)
+
+Операторская сторона intake (`cli/changes.py`). **`change create`** заводит задачу для зарегистрированного продукта: репозиторий берётся из реестра (`ProductRepository`), неизвестный `--product` — exit 2 до записи. Бриф — из флагов (`--problem`, `--goal`, повторяемые `--constraint`/`--out-of-scope`; автор `operator`) или из JSON (`--brief-json`, путь или `-` для stdin; та же форма, что ответ `POST /briefs/formulate`, поэтому бриф, сформулированный агентом, передаётся как есть, с `formulated_by=agent` и `source_text`); совмещать оба способа нельзя (exit 2). Бриф без проблемы или цели сохраняется как `draft` — задача создаётся, а «следующий шаг» говорит, что дополнить. Лимит `--limit-usd` парсится командой (не число, ≤ 0, больше 4 знаков — exit 2 с текстом, не трейс argparse); `--token-limit` — второе измерение. `--id` — клиентский id (по умолчанию генерируется `chg_<12 hex>`); повтор с тем же `--id` — replay без записи, audit `change.intake` с `outcome` `created`/`replayed` и `actor=cli`. Текстовый вывод: строка результата, факты задачи (`render_change_text`: продукт, репозиторий, сценарий, лимит, риск, статус брифа и недостающие поля, problem/goal) и блок «Следующий шаг».
+
+**`change status`** печатает задачу, её последний run (`run <id>: <status> (state_revision=…, cost_used=…)` или `run: none`) и тот же блок «Следующий шаг». `--json` — `{"change", "run", "guidance"}` (у `create` — `{"outcome", "persisted", "change", "guidance"}`).
+
+**Блок «Следующий шаг»** (`cli/guidance.py: render_guidance_text`) — рендер `Guidance`, вычисленного ядром (`orchestration/state/guidance.py` собирает продукт, последний run и `NextAction` его последнего результата; `orchestration/guidance.py` — чистая проекция): `Следующий шаг: <headline>` · `почему:` · `→ <primary> (cli: …) (api: …)` (недоступное действие — `— недоступно: <причина>`) · `также:` · `блокеры:` (`что — снимает: кто — как`) · `после:`. CLI ничего не решает сам — тот же объект отдаёт `GET /changes/{id}/guidance`, и Console рендерит его же (ADR-033 p.3); `tests/integration/test_cli_changes.py` сверяет JSON CLI с проекцией из store побайтно.
+
 ## 4. Парсинг и обработка ошибок (`main.py`)
 
 - **Дерево команд**: `build_parser()` строит `argparse` с `prog="factory"` и обязательными subparsers (`metavar="command"`) на каждом уровне (включая `product add|validate|list|show`, T070): `stage {run,resume}`, `run {advance,status,publish,withdraw}`, `reconcile`, `outbox {dispatch,replay,skip}`, `doctor`, `api {serve}`, `release {verify}`. Голое `factory`, `factory stage` или `factory outbox` → ошибка argparse, exit 2.
@@ -323,6 +338,11 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 | `product validate`: адаптер провижининга бросил исключение | exit 1 `execution_error` с фиксированным текстом, ничего не записано, текст исключения не эхоится |
 | `product validate`/`show`: неизвестный продукт | exit 2 `invalid_input`; audit не пишется, репозиторий не наблюдается |
 | `product list`: `--limit` вне 1–200 или `--offset < 0` | exit 2 без обращения к store |
+| `change create`: `--limit-usd` не число / ≤ 0 / > 4 знаков, `--brief-json` нечитаем или не по схеме, `--brief-json` вместе с флагами брифа | exit 2 `invalid_input` до обращения к store |
+| `change create`: неизвестный `--product` | exit 2 `invalid_input`, ничего не записано |
+| `change create`: `--id` уже есть | replay: exit 0, сохранённое не перезаписывается, audit `replayed`, тот же блок «Следующий шаг» |
+| `change create`: бриф без problem/goal | задача создана как `draft`, «Следующий шаг» — `Дополнить бриф (api: PUT /changes/{id}/brief)`, запуск требований показан недоступным с причиной |
+| `change status`: неизвестная задача | exit 2 `invalid_input` |
 | `--json` у `stage run` | `operation_key=…` в stderr; stdout — ровно один JSON |
 | `doctor`: `DATABASE_URL` не задан или пустой | `warn`, exit 0; ошибка схеме URL — `error`, exit 2 |
 | `ci_job`: `status = waiting` | exit 0, без аннотации — waiting не ошибка |
@@ -356,7 +376,8 @@ CLI-лицо протокола run-записи: берёт `run_record.json`, 
 - [test_cli_release.py](../../tests/test_cli_release.py) — exit-коды, invalid-ветки, e2e DoD (успешный и неуспешный smoke → статусы + evidence), rollback-сигнал, короткое замыкание проб, отсутствие эха секретов;
 - [test_cli_runs.py](../../tests/test_cli_runs.py) — `run publish`: exit-коды, форма `--json`, fallback на `DARK_FACTORY_RUNS_ROOT`, отсутствие эха секрета, созданные файлы записи;
 - [test_cli_products.py](../../tests/test_cli_products.py) — `product add|validate|list|show` над стабами реестра: идемпотентность `add`, маппинг исхода на exit-код, рендер текста и `--json`, audit-строки, отказ без порта провижининга, non-echo исключений адаптера и URL store; [test_orchestration_products.py](../../tests/test_orchestration_products.py) — правило готовности (исчерпывающе по `RepositoryState`) и переход через `validating`;
-- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify`, `run publish`, `run withdraw` и `product *`, их флагов и отсутствующих обязательных опций.
+- [test_cli_changes.py](../../tests/test_cli_changes.py) — `change create|status` над стабами реестра: бриф из флагов и JSON, черновик, сценарий и лимит, replay, парсинг лимита, неизвестный продукт/задача, один и тот же блок «Следующий шаг» после `create` и в `status`, non-echo URL store; интеграция — [tests/integration/test_cli_changes.py](../../tests/integration/test_cli_changes.py) (JSON `guidance` CLI равен проекции из store);
+- [test_cli_parser.py](../../tests/test_cli_parser.py) — дополнительно парсинг `release verify`, `run publish`, `run withdraw`, `product *` и `change *`, их флагов и отсутствующих обязательных опций.
 
 Интеграционные проги `run advance`/`run withdraw`/`product *` над реальной БД живут в `tests/integration/test_runner_advance.py`, `tests/integration/test_cli_products.py` и `tests/integration/test_run_withdraw.py`; unit-слои этих файлов БД не касаются.
 

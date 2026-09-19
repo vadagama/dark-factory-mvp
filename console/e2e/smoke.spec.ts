@@ -1,7 +1,9 @@
 /**
- * Playwright smoke suite (T036 DoD): one scenario per console screen, run
- * against `vite preview` with the API stubbed by page.route (synthetic data
- * only — ADR-021 p.4, no secrets in fixtures).
+ * Playwright smoke suite (T036 DoD, extended for T075/T076): one scenario per
+ * console screen, run against `vite preview` with the API stubbed by
+ * page.route (synthetic data only — ADR-021 p.4, no secrets in fixtures).
+ * ADR-037 IA: products are the index; the legacy changes list lives at
+ * /changes; the service screens moved under /service with redirects.
  */
 
 import { expect, test } from "@playwright/test";
@@ -12,7 +14,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("screen 1: changes list with statuses and fail-closed intake", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/changes");
   const table = page.getByTestId("changes-table");
   await expect(table).toContainText("chg_demo_001");
   await expect(table).toContainText("Add /health endpoint");
@@ -106,7 +108,7 @@ test("screen 3: gates, approvals history and a version-bound approval POST", asy
 });
 
 test("screen 4: budgets show configured limits and per-run usage", async ({ page }) => {
-  await page.goto("/budgets");
+  await page.goto("/service/budgets");
   const limits = page.getByTestId("limits-table");
   await expect(limits).toContainText("Rework");
   await expect(limits).toContainText("3");
@@ -119,7 +121,7 @@ test("screen 4: budgets show configured limits and per-run usage", async ({ page
 });
 
 test("screen 5: settings manage the masked token and show mode and profiles", async ({ page }) => {
-  await page.goto("/settings");
+  await page.goto("/service/settings");
   await expect(page.getByTestId("token-absent")).toBeVisible();
 
   const input = page.getByLabel("Новый токен");
@@ -147,7 +149,7 @@ test("screen 5: settings manage the masked token and show mode and profiles", as
 
 test("screen 6: CI stages list with switches and a stage toggle PUT", async ({ page }) => {
   const { writes } = await stubApi(page);
-  await page.goto("/ci");
+  await page.goto("/service/ci");
 
   await expect(page.getByRole("heading", { name: "Этапы CI" })).toBeVisible();
   await expect(page.getByTestId("ci-repository")).toContainText("vadagama/dark-factory-mvp");
@@ -170,4 +172,180 @@ test("screen 6: CI stages list with switches and a stage toggle PUT", async ({ p
   expect(toggle).toBeDefined();
   expect(toggle?.method).toBe("PUT");
   expect(toggle?.body).toEqual({ enabled: false });
+});
+
+// --- ADR-037 IA, T075/T076 -----------------------------------------------------
+
+test("products → product page with NextStep → intake with agent brief → change page", async ({ page }) => {
+  await page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    [TOKEN_STORAGE_KEY, E2E_TOKEN],
+  );
+  const { posts } = await stubApi(page);
+
+  await page.goto("/");
+  const nav = page.getByRole("navigation", { name: "Основная навигация" });
+  await expect(nav).toContainText("Продукты");
+  await expect(nav).toContainText("Требует внимания");
+  await expect(nav).toContainText("Активность");
+  await expect(nav).toContainText("Служебное");
+
+  const products = page.getByTestId("products-table");
+  await expect(products).toContainText("Demo service");
+  await expect(products).toContainText("github/acme/demo-service");
+  await expect(products).toContainText("ready");
+  await expect(products).toContainText("Legacy API");
+  await expect(products).toContainText("created");
+  // One change belongs to prd_demo_001, none to prd_demo_002.
+  await expect(page.getByTestId("product-row-prd_demo_001")).toContainText("1");
+  await expect(page.getByTestId("product-form")).toBeVisible();
+
+  await products.getByRole("link", { name: "Demo service" }).click();
+  await expect(page).toHaveURL(/\/products\/prd_demo_001$/);
+  await expect(page.getByTestId("product-header")).toContainText("Demo service");
+  const nextStep = page.getByTestId("next-step");
+  await expect(nextStep).toContainText("Продукт готов к работе");
+  await expect(page.getByTestId("next-step-primary")).toHaveText("Новая фича");
+  await expect(page.getByTestId("product-changes-table")).toContainText("Add /health endpoint");
+  await expect(page.getByTestId("product-baseline")).toContainText("baseline/2026-09");
+  await expect(page.getByText("Просмотр документов baseline появится в M2.")).toBeVisible();
+  await expect(page.getByText("История доставок появится в M5.")).toBeVisible();
+
+  await page.getByTestId("next-step-primary").click();
+  await expect(page).toHaveURL(/\/products\/prd_demo_001\/new-change$/);
+  await expect(page.getByTestId("intake-product-header")).toContainText("Demo service");
+
+  await page.getByLabel("Название").fill("Health endpoint");
+  await page.getByLabel("Опишите своими словами").fill("Нужен health endpoint для демо-сервиса");
+  await page.getByTestId("formulate-button").click();
+  await expect(page.getByLabel("Проблема")).toHaveValue("Нет проверки живости сервиса");
+  await expect(page.getByLabel("Цель")).toHaveValue("Эндпоинт /health отвечает 200 при готовности");
+  await expect(page.getByTestId("brief-author")).toContainText("агент");
+
+  await page.getByLabel(/Только спецификации/).check();
+  await page.getByLabel("Лимит, USD").fill("25");
+  await expect(page.getByTestId("intake-forecast")).toContainText("Прогноз расхода появится после первого прогона; лимит: 25 USD");
+  await page.getByRole("button", { name: "Создать задачу" }).click();
+
+  await expect(page).toHaveURL(/\/changes\/chg_[0-9a-f]{12}$/);
+  await expect(page.getByRole("heading", { name: "Health endpoint" })).toBeVisible();
+  await expect(page.getByTestId("next-step")).toContainText("Бриф готов — можно запускать фазу «Требования»");
+  await expect(page.getByTestId("next-step-cli")).toContainText("factory run advance --change-id chg_");
+  await expect(page.getByTestId("brief-section")).toContainText("Нет проверки живости сервиса");
+  await expect(page.getByTestId("brief-section")).toContainText("complete");
+  await expect(page.getByTestId("change-intake-line")).toContainText("сценарий: только спецификации");
+  await expect(page.getByTestId("change-intake-line")).toContainText("лимит: 25 USD");
+
+  const formulate = posts.find((post) => post.pathname === "/api/v1/briefs/formulate");
+  expect(formulate?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(formulate?.body).toEqual({ source_text: "Нужен health endpoint для демо-сервиса" });
+  const created = posts.find((post) => post.pathname === "/api/v1/changes");
+  expect(created?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(created?.body).toMatchObject({
+    source: "console",
+    product_id: "prd_demo_001",
+    product: { provider: "github", slug: "acme/demo-service" },
+    scenario: "specs_only",
+    spend_limit: { cost_budget_usd: "25", token_budget: null },
+    brief: { status: "complete", formulated_by: "agent", problem: "Нет проверки живости сервиса" },
+  });
+});
+
+test("intake: formulate failure keeps the brief a draft with an observable error", async ({ page }) => {
+  await page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    [TOKEN_STORAGE_KEY, E2E_TOKEN],
+  );
+  await stubApi(page);
+  await page.goto("/products/prd_demo_001/new-change");
+  await page.getByLabel("Опишите своими словами").fill("[harness-down] нужен health endpoint");
+  await page.getByTestId("formulate-button").click();
+  const notice = page.getByText(/Бриф остался черновиком/);
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Agent harness is not configured on this contour");
+  // The fields stay editable for the operator.
+  await expect(page.getByLabel("Проблема")).toBeEditable();
+  await expect(page.getByLabel("Проблема")).toHaveValue("");
+  await expect(page.getByTestId("brief-author")).toContainText("оператор");
+});
+
+test("product page: validate repository shows the observed state and the 503 detail", async ({ page }) => {
+  await page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    [TOKEN_STORAGE_KEY, E2E_TOKEN],
+  );
+  const { posts } = await stubApi(page);
+
+  await page.goto("/products/prd_demo_002");
+  await expect(page.getByTestId("next-step")).toContainText("репозиторий ещё не проверен");
+  await expect(page.getByTestId("next-step-blockers")).toContainText("снимает: оператор");
+  await page.getByTestId("next-step-primary").click();
+  await expect(page.getByText(/Репозиторий проверен/)).toContainText("baseline absent");
+  expect(posts.find((post) => post.pathname === "/api/v1/products/prd_demo_002/validate")?.headers.authorization).toBe(
+    `Bearer ${E2E_TOKEN}`,
+  );
+
+  await page.goto("/products/prd_demo_001");
+  await page.getByTestId("validate-button").click();
+  await expect(page.getByRole("alert")).toContainText("Repository provisioning is not configured on this contour");
+});
+
+test("products: fail-closed registration without a token, then a POST with a token", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("product-token-hint")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Добавить продукт" })).toBeDisabled();
+
+  await page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    [TOKEN_STORAGE_KEY, E2E_TOKEN],
+  );
+  const { posts } = await stubApi(page);
+  await page.goto("/");
+  await page.getByLabel("ID").fill("prd_e2e_001");
+  await page.getByLabel("Название").fill("Billing");
+  await page.getByLabel("Репозиторий (slug)").fill("acme/billing");
+  await page.getByRole("button", { name: "Добавить продукт" }).click();
+  await expect(page).toHaveURL(/\/products\/prd_e2e_001$/);
+  await expect(page.getByTestId("product-header")).toContainText("Billing");
+  await expect(page.getByTestId("product-header")).toContainText("created");
+  const post = posts.find((candidate) => candidate.pathname === "/api/v1/products");
+  expect(post?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(post?.body).toMatchObject({ id: "prd_e2e_001", name: "Billing", repository: { provider: "github", slug: "acme/billing" } });
+});
+
+test("change card: brief editor saves via PUT and the guidance re-reads", async ({ page }) => {
+  await page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    [TOKEN_STORAGE_KEY, E2E_TOKEN],
+  );
+  const { writes } = await stubApi(page);
+  await page.goto("/changes/chg_demo_001");
+  await expect(page.getByTestId("next-step")).toContainText("Задача завершена");
+  await expect(page.getByTestId("brief-section")).toContainText("сформулировал: агент");
+  await page.getByLabel("Цель").fill("Эндпоинт /health отвечает 200 и покрыт тестом");
+  await page.getByRole("button", { name: "Сохранить бриф" }).click();
+  await expect(page.getByText("Бриф сохранён.")).toBeVisible();
+  const put = writes.find((write) => write.pathname === "/api/v1/changes/chg_demo_001/brief");
+  expect(put?.method).toBe("PUT");
+  expect(put?.headers.authorization).toBe(`Bearer ${E2E_TOKEN}`);
+  expect(put?.body).toMatchObject({ goal: "Эндпоинт /health отвечает 200 и покрыт тестом", formulated_by: "operator", status: "complete" });
+});
+
+test("placeholders and redirects: attention, activity, /budgets → /service/budgets", async ({ page }) => {
+  await page.goto("/attention");
+  await expect(page.getByRole("status")).toContainText("Inbox «Требует внимания» появится в M5 (T116).");
+  await page.goto("/activity");
+  await expect(page.getByRole("status")).toContainText("Лента активности вне объёма MVP.");
+
+  await page.goto("/budgets");
+  await expect(page).toHaveURL(/\/service\/budgets$/);
+  await expect(page.getByTestId("limits-table")).toBeVisible();
+  await page.goto("/ci");
+  await expect(page).toHaveURL(/\/service\/ci$/);
+  await page.goto("/settings");
+  await expect(page).toHaveURL(/\/service\/settings$/);
+
+  await page.goto("/service");
+  await expect(page.getByTestId("service-links")).toContainText("Бюджеты");
+  await expect(page.getByRole("link", { name: "Служебное" })).toHaveClass(/active/);
 });

@@ -26,6 +26,7 @@ from dark_factory.execution import (
     WORKSPACE_ROOT_ENV_VAR,
     WorktreeExecution,
 )
+from dark_factory.orchestration.intake import BriefFormulator
 from dark_factory.orchestration.stages.agent import AgentStageExecutor, ScmRevision
 from dark_factory.orchestration.stages.context import StageContext, build_context
 from dark_factory.orchestration.stages.pr_description import (
@@ -223,6 +224,14 @@ def test_harness_factory_binds_the_role_tools() -> None:
 
     harness = runtime.harness_of(DEVELOP_PROFILE, tools)
     assert isinstance(harness, PydanticAIHarness)
+
+
+def test_brief_formulator_follows_the_harness_configuration() -> None:
+    # T072: the «Помоги сформулировать» agent exists exactly when the harness does;
+    # without DARK_FACTORY_LLM_* the seam is None and the API answers a draft.
+    assert build_runtime(env={}, token_provider=_static_tokens()).brief_formulator() is None
+    formulator = build_runtime(env=LLM_ENV, token_provider=_static_tokens()).brief_formulator()
+    assert isinstance(formulator, BriefFormulator)
 
 
 def test_unconfigured_harness_factory_raises() -> None:

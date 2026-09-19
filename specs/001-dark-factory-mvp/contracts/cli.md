@@ -26,6 +26,11 @@ factory product add  --id <id> --name <name> --provider github|gitlab --reposito
 factory product validate --id <id> [--json]   # наблюдение репозитория и запись готовности (ADR-031)
 factory product list     [--limit <1..200>] [--offset <n>] [--json]
 factory product show     --id <id> [--json]
+factory change create    --product <id> --title <t> --limit-usd <amount>
+                         [--problem <p> --goal <g> [--constraint <c>]... [--out-of-scope <o>]... | --brief-json <path|->]
+                         [--scenario specs_only|full] [--token-limit <n>] [--risk-class R0..R4]
+                         [--description <text>] [--id <chg_id>] [--json]   # intake задачи (T073, T071)
+factory change status    --id <chg_id> [--json]    # задача, последний run и «Следующий шаг» (Guidance, T074)
 factory reconcile    [--json]           # один идемпотентный проход Reconciler
 factory outbox dispatch [--once]        # доставка событий (ADR-016)
 factory doctor       [--json]           # проверка окружения и конфигурации
@@ -93,6 +98,8 @@ factory doctor       [--json]           # проверка окружения и
 - `--approve-contract` — проставляет human-утверждение (`approved_by=Role.PRODUCT`, `decided_at=now(UTC)`) на загруженный контракт (решение оператора, ADR-011); флаг без `--contract-json` — exit 2; контракт, уже несущий approval, вместе с флагом — двусмысленность, exit 2. Утверждённый контракт снимает блокировку входа в construction (T-016); неутверждённый прикрепляется и честно блокирует вход (`blocked`).
 
 `factory product *` (T070, ADR-030/ADR-031) — операторская сторона реестра продуктов; та же модель и то же правило готовности, что у `/products` (T066), поэтому CLI и Console показывают один статус. `add` идемпотентен по `--id` (повтор — replay, ничего не пишется) и оставляет audit-запись `product.add`; `validate` наблюдает репозиторий через `RepositoryProvisioningPort`, который связывает composition root, и записывает `validating → ready | error` в одной транзакции. Коды выхода: `0` — `add` зарегистрировал или replay'нул, `validate` дал `ready`, `list`/`show` напечатали; `1` — `validate`: репозиторий недоступен (`error` записан с причиной) или само наблюдение упало (ничего не записано); `2` — неверный ввод, неизвестный продукт, порт провижининга не сконфигурирован (статус не меняется), недоступный store. Секреты не эхоятся: тексты исключений адаптера и URL store в вывод не попадают (ADR-009).
+
+`factory change *` (T073, T071, T074, ADR-033) — intake задачи для зарегистрированного продукта: репозиторий берётся из реестра, бриф — из флагов или JSON той же формы, что ответ `POST /briefs/formulate`; бриф без проблемы/цели сохраняется черновиком. Лимит — деньги в USD (копируется в `BudgetSnapshot.cost_budget` run). Обе команды завершаются блоком «Следующий шаг» — рендером `Guidance`, вычисленного ядром и отдаваемого `GET /changes/{id}/guidance`: CLI и Console показывают один и тот же шаг по построению. Коды выхода: `0` — создано/replay/показано; `2` — неверный ввод (лимит, бриф), неизвестный продукт или задача, недоступный store.
 
 ## Поведение и инварианты
 

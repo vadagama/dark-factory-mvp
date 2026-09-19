@@ -31,6 +31,9 @@ CONTRACT_PATHS = [
     "/changes/{change_id}",
     "/changes/{change_id}/trace",
     "/changes/{change_id}/approvals",
+    "/changes/{change_id}/brief",
+    "/changes/{change_id}/guidance",
+    "/briefs/formulate",
 ]
 
 CHANGE_BODY: dict[str, Any] = {
@@ -204,4 +207,44 @@ def test_missing_subject_revision_is_a_rfc7807_422() -> None:
 @pytest.mark.parametrize("raw", ["", "   ", "Basic dXNlcjpwYXNz", "Bearer"])
 def test_malformed_authorization_header_is_rejected_with_401(raw: str) -> None:
     response = _client().post(f"{API}/changes", json=CHANGE_BODY, headers={"Authorization": raw})
+    assert response.status_code == 401
+
+
+# --- intake brief (T071/T072) -------------------------------------------------------
+
+
+def test_brief_formulation_requires_the_changes_scope() -> None:
+    response = _client().post(f"{API}/briefs/formulate", json={"source_text": "make login fast"})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_brief_formulation_without_a_harness_answers_an_honest_draft() -> None:
+    # No formulator is bound (the core path): the endpoint must not invent a
+    # brief — it returns a draft whose error says the harness is absent and
+    # keeps the operator's text. The route touches no store.
+    response = _client().post(
+        f"{API}/briefs/formulate",
+        json={"source_text": "  make login fast  "},
+        headers={"Authorization": "Bearer op-token"},
+    )
+    assert response.status_code == 200, response.text
+    brief = response.json()
+    assert brief["status"] == "draft"
+    assert brief["source_text"] == "make login fast"
+    assert brief["problem"] is None
+    assert "DARK_FACTORY_LLM_" in brief["error"]
+
+
+def test_brief_formulation_rejects_an_empty_text() -> None:
+    response = _client().post(
+        f"{API}/briefs/formulate",
+        json={"source_text": ""},
+        headers={"Authorization": "Bearer op-token"},
+    )
+    assert response.status_code == 422
+
+
+def test_brief_update_requires_the_changes_scope() -> None:
+    response = _client().put(f"{API}/changes/chg-1/brief", json={"problem": "p", "goal": "g"})
     assert response.status_code == 401

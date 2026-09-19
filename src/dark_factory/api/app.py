@@ -22,6 +22,7 @@ from dark_factory.api.routes_changes import create_changes_router
 from dark_factory.api.routes_ci import create_ci_router
 from dark_factory.api.routes_products import create_products_router
 from dark_factory.api.routes_runs import create_runs_router
+from dark_factory.orchestration.intake import BriefFormulator
 from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
 
 API_PREFIX: Final[str] = "/api/v1"
@@ -88,6 +89,7 @@ def create_app(
     ci_toggles: CiStageTogglePort | None = None,
     ci_repository: str | None = None,
     provisioning: RepositoryProvisioningPort | None = None,
+    brief_formulator: BriefFormulator | None = None,
 ) -> FastAPI:
     """Build the API app over the given session factory and token store.
 
@@ -101,7 +103,9 @@ def create_app(
     ``provisioning`` is the repository-provisioning port of product validation
     (T066, ADR-031): with ``None`` the ``/products`` registry still works, but
     ``POST /products/{id}/validate`` refuses with 503 instead of inventing a
-    readiness the factory cannot observe.
+    readiness the factory cannot observe. ``brief_formulator`` is the
+    harness-backed «Помоги сформулировать» seam (T072): with ``None`` the
+    ``POST /briefs/formulate`` endpoint answers an honest draft.
     """
     token_store = tokens if tokens is not None else ApiTokenStore.from_env()
     session_dependency = create_session_dependency(session_factory)
@@ -114,7 +118,10 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.token_store = token_store
     app.include_router(create_runs_router(session_dependency, token_store), prefix=API_PREFIX)
-    app.include_router(create_changes_router(session_dependency, token_store), prefix=API_PREFIX)
+    app.include_router(
+        create_changes_router(session_dependency, token_store, brief_formulator),
+        prefix=API_PREFIX,
+    )
     app.include_router(
         create_products_router(session_dependency, token_store, provisioning), prefix=API_PREFIX
     )

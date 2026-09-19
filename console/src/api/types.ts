@@ -69,6 +69,20 @@ export type GateStatus = "pending" | "passed" | "failed" | "skipped";
 export type DecisionOutcome = "approved" | "rejected" | "waived";
 export type DecisionSource = "human" | "policy" | "agent";
 export type ChangeSource = "tracker" | "console" | "cli" | "api";
+/** Scope chosen at intake (T071): stop after the specs are approved, or go to dev. */
+export type Scenario = "specs_only" | "full";
+/** Derived server-side: `complete` iff `problem` and `goal` are non-empty. */
+export type BriefStatus = "draft" | "complete";
+export type BriefAuthor = "operator" | "agent";
+/** Readiness of a product repository (ADR-030 p.1); the cause lives in `status_reason`. */
+export type ProductStatus = "created" | "validating" | "ready" | "error";
+/** Observed repository state (ADR-031 p.4) — never a request. */
+export type RepositoryState =
+  | "unavailable"
+  | "empty"
+  | "baseline_absent"
+  | "baseline_current"
+  | "baseline_stale";
 export type ChangeRequestStatus = "draft" | "open" | "merged" | "closed";
 export type EvidenceType =
   | "log"
@@ -151,6 +165,29 @@ export interface Decision {
   evidence_ids: string[];
 }
 
+/**
+ * Structured brief of a change (changes/intake.py, T071/T072). `status` is
+ * derived by the server; `source_text` keeps the operator's wording next to
+ * the structured fields; `error` is the last reason the agent could not
+ * formulate (observable, T072 DoD).
+ */
+export interface IntakeBrief {
+  problem: string | null;
+  goal: string | null;
+  constraints: string[];
+  out_of_scope: string[];
+  source_text: string | null;
+  status: BriefStatus;
+  formulated_by: BriefAuthor | null;
+  error: string | null;
+}
+
+/** Hard spend limit chosen at intake (T071): USD as a decimal string, tokens optional. */
+export interface SpendLimit {
+  cost_budget_usd: string;
+  token_budget: number | null;
+}
+
 export interface Change {
   id: string;
   title: string;
@@ -161,6 +198,87 @@ export interface Change {
   risk_class: RiskClass;
   change_request: ChangeRequestRef | null;
   created_at: string;
+  /** Owning product (ADR-030); null for pre-T065 changes. */
+  product_id: string | null;
+  /** Intake brief (T071); null for pre-T071 changes. */
+  brief: IntakeBrief | null;
+  scenario: Scenario;
+  spend_limit: SpendLimit | null;
+}
+
+// ---------------------------------------------------------------------------
+// Products (changes/product.py, ports/provisioning.py — T065/T066, ADR-030/031)
+// ---------------------------------------------------------------------------
+
+export interface Product {
+  id: string;
+  name: string;
+  description: string | null;
+  repository: RepositoryRef;
+  repository_url: string | null;
+  baseline_ref: string | null;
+  dev_env_ref: string | null;
+  status: ProductStatus;
+  status_reason: string | null;
+  state_revision: number;
+  created_at: string;
+}
+
+/** Read-only result of a repository validation (mutates nothing, ADR-031 p.5). */
+export interface RepositoryValidation {
+  repository: RepositoryRef;
+  state: RepositoryState;
+  default_branch: string | null;
+  head_revision: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Guidance (orchestration/guidance.py — T074, ADR-033): the operator's next
+// step as a server-computed read model. The Console only renders it.
+// ---------------------------------------------------------------------------
+
+export type GuidanceActor = "operator" | "agent" | "ci" | "factory" | "external";
+export type GuidancePhase =
+  | "initiative"
+  | "requirements"
+  | "architecture"
+  | "interface"
+  | "plan"
+  | "execution"
+  | "demonstration"
+  | "delivery"
+  | "done";
+
+export interface GuidanceSubject {
+  kind: "product" | "change";
+  id: string;
+}
+
+/** One declarative action; `api` looks like "POST /products/prd-1/validate". */
+export interface GuidanceAction {
+  label: string;
+  cli: string | null;
+  api: string | null;
+  enabled: boolean;
+  reason: string | null;
+}
+
+export interface GuidanceBlocker {
+  what: string;
+  who: GuidanceActor;
+  how: string;
+}
+
+export interface Guidance {
+  schema_version: 1;
+  subject: GuidanceSubject;
+  phase: GuidancePhase | null;
+  headline: string;
+  why: string;
+  primary: GuidanceAction;
+  secondary: GuidanceAction[];
+  blockers: GuidanceBlocker[];
+  after: string | null;
 }
 
 /** Immutable result of one stage attempt (GET /runs/{id}/stage-results). */
@@ -275,6 +393,11 @@ export interface ChangeTrace {
   runs: RunTrace[];
 }
 
+/** `POST /products/{id}/validate`: the product plus the raw observation. */
+export interface ProductValidationView extends Product {
+  validation: RepositoryValidation | null;
+}
+
 // ---------------------------------------------------------------------------
 // Request bodies
 // ---------------------------------------------------------------------------
@@ -287,6 +410,22 @@ export interface ApprovalRequest {
   comment?: string | null;
   /** Optimistic-concurrency guard (ADR-006 p.4); a mismatch answers 409. */
   expected_state_revision?: number | null;
+}
+
+/** `POST /products` (T066): id is client-chosen so a retry replays instead of duplicating. */
+export interface ProductCreateRequest {
+  id: string;
+  name: string;
+  repository: RepositoryRef;
+  description?: string | null;
+  repository_url?: string | null;
+  baseline_ref?: string | null;
+  dev_env_ref?: string | null;
+}
+
+/** `POST /briefs/formulate` (T072): the operator's free text, at least one char. */
+export interface BriefFormulateRequest {
+  source_text: string;
 }
 
 /** RFC 7807-like body of every failed response (api/dto.py ErrorBody). */

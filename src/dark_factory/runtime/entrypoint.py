@@ -59,8 +59,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     observer resolves a waiting stage's external wait (T-092 S3). For ``api
     serve`` the same runtime supplies the CI stage switchboard
     (``ci_toggles``/``ci_repository``, T059) and the provisioning port
-    (``provisioning``, T066) — absent credentials leave them ``None`` and the
-    API reports the toggles unconfigured. ``product validate`` (T070) consumes
+    (``provisioning``, T066) and the brief formulator (``brief_formulator``,
+    T072) — absent credentials leave them ``None`` and the API reports the
+    toggles unconfigured, the brief endpoint an honest draft. ``product validate`` (T070) consumes
     the provisioning port alone: without it the command refuses instead of
     inventing a readiness (ADR-031 p.6). The runtime is released in a
     ``finally``, so the adapters' resources (HTTP pool, tracer provider) are
@@ -81,6 +82,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ci_toggles=runtime.ci_stage_toggles,
                 ci_repository=runtime.ci_repository,
                 provisioning=runtime.provisioning,
+                brief_formulator=runtime.brief_formulator(),
             )
         finally:
             asyncio.run(runtime.aclose())

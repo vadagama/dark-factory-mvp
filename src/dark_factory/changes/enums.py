@@ -217,6 +217,37 @@ class ChangeSource(StrEnum):
     API = "api"
 
 
+class Scenario(StrEnum):
+    """Scope an operator chose for a change at intake (T071, plan §6).
+
+    ``specs_only`` stops after the specification phases (requirements,
+    architecture, UI) are approved; ``full`` continues through plan, execution,
+    demonstration and delivery. The default of pre-T071 changes is ``full``.
+    """
+
+    SPECS_ONLY = "specs_only"
+    FULL = "full"
+
+
+class BriefStatus(StrEnum):
+    """Completeness of an intake brief (T071/T072).
+
+    ``draft`` — the brief is not yet good enough to start requirements: a field
+    is missing, or the agent could not formulate it; ``complete`` — problem and
+    goal are stated and the change can enter the specification stage.
+    """
+
+    DRAFT = "draft"
+    COMPLETE = "complete"
+
+
+class BriefAuthor(StrEnum):
+    """Who produced the current wording of a brief (T072)."""
+
+    OPERATOR = "operator"
+    AGENT = "agent"
+
+
 class ChangeRequestStatus(StrEnum):
     """Status of a change request in core terms (ADR-019 p.2)."""
 
