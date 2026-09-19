@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from dark_factory.changes.enums import GateStatus
 from dark_factory.changes.run_records import from_yaml
 from dark_factory.context.sdd.baseline import (
     BaselineFile,
@@ -19,12 +20,14 @@ from dark_factory.context.sdd.errors import BaselineMismatchError, MissingArtifa
 from dark_factory.context.sdd.frontmatter import parse_frontmatter, render_document
 from dark_factory.context.sdd.models import (
     AddOperation,
+    ChangeManifest,
     Frontmatter,
     ReconciliationResult,
     RetireOperation,
     SupersedeOperation,
 )
 from dark_factory.context.sdd.native import NativeChangeSetAdapter
+from dark_factory.quality.gates.specification import evaluate_specification_gate
 from tests.sdd_factories import (
     SDD_ARTIFACT,
     SDD_CHANGE_ID,
@@ -81,6 +84,22 @@ def test_repo_baseline_is_valid() -> None:
     assert frontmatter is not None
     assert frontmatter.status == "active"
     assert current_revision(REPO_FACTORY_ROOT) != ""
+
+
+def test_repo_changesets_load_and_pass_spec_gate() -> None:
+    """Every ChangeSet committed under ``.factory/changes/`` loads and passes the gate.
+
+    Locks the canonical artifacts of this repository in CI (ADR-020): the same
+    strict schemas and the same specification gate the factory applies to product
+    repositories. ``specs/`` stays bootstrap evidence and is not read here.
+    """
+    change_files = sorted((REPO_FACTORY_ROOT / "changes").glob("*/*/change.yaml"))
+    assert change_files, "no ChangeSet committed under .factory/changes/"
+    adapter = NativeChangeSetAdapter(REPO_FACTORY_ROOT)
+    for path in change_files:
+        manifest = from_yaml(ChangeManifest, path.read_text(encoding="utf-8"))
+        decision = evaluate_specification_gate(adapter.read_change(manifest.id))
+        assert decision.result is GateStatus.PASSED, f"{manifest.id}: {decision.explanation}"
 
 
 def test_add_operation_copies_artifact_into_baseline(tmp_path: Path) -> None:

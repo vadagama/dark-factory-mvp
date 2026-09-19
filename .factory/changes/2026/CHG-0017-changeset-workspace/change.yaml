@@ -1,0 +1,27 @@
+schema: dark-factory.dev/change/v1
+id: "chg:dark-factory:2026:0017"
+title: Рабочее пространство ChangeSet
+slug: changeset-workspace
+product: dark-factory
+kind: product-feature
+risk_class: R2
+status: draft
+baseline:
+  revision: "82dc76fe9b460135258e9e3ddc223dc07d6b607d20ac909911360965c9ee7bde"
+workflow:
+  profile: product-feature
+  version: "1.0"
+owners:
+  product: dark-factory
+  technical: dark-factory
+targets:
+  - repository: dark-factory-mvp
+    role: implementation
+artifacts:
+  intent: intent.md
+  spec: spec/delta.yaml
+  design: design/overview.md
+  tasks: tasks/graph.yaml
+  verification: verification/plan.yaml
+  evidence: evidence/index.yaml
+  reconciliation: reconciliation/plan.yaml
