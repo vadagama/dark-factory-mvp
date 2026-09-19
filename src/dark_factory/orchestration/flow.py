@@ -31,14 +31,13 @@ Stage-internal execution (TaskGraph, pydantic-graph) is T-015 and deliberately
 out of scope here.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, Literal, assert_never
 
 from dark_factory.changes.enums import (
     GateStatus,
-    RiskClass,
     RunStatus,
     Stage,
     StageStatus,
@@ -291,111 +290,164 @@ def _handle_action(
     human_decisions: Sequence[Decision] = (),
 ) -> FlowDecision:
     """Apply the effects of one honored-or-blocked action; exhaustively checked."""
-    budget = run.budget
-    _accumulate_usage(budget, result.usage)
+    _accumulate_usage(run.budget, result.usage)
     match result.next_action:
         case ExecuteStageAction(next_stage=next_stage):
-            expected = route_profile(run.route).next_stage(result.stage)
-            if expected is None or next_stage != expected:
-                shown = expected.value if expected is not None else "<none>"
-                raise InvalidFlowTransition(
-                    f"stage {result.stage.value} on route {run.route.value} must advance to "
-                    f"{shown}, got {next_stage.value}"
-                )
-            reason = _block_reason(run, result.stage, result.gate_results, now)
-            if reason is None:
-                reason = _escalation_reason(run, result, human_decisions=human_decisions)
-            if reason is not None:
-                return _stop(stage_run, run, reason)
-            _advance(run, stage_run, next_stage)
-            return FlowDecision(
-                stage=result.stage,
-                action=result.next_action,
-                stage_status=StageStatus.SUCCEEDED,
-                run_status=run.status,
-                next_stage=next_stage,
-            )
-        case WaitForInputAction():
-            # The StageResult must be persisted before the job ends (ADR-006 p.8).
-            stage_run.apply_status(StageStatus.WAITING)
-            run.apply_status(RunStatus.WAITING)
-            return _decision(stage_run, run, result.next_action, None)
-        case WaitForCIAction():
-            stage_run.apply_status(StageStatus.WAITING)
-            run.apply_status(RunStatus.WAITING)
-            return _decision(stage_run, run, result.next_action, None)
+            return _handle_execute(run, stage_run, result, next_stage, now, human_decisions)
+        case WaitForInputAction() | WaitForCIAction() | RequestApprovalAction():
+            # External wait (input, CI or the human gate of ADR-018): the
+            # StageResult must be persisted before the job ends (ADR-006 p.8).
+            return _park(stage_run, run, result.next_action)
         case ReworkAction(round=requested_round):
-            # Declared escalations and the autonomy budget veto a rework round
-            # without burning one: an escalation is not a rework iteration.
-            reason = escalation_stop_reason(result.escalations)
-            if reason is None:
-                reason = _autonomy_budget_reason(run)
-            if reason is not None:
-                return _stop(stage_run, run, reason)
-            violation = rework_violation(budget, requested_round=requested_round)
-            if violation is not None:
-                return _stop(stage_run, run, violation.reason)
-            budget.used_rework_rounds += 1
-            stage_run.apply_status(StageStatus.FAILED)
-            rework_target = REWORK_TARGET[result.stage]
-            _start(run, rework_target)
-            return _decision(stage_run, run, result.next_action, rework_target)
-        case RequestApprovalAction():
-            # Human gate (ADR-018): the flow waits for the approval decision.
-            stage_run.apply_status(StageStatus.WAITING)
-            run.apply_status(RunStatus.WAITING)
-            return _decision(stage_run, run, result.next_action, None)
+            return _handle_rework(run, stage_run, result, requested_round)
         case MergeAction():
-            target = route_profile(run.route).next_stage(result.stage)
-            if target is None:
-                raise FlowStateError(
-                    f"no stage follows {result.stage.value} on route {run.route.value}"
-                )
-            # Stage gates (SHA-blind), escalations and the route risk band block
-            # first: their stop reasons are preserved for existing callers. The
-            # merge policy then adds the merge-specific preconditions on the
-            # final SHA (T-026) and the control points of a R2+ class (T-080).
-            reason = _block_reason(run, result.stage, result.gate_results, now)
-            if reason is None:
-                reason = escalation_stop_reason(result.escalations)
-            if reason is None:
-                reason = _risk_band_reason(run)
-            if reason is not None:
-                return _stop(stage_run, run, reason)
-            decision = _merge_policy_decision(run, result, merge_context)
-            if decision.kind == "blocked":
-                return _stop(stage_run, run, decision.reason or "merge blocked by merge policy")
-            if decision.kind == "manual_merge_required":
-                return _wait_for_human_merge(stage_run, run, decision.reason)
-            # human_merge_authorized / finalizer_merge_allowed: the merge is
-            # authorized; the flow advances and the runner executes the merge
-            # with the trusted-finalizer credential set — agent pods carry none
-            # (FR-023; the human merge is observed on the provider, ADR-011 p.2).
-            _advance(run, stage_run, target)
-            return _decision(stage_run, run, result.next_action, target)
+            return _handle_merge(run, stage_run, result, now, merge_context)
         case ReleaseAction():
-            reason = _block_reason(run, result.stage, result.gate_results, now)
-            if reason is None:
-                reason = escalation_stop_reason(result.escalations)
-            if reason is None:
-                reason = _risk_band_reason(run)
-            if reason is not None:
-                return _stop(stage_run, run, reason)
-            violations = completion_violations(
-                run.model_copy(update={"status": RunStatus.SUCCEEDED}), [*history, result]
-            )
-            if violations:
-                return _stop(stage_run, run, "; ".join(violations))
-            stage_run.apply_status(StageStatus.SUCCEEDED)
-            run.apply_status(RunStatus.SUCCEEDED)
-            return _decision(stage_run, run, result.next_action, None)
-        case StopAction():
-            stage_status, run_status = _STOP_STATUS[result.next_action.outcome]
+            return _handle_release(run, stage_run, result, history, now)
+        case StopAction(outcome=outcome):
+            stage_status, run_status = _STOP_STATUS[outcome]
             stage_run.apply_status(stage_status)
             run.apply_status(run_status)
             return _decision(stage_run, run, result.next_action, None)
         case _:
             assert_never(result.next_action)
+
+
+def _handle_execute(
+    run: ChangeRun,
+    stage_run: StageRun,
+    result: StageResult,
+    next_stage: Stage,
+    now: datetime,
+    human_decisions: Sequence[Decision],
+) -> FlowDecision:
+    """Advance to the next stage of the route, or stop on a gate/escalation reason."""
+    expected = route_profile(run.route).next_stage(result.stage)
+    if expected is None or next_stage != expected:
+        shown = expected.value if expected is not None else "<none>"
+        raise InvalidFlowTransition(
+            f"stage {result.stage.value} on route {run.route.value} must advance to "
+            f"{shown}, got {next_stage.value}"
+        )
+    reason = _first_stop_reason(
+        lambda: _block_reason(run, result.stage, result.gate_results, now),
+        lambda: _escalation_reason(run, result, human_decisions=human_decisions),
+    )
+    if reason is not None:
+        return _stop(stage_run, run, reason)
+    _advance(run, stage_run, next_stage)
+    return FlowDecision(
+        stage=result.stage,
+        action=result.next_action,
+        stage_status=StageStatus.SUCCEEDED,
+        run_status=run.status,
+        next_stage=next_stage,
+    )
+
+
+def _handle_rework(
+    run: ChangeRun,
+    stage_run: StageRun,
+    result: StageResult,
+    requested_round: int,
+) -> FlowDecision:
+    """Spend one rework round and re-enter the rework target stage (T-014)."""
+    # Declared escalations and the autonomy budget veto a rework round
+    # without burning one: an escalation is not a rework iteration.
+    reason = _first_stop_reason(
+        lambda: escalation_stop_reason(result.escalations),
+        lambda: _autonomy_budget_reason(run),
+    )
+    if reason is not None:
+        return _stop(stage_run, run, reason)
+    violation = rework_violation(run.budget, requested_round=requested_round)
+    if violation is not None:
+        return _stop(stage_run, run, violation.reason)
+    run.budget.used_rework_rounds += 1
+    stage_run.apply_status(StageStatus.FAILED)
+    rework_target = REWORK_TARGET[result.stage]
+    _start(run, rework_target)
+    return _decision(stage_run, run, result.next_action, rework_target)
+
+
+def _handle_merge(
+    run: ChangeRun,
+    stage_run: StageRun,
+    result: StageResult,
+    now: datetime,
+    merge_context: MergeRequestContext | None,
+) -> FlowDecision:
+    """Merge per policy (T-026): stop, park for the human merge, or advance."""
+    target = route_profile(run.route).next_stage(result.stage)
+    if target is None:
+        raise FlowStateError(f"no stage follows {result.stage.value} on route {run.route.value}")
+    # Stage gates (SHA-blind), escalations and the route risk band block
+    # first: their stop reasons are preserved for existing callers. The
+    # merge policy then adds the merge-specific preconditions on the
+    # final SHA (T-026) and the control points of a R2+ class (T-080).
+    reason = _first_stop_reason(
+        lambda: _block_reason(run, result.stage, result.gate_results, now),
+        lambda: escalation_stop_reason(result.escalations),
+        lambda: _risk_band_reason(run),
+    )
+    if reason is not None:
+        return _stop(stage_run, run, reason)
+    decision = _merge_policy_decision(run, result, merge_context)
+    if decision.kind == "blocked":
+        return _stop(stage_run, run, decision.reason or "merge blocked by merge policy")
+    if decision.kind == "manual_merge_required":
+        return _wait_for_human_merge(stage_run, run, decision.reason)
+    # human_merge_authorized / finalizer_merge_allowed: the merge is
+    # authorized; the flow advances and the runner executes the merge
+    # with the trusted-finalizer credential set — agent pods carry none
+    # (FR-023; the human merge is observed on the provider, ADR-011 p.2).
+    _advance(run, stage_run, target)
+    return _decision(stage_run, run, result.next_action, target)
+
+
+def _handle_release(
+    run: ChangeRun,
+    stage_run: StageRun,
+    result: StageResult,
+    history: Sequence[StageResult],
+    now: datetime,
+) -> FlowDecision:
+    """Complete the run, or stop on a gate, escalation, band or completion invariant."""
+    reason = _first_stop_reason(
+        lambda: _block_reason(run, result.stage, result.gate_results, now),
+        lambda: escalation_stop_reason(result.escalations),
+        lambda: _risk_band_reason(run),
+    )
+    if reason is not None:
+        return _stop(stage_run, run, reason)
+    violations = completion_violations(
+        run.model_copy(update={"status": RunStatus.SUCCEEDED}), [*history, result]
+    )
+    if violations:
+        return _stop(stage_run, run, "; ".join(violations))
+    stage_run.apply_status(StageStatus.SUCCEEDED)
+    run.apply_status(RunStatus.SUCCEEDED)
+    return _decision(stage_run, run, result.next_action, None)
+
+
+def _park(stage_run: StageRun, run: ChangeRun, action: NextAction) -> FlowDecision:
+    """Park the stage and the run in Waiting for an external event."""
+    stage_run.apply_status(StageStatus.WAITING)
+    run.apply_status(RunStatus.WAITING)
+    return _decision(stage_run, run, action, None)
+
+
+def _first_stop_reason(*reasons: Callable[[], str | None]) -> str | None:
+    """First stop reason produced by ``reasons``, evaluated lazily in order.
+
+    The order encodes precedence: an earlier check that fires hides the later
+    ones, so callers list the reasons from the most to the least specific.
+    """
+    for reason in reasons:
+        found = reason()
+        if found is not None:
+            return found
+    return None
 
 
 def _merge_policy_decision(
@@ -421,7 +473,7 @@ def _merge_policy_decision(
         merge_context,
         route=run.route,
         stage=result.stage,
-        risk_class=_effective_risk_class(run),
+        risk_class=effective_change_risk_class(run.implementation_contract, run.route),
         gate_results=result.gate_results,
     )
     return evaluate_merge(anchored, policy=MERGE_POLICY)
@@ -515,7 +567,7 @@ def _escalation_reason(
     if declared is not None:
         return declared
     obligations = risk_escalation_violation(
-        risk_class=_effective_risk_class(run),
+        risk_class=effective_change_risk_class(run.implementation_contract, run.route),
         route=run.route,
         stage=result.stage,
         decisions=human_decisions,
@@ -538,22 +590,12 @@ def _control_point_sha(run: ChangeRun, result: StageResult) -> str | None:
     SHA (or that are still pending on the deterministic path) fall back to the
     stage's input revision — the historical binding.
     """
-    human_gates = required_human_gates(run.route, result.stage, _effective_risk_class(run))
+    risk_class = effective_change_risk_class(run.implementation_contract, run.route)
+    human_gates = required_human_gates(run.route, result.stage, risk_class)
     for gate_result in result.gate_results:
         if gate_result.gate in human_gates and gate_result.status is GateStatus.PASSED:
             return gate_result.sha or result.input_revision
     return result.input_revision
-
-
-def _effective_risk_class(run: ChangeRun) -> RiskClass:
-    """Effective risk class of the run: declared, derived facts and the route floor.
-
-    The class is recomputed by the policy on every transition (T-080, ADR-023
-    p.2/p.6), never read as a self-report: the facts come from the approved
-    contract (:func:`dark_factory.orchestration.policy.risk.risk_facts`) and the
-    route floor can only raise the result.
-    """
-    return effective_change_risk_class(run.implementation_contract, run.route)
 
 
 def _risk_band_reason(run: ChangeRun) -> str | None:
@@ -566,7 +608,7 @@ def _risk_band_reason(run: ChangeRun) -> str | None:
     run — stage advance, merge and release — so no onward path carries a risky
     change along the short route (ADR-023 p.3).
     """
-    risk_class = _effective_risk_class(run)
+    risk_class = effective_change_risk_class(run.implementation_contract, run.route)
     if route_allows_risk(run.route, risk_class):
         return None
     profile = route_profile(run.route)
