@@ -8,6 +8,7 @@
 |---|---|---|
 | `vision-<дата>-<версия>.md` | Видение продукта, дорожная карта, скоуп MVP | `product` |
 | `development-workflow.md` | Git-цикл задачи: ветка → проверка → MR; merge — человек | `dark-factory` / `ci-cd` |
+| `plan-changeset-workspace-mvp.md` | План доведения фабрики до рабочего пространства ChangeSet: проблема, решения, фазы, workstreams, milestones M1–M5 и DoD приёмки | `architect` |
 | `hld.md` | HLD: актуальная архитектура, связывает все ADR | `architect` |
 | `sdd-native-core.md` | Каноническая модель SDD: Native SDD Core (ChangeSet, Product Baseline, OKF) | `architect` |
 | `tech-dept.md` | Реестр технического долга | `architect` |
