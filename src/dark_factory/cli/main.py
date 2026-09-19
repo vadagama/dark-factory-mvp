@@ -7,7 +7,7 @@ composition layer that assembles the runtime and calls this module's ``main`` wi
 the assembled seams; ``python -m dark_factory.cli`` runs this module directly and
 is the explicit core path (deterministic executor, no composition).
 This module owns the command tree (``stage run``/``stage resume``,
-``run advance``/``run status``/``run publish``, ``reconcile``, ``outbox dispatch``/
+``run advance``/``run status``/``run publish``/``run withdraw``, ``reconcile``, ``outbox dispatch``/
 ``outbox replay``/``outbox skip``, ``doctor``, ``api serve``,
 ``release verify``), option validation and exit codes.
 Exit codes (contract cli.md): 0 success, 10 waiting, 20 blocked, 1 execution
@@ -17,7 +17,8 @@ exit code 2, matching the contract.
 Handlers are dispatched from here. ``doctor`` (T008) is implemented in
 ``dark_factory.cli.doctor``, ``stage run`` (T009, with run-record
 persistence T011, ADR-015 p.4/p.5) in ``dark_factory.cli.stage``,
-``run advance``/``run status`` (T-092, the durable run driver) in
+``run advance``/``run status`` (T-092, the durable run driver) and
+``run withdraw`` (T064, the operator withdrawal of a parked run, TD-030) in
 ``dark_factory.cli.runner``, ``reconcile`` (T-063, one idempotent Reconciler
 pass) in ``dark_factory.cli.reconcile``, the outbox commands (T028, delivery of
 outbox events per ADR-016) in ``dark_factory.cli.outbox``, ``api serve``
@@ -156,6 +157,20 @@ class RunPublishArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class RunWithdrawArgs:
+    """Arguments of ``factory run withdraw`` (T064, TD-030).
+
+    The one operator command of the CLI: it retracts a parked run. ``reason``
+    is optional free text recorded in the append-only audit log next to the
+    decision; it never carries a secret.
+    """
+
+    run_id: str
+    reason: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReconcileArgs:
     """Arguments of ``factory reconcile`` (contract cli.md)."""
 
@@ -243,6 +258,7 @@ CommandArgs = (
     | RunStatusArgs
     | RunAdvanceArgs
     | RunPublishArgs
+    | RunWithdrawArgs
     | ReconcileArgs
     | OutboxDispatchArgs
     | OutboxReplayArgs
@@ -398,6 +414,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit the publish outcome as JSON."
     )
     run_publish.set_defaults(command="run_publish")
+
+    run_withdraw = run_commands.add_parser(
+        "withdraw", help="Withdraw (cancel) a parked run by operator decision (T064)."
+    )
+    run_withdraw.add_argument("--run-id", required=True, help="Id of the run to withdraw.")
+    run_withdraw.add_argument(
+        "--reason",
+        help="Optional operator reason, recorded in the append-only audit log (T064).",
+    )
+    run_withdraw.add_argument(
+        "--json", action="store_true", help="Emit the withdrawal outcome as JSON."
+    )
+    run_withdraw.set_defaults(command="run_withdraw")
 
     reconcile = commands.add_parser(
         "reconcile", help="Perform one idempotent Reconciler pass (ADR-019 p.5)."
@@ -598,6 +627,12 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 runs_root=_option_str(data, "runs_root"),
                 json_output=_flag(data, "json"),
             )
+        case "run_withdraw":
+            return RunWithdrawArgs(
+                run_id=_required_str(data, "run_id"),
+                reason=_option_str(data, "reason"),
+                json_output=_flag(data, "json"),
+            )
         case "reconcile":
             return ReconcileArgs(json_output=_flag(data, "json"))
         case "outbox_dispatch":
@@ -709,6 +744,13 @@ def _publish_run(args: RunPublishArgs) -> int:
     return runs.run_publish_command(args)
 
 
+def _withdraw_run(args: RunWithdrawArgs) -> int:
+    # Imported here for the same reason as ``_show_run_status``.
+    from dark_factory.cli import runner
+
+    return runner.run_withdraw_command(args)
+
+
 def _reconcile(args: ReconcileArgs) -> int:
     # Imported here: cli.reconcile imports ReconcileArgs and the exit codes
     # from this module, so a module-level import would be circular.
@@ -797,6 +839,8 @@ def dispatch(
             )
         case RunPublishArgs():
             return _publish_run(command)
+        case RunWithdrawArgs():
+            return _withdraw_run(command)
         case ReconcileArgs():
             return _reconcile(command)
         case OutboxDispatchArgs():

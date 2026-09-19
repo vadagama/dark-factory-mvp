@@ -9,6 +9,8 @@ logged. An empty store fails closed: every mutating request is rejected.
 
 Roles are ``operator`` and ``service`` only. Approvals additionally require
 the operator role: agents never approve (contract api.md, ADR-009 p.7).
+Withdrawing a run is an operator decision too (T064, TD-030): agents execute
+the pipeline and must not retract the work that gates them.
 """
 
 import hashlib
@@ -30,6 +32,7 @@ _ROLE_VALUES: Final[frozenset[str]] = frozenset({OPERATOR_ROLE, SERVICE_ROLE})
 SCOPE_CHANGES_WRITE: Final[str] = "changes:write"
 SCOPE_APPROVALS_WRITE: Final[str] = "approvals:write"
 SCOPE_CI_WRITE: Final[str] = "ci:write"
+SCOPE_RUNS_WRITE: Final[str] = "runs:write"
 
 
 @dataclass(frozen=True, slots=True)

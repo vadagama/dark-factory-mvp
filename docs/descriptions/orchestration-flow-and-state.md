@@ -126,7 +126,7 @@ Review не имеет shortcut `execute_stage`: только `MergeAction` (ч�
 
 ## 5. Статусы и таблицы переходов
 
-Доменные таблицы живут в `changes/run.py`, значения — в `changes/enums.py`. Любое изменение статуса идёт через `ChangeRun.apply_status()` / `StageRun.apply_status()`: вне таблицы — `InvalidStatusTransition`; каждый переход инкрементирует `state_revision` (optimistic concurrency, ADR-006 п.4).
+Доменные таблицы живут в `changes/run.py`, значения — в `changes/enums.py`. Любое изменение статуса идёт через `ChangeRun.apply_status()` / `StageRun.apply_status()`: вне таблицы — `InvalidStatusTransition`; каждый переход инкрементирует `state_revision` (optimistic concurrency, ADR-006 п.4). Единственный переход вне доменного Flow — операторское снятие запуска (§19): `RunStore.withdraw_run` проводит те же рёбра `* → canceled` через durable-writer, не через `apply_status`.
 
 ### 5.1. `RunStatus`
 
@@ -302,7 +302,7 @@ State-specific enum-ы: `EffectStatus` (`planned`, `in_progress`, `succeeded`, `
 
 - **`ChangeRepository`**: intake Change-документа; повтор по `id` возвращает существующую строку (`ON CONFLICT DO NOTHING` по PK → `(existing, False)`); дедуп по `external_ref` — partial unique index (FR-017, максимум один change на запись трекера); `get_raw()` отдаёт ORM-строку с `state_revision` для optimistic-concurrency проверок.
 - **`DecisionRepository`**: version-bound approval; replay по `Idempotency-Key` (partial unique index: тот же ключ → то же решение, `created=False`); `actor_role` — роль API-вызывающего (`operator`/`service`), это не агентная роль (ADR-007).
-- **`AuditRepository`**: append-only аудит мутаций — одна строка в **транзакции caller-а** (`change.intake`, `approval.record`), `details` без секретов.
+- **`AuditRepository`**: append-only аудит мутаций — одна строка в **транзакции caller-а** (`change.intake`, `approval.record`, `run.withdraw` — §19), `details` без секретов.
 
 ## 12. `stage_results.py`: durable результаты попыток (T035, FR-014, ADR-006 п.3/п.4)
 
@@ -381,11 +381,23 @@ Reconciler реализован в `orchestration/reconcile/`:
 - `service.py` — `GlobalReconciler`: один идемпотентный проход в транзакции; защита от параллельных проходов двойная — CronJob `concurrencyPolicy: Forbid` (2–5 мин, `activeDeadlineSeconds: 300`) и глобальный PG-lease `("reconciler", "global")` с fencing token. Применяет только state-мутации (takeover, supersede, record merge, escalate); PLAN_MERGE / WAIT_FOR_HUMAN / UPDATE_BRANCH — journal-only для своих исполнителей. Агентные задачи reconciler не исполняет; webhook — только ускоритель;
 - `PostgresReconciliationService` — адаптер порта `ReconciliationService` (drift-сверка без собственного I/O); CLI: `factory reconcile` — один проход, отчёт text/JSON.
 
-## 19. Несовпадающие модели
+## 19. Операторское снятие запуска (T064, TD-030)
+
+`RunStore.withdraw_run` — единственный переход, который переводит run в терминальный `canceled` **вне** доменного Flow: запуск, вставший на внешнее ожидание (`waiting`/`blocked`) или потерявший путь вперёд, закрывает оператор, а не внешнее событие. Переход живёт в ядре (`orchestration/state/run_store.py`); CLI и API — только вызывающие оболочки.
+
+- **Что пишется**: каждая non-terminal строка `stage` и сам `execution` переводятся в `canceled` через те же доменные таблицы (`RunStore.advance_stage` и `ExecutionRepository.update_status`, §15) — с `finished_at`; решение пишется append-only в `audit_log` (`run.withdraw`, `resource_type="run"`, `resource_id=<run id>`, `outcome` `created`/`replayed`, `details.reason`; §11, ADR-009 п.7). События в outbox нет: операторское снятие не создаёт `run.stage_completed` и не заводит новых потребителей.
+- **Что не пишется**: `StageResult` не создаётся и не перезаписывается (FR-014) — коммитнутая история попыток и терминальные статусы стадий остаются как были; доменный Flow не вызывается вообще.
+- **Гонка**: lease запуска берётся с fencing token, и run перевыводится под ним (ADR-006 п.6, ADR-024 условие 2); живой lease конкурентного advance → `LeaseLostError`, снятие не выполняется. Статус run меняется под optimistic `state_revision`.
+- **Идемпотентность и отказы**: повтор уже снятого run не пишет в состояние ничего (ни ревизии, ни lease) и сообщает `replayed`; терминальный не-`canceled` run (`succeeded`/`failed`/`superseded`) отвергается `RunNotWithdrawableError` — завершённый run не воскрешается и не переклассифицируется; неизвестный run — `UnknownRunError`.
+- **Следствие**: снятый run терминален, поэтому `advance_run` отказывает на нём `RunNotAdvanceableError` — вернуть запуск в работу снятием нельзя.
+
+Потребители: CLI `factory run withdraw` (exit 0/1/2) и API `POST /runs/{run_id}/withdraw` (Bearer + `runs:write` + роль `operator`, 200/404/409).
+
+## 20. Несовпадающие модели
 
 `ChangeRun`/`StageRun` (Pydantic) и `Execution`/`StageRow` (ORM) похожи по смыслу, но это разные модели; mapper между ними не реализован. CLI двигает run/stage через `apply_status()` напрямую (T-003), а не через `apply_result()`, и пока не пишет `StageResult` в PostgreSQL (`StageResultRepository` — публичный write API, durable wiring — следующая задача). Изменение Pydantic-модели само по себе в PostgreSQL не попадает: это обязанность application orchestration layer.
 
-## 20. Граничные случаи и ограничения
+## 21. Граничные случаи и ограничения
 
 | Случай | Поведение |
 |---|---|
@@ -400,8 +412,9 @@ Reconciler реализован в `orchestration/reconcile/`:
 | `update_status()` с запрещённым доменной таблицей статусом | Пройдёт: repository не проверяет transition table — домен валидирует сам |
 | Конкурентная публикация outbox | Возможен конфликт `(aggregate_id, sequence)` — retry транзакции caller-а |
 | `stop(canceled)` в `StageResult` | Отклоняется validator-ом: отмену применяет runner через `ChangeRun.apply_status()` |
+| Повтор `withdraw_run` уже снятого run | Идемпотентно: состояние и `state_revision` не двигаются, в audit пишется только `replayed`; терминальный не-`canceled` run отвергается `RunNotWithdrawableError` (§19) |
 
-## 21. Где искать проверки
+## 22. Где искать проверки
 
 - `tests/test_flow_engine.py` — интеграция политик в Flow: полный маршрут standard, накопление usage, wait/rework/бюджеты/гейты, merge-политика (approval, SHA mismatch, agent executor, устаревшие гейты), release-инварианты, терминальность, stale attempt;
 - `tests/test_flow_transitions.py` — исчерпывающий обход всех пар стадия × действие, отсутствие мёртвых рёбер, closed union;
@@ -409,10 +422,10 @@ Reconciler реализован в `orchestration/reconcile/`:
 - `tests/test_changes_models.py` — таблицы переходов, терминальные статусы, идемпотентные ключи, бюджеты, completion invariants;
 - `tests/test_changes_next_action.py` — закрытость union `NextAction` (шаблон `assert_never`); `tests/test_changes_serialization.py` — JSON/YAML round-trip, отказ unknown action type, запрет mutable `latest` в `RunManifest`;
 - `tests/test_changes_implementation_contract.py` — схема контракта, frozen, эскалации в round-trip;
-- `tests/integration/` — `test_state_schema.py` (схема PostgreSQL), `test_stage_run_idempotency.py` (идемпотентность stage/attempt и `EvidenceOperationStore`), `test_reconcile.py` (проход reconciler), `test_events_dispatcher.py` (outbox at-least-once), `test_api.py` (intake/approvals/trace);
+- `tests/integration/` — `test_state_schema.py` (схема PostgreSQL), `test_stage_run_idempotency.py` (идемпотентность stage/attempt и `EvidenceOperationStore`), `test_runner_advance.py` (durable-раннер над реальными строками), `test_run_withdraw.py` (операторское снятие, §19), `test_reconcile.py` (проход reconciler), `test_events_dispatcher.py` (outbox at-least-once), `test_api.py` (intake/approvals/trace/withdraw);
 - `tests/contract/` — `test_workflow_engine_port.py`, `test_reconciliation_service.py` — контракты портов.
 
-## 22. Связь с другими модулями
+## 23. Связь с другими модулями
 
 | Документ | Связь |
 |---|---|
@@ -422,7 +435,7 @@ Reconciler реализован в `orchestration/reconcile/`:
 | [orchestration-operations.md](orchestration-operations.md) | Эксплуатация: reconciler, outbox dispatcher, lease/recovery, policy |
 | [ports.md](ports.md) | `WorkflowEnginePort`, `ReconciliationService` — швы, которые заполнит application layer |
 
-## 23. Связанные решения
+## 24. Связанные решения
 
 - [ADR-004](../adr/ADR-004-postgresql-factory-state.md) — PostgreSQL как authoritative state;
 - [ADR-005](../adr/ADR-005-stage-scoped-graphs-light-workflow-core.md) — два уровня оркестрации, табличный межстадийный FSM;

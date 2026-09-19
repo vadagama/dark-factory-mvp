@@ -21,6 +21,7 @@ from dark_factory.cli.main import (
     RunAdvanceArgs,
     RunPublishArgs,
     RunStatusArgs,
+    RunWithdrawArgs,
     StageResumeArgs,
     StageRunArgs,
     main,
@@ -206,6 +207,15 @@ def test_run_advance_rejects_a_missing_or_ambiguous_target(argv: list[str]) -> N
     assert exit_info.value.code == 2
 
 
+def test_run_withdraw_parses_options() -> None:
+    assert parse_command(["run", "withdraw", "--run-id", "run_01H"]) == RunWithdrawArgs(
+        run_id="run_01H", reason=None, json_output=False
+    )
+    assert parse_command(
+        ["run", "withdraw", "--run-id", "run_01H", "--reason", "invalid run", "--json"]
+    ) == RunWithdrawArgs(run_id="run_01H", reason="invalid run", json_output=True)
+
+
 def test_run_publish_parses_options() -> None:
     assert parse_command(
         [
@@ -378,6 +388,7 @@ def test_release_verify_defaults() -> None:
         ["stage", "resume", "--run-id", "run_01H"],
         ["run", "status"],
         ["run", "publish"],
+        ["run", "withdraw"],
         ["outbox", "replay"],
         ["outbox", "replay", "--consumer", "tracker"],
         ["outbox", "skip"],
@@ -414,6 +425,7 @@ def test_invalid_choice_exits_with_code_2(argv: list[str]) -> None:
         ["run", "--help"],
         ["run", "status", "--help"],
         ["run", "publish", "--help"],
+        ["run", "withdraw", "--help"],
         ["reconcile", "--help"],
         ["outbox", "--help"],
         ["outbox", "dispatch", "--help"],

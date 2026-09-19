@@ -26,6 +26,7 @@ CONTRACT_PATHS = [
     "/runs/{run_id}/evidence/{evidence_id}",
     "/runs/{run_id}/gates",
     "/runs/{run_id}/findings",
+    "/runs/{run_id}/withdraw",
     "/changes",
     "/changes/{change_id}",
     "/changes/{change_id}/trace",
@@ -49,12 +50,16 @@ def _store() -> ApiTokenStore:
                 ApiToken(
                     actor="alice",
                     role="operator",
-                    scopes=frozenset({"changes:write", "approvals:write"}),
+                    scopes=frozenset({"changes:write", "approvals:write", "runs:write"}),
                 ),
             ),
             (
                 "svc-token",
                 ApiToken(actor="tracker", role="service", scopes=frozenset({"changes:write"})),
+            ),
+            (
+                "svc-runs-token",
+                ApiToken(actor="runner", role="service", scopes=frozenset({"runs:write"})),
             ),
             ("null-token", ApiToken(actor="bot", role="service", scopes=frozenset())),
         ]
@@ -123,6 +128,31 @@ def test_service_role_cannot_approve() -> None:
     _assert_error_body(response.json(), 403, "Forbidden")
 
 
+def test_unauthenticated_withdraw_is_rejected_with_401() -> None:
+    response = _client().post(f"{API}/runs/run-1/withdraw")
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    _assert_error_body(response.json(), 401, "Unauthorized")
+
+
+def test_withdraw_requires_the_runs_write_scope() -> None:
+    # A valid token with another scope must not reach the transition.
+    response = _client().post(
+        f"{API}/runs/run-1/withdraw", headers={"Authorization": "Bearer svc-token"}
+    )
+    assert response.status_code == 403
+    _assert_error_body(response.json(), 403, "Forbidden")
+
+
+def test_service_role_cannot_withdraw() -> None:
+    # Agents execute the pipeline; they never retract the work that gates them.
+    response = _client().post(
+        f"{API}/runs/run-1/withdraw", headers={"Authorization": "Bearer svc-runs-token"}
+    )
+    assert response.status_code == 403
+    _assert_error_body(response.json(), 403, "Forbidden")
+
+
 def test_changes_scope_does_not_authorize_approvals() -> None:
     store = ApiTokenStore(
         [
@@ -150,6 +180,9 @@ def test_openapi_schema_contains_all_contract_paths() -> None:
         assert f"{API}{path}" in paths, path
     assert set(paths[f"{API}/changes"]) == {"get", "post"}
     assert set(paths[f"{API}/changes/{{change_id}}/approvals"]) == {"get", "post"}
+    # The withdrawal is the one mutating run endpoint (T064, TD-030).
+    assert set(paths[f"{API}/runs/{{run_id}}/withdraw"]) == {"post"}
+    assert set(paths[f"{API}/runs/{{run_id}}"]) == {"get"}
 
 
 def test_unknown_path_is_a_rfc7807_404() -> None:

@@ -107,7 +107,7 @@ def create_app(
     )
     app.state.session_factory = session_factory
     app.state.token_store = token_store
-    app.include_router(create_runs_router(session_dependency), prefix=API_PREFIX)
+    app.include_router(create_runs_router(session_dependency, token_store), prefix=API_PREFIX)
     app.include_router(create_changes_router(session_dependency, token_store), prefix=API_PREFIX)
     app.include_router(create_ci_router(token_store, ci_toggles, ci_repository), prefix=API_PREFIX)
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)

@@ -1,4 +1,4 @@
-"""``factory run advance`` and ``factory run status``: the durable run CLI (T-092).
+"""``factory run advance``, ``run status`` and ``run withdraw``: the durable run CLI (T-092, T064).
 
 ``factory run advance`` drives exactly one stage of a run through the durable
 runner (``orchestration/runner.py``): it loads the change snapshot and the run
@@ -75,6 +75,29 @@ its next advance retries it as a new attempt (ADR-006 p.7).
 unreachable store. Errors never echo the database URL or a raw exception text,
 which may embed credentials (ADR-009); the ``owner_id`` of the run lease is
 ``DARK_FACTORY_RUN_OWNER_ID`` when set and unique per process otherwise.
+
+``factory run withdraw`` is the operator-side counterpart of an advance (T064,
+TD-030): it retracts a run that is parked on an external wait instead of letting
+it wait forever. The whole transition is one durable decision — the run and every
+non-terminal stage move to ``canceled`` through the domain tables, the committed
+``StageResult`` history is left exactly as it was and the decision is recorded in
+the append-only audit log (``run.withdraw``, ``outcome`` ``created``/``replayed``,
+``details.reason``). A repeat is idempotent: the run is already canceled, so no
+state row moves and the command reports the replay. A run that is terminal but
+not canceled (``succeeded``/``failed``/``superseded``) is refused — a finished run
+is never rewritten — and an unknown run is invalid input.
+
+Exit codes (contract cli.md), for ``run withdraw``:
+
+| Code | Outcome |
+|---|---|
+| 0 | the run was withdrawn, or had already been withdrawn (idempotent replay) |
+| 1 | the run is terminal but not canceled: the withdrawal is refused, nothing written |
+| 2 | invalid input, an unknown run, or an unreachable/refusing store |
+
+The ``--json`` document of ``run withdraw`` is one object with a stable key set:
+``run_id``, ``change_id``, ``outcome``, ``persisted``, ``status``,
+``state_revision``, ``canceled_stages``; ``persisted`` is ``false`` on a replay.
 """
 
 import json
@@ -106,6 +129,7 @@ from dark_factory.cli.main import (
     EXIT_WAITING,
     RunAdvanceArgs,
     RunStatusArgs,
+    RunWithdrawArgs,
 )
 from dark_factory.cli.release import (
     ReleaseVerifyError,
@@ -134,7 +158,13 @@ from dark_factory.orchestration.state.engine import (
     session_scope,
 )
 from dark_factory.orchestration.state.repositories import ContractConflictError, StateError
-from dark_factory.orchestration.state.run_store import RunStore
+from dark_factory.orchestration.state.run_store import (
+    RunNotWithdrawableError,
+    RunStore,
+    RunWithdrawal,
+    UnknownRunError,
+    WithdrawOutcome,
+)
 
 DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
 """State-store URL variable; the same one ``factory doctor`` checks (ADR-004)."""
@@ -147,6 +177,12 @@ RUNS_ROOT_ENV_VAR: Final[str] = "DARK_FACTORY_RUNS_ROOT"
 
 DEFAULT_RUN_ROUTE: Final[Route] = Route.STANDARD
 """Route of a run created by the CLI (ADR-005): the full gate set, never a shortcut."""
+
+CLI_ACTOR: Final[str] = "cli"
+"""Audit actor of a CLI-issued decision (T064): the local CLI has no authenticated identity."""
+
+EXIT_NOT_WITHDRAWABLE: Final[int] = EXIT_ERROR
+"""A finished run is refused by ``run withdraw`` (T064): exit 1, not a usage error."""
 
 _EXIT_CODE_BY_OUTCOME: Final[dict[RunAdvanceOutcome, int]] = {
     RunAdvanceOutcome.ADVANCED: EXIT_OK,
@@ -391,6 +427,37 @@ def run_status_command(
         engine.dispose()
 
 
+def run_withdraw_command(
+    args: RunWithdrawArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    owner_id: str | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Handle ``factory run withdraw``; return the process exit code (T064, TD-030).
+
+    One durable operator transition: the run and every non-terminal stage move
+    to ``canceled``, the committed history is untouched and the decision is
+    recorded in the append-only audit log. The store is probed up front so an
+    unreachable database is exit 2 instead of a traceback; ``session_factory``,
+    ``owner_id`` and ``now`` are the injection seams for tests.
+    """
+    resolved_owner = owner_id if owner_id is not None else _default_owner_id()
+    if session_factory is not None:
+        return _withdraw(session_factory, args, owner_id=resolved_owner, now=now)
+    try:
+        engine = create_state_engine(_database_url())
+        with engine.connect():
+            pass  # liveness probe: fail fast with exit 2 when the store is unreachable
+    except SQLAlchemyError:
+        return _unreachable("run withdraw", args.json_output)
+    factory = create_session_factory(engine)
+    try:
+        return _withdraw(factory, args, owner_id=resolved_owner, now=now)
+    finally:
+        engine.dispose()
+
+
 def render_advance_text(advance: RunAdvance) -> str:
     """Human-readable summary of one advance: outcome line plus the wait/stop reason.
 
@@ -462,6 +529,38 @@ def render_status_text(run: ChangeRun) -> str:
 def render_status_json(run: ChangeRun) -> str:
     """Stable JSON of a run: the domain ``ChangeRun`` document (module docstring)."""
     return json.dumps(run.model_dump(mode="json"))
+
+
+def render_withdraw_text(withdrawal: RunWithdrawal) -> str:
+    """Human-readable withdrawal report: the outcome and the stages it canceled."""
+    run = withdrawal.run
+    if withdrawal.outcome is WithdrawOutcome.REPLAYED:
+        return (
+            f"run {run.id}: replayed (status={run.status.value};"
+            " the run was already withdrawn, nothing was written)"
+        )
+    canceled = [stage.stage.value for stage in run.stages if stage.status is StageStatus.CANCELED]
+    return (
+        f"run {run.id}: withdrawn (status={run.status.value},"
+        f" canceled_stages={','.join(canceled) or 'none'})"
+    )
+
+
+def render_withdraw_json(withdrawal: RunWithdrawal) -> str:
+    """Stable JSON of one withdrawal (shape in the module docstring)."""
+    run = withdrawal.run
+    payload: dict[str, object] = {
+        "run_id": run.id,
+        "change_id": run.change_id,
+        "outcome": withdrawal.outcome.value,
+        "persisted": withdrawal.outcome is WithdrawOutcome.WITHDRAWN,
+        "status": run.status.value,
+        "state_revision": run.state_revision,
+        "canceled_stages": [
+            stage.stage.value for stage in run.stages if stage.status is StageStatus.CANCELED
+        ],
+    }
+    return json.dumps(payload)
 
 
 def _advance(
@@ -699,6 +798,68 @@ def _show_status(factory: sessionmaker[Session], args: RunStatusArgs) -> int:
         )
     print(render_status_json(run) if args.json_output else render_status_text(run))
     return EXIT_OK
+
+
+def _withdraw(
+    factory: sessionmaker[Session],
+    args: RunWithdrawArgs,
+    *,
+    owner_id: str,
+    now: datetime | None,
+) -> int:
+    """Withdraw the run in one transaction and emit the outcome (T064, TD-030)."""
+    try:
+        with session_scope(factory) as session:
+            withdrawal = _withdraw_in_session(session, args, owner_id=owner_id, now=now)
+    except UnknownRunError:
+        return _report(
+            "run withdraw",
+            "invalid_input",
+            f"unknown run {args.run_id!r}",
+            EXIT_INVALID_INPUT,
+            args.json_output,
+        )
+    except RunNotWithdrawableError as exc:
+        # A finished run is never rewritten by a withdrawal (T064). The message
+        # names the run id and its status — neither is a secret.
+        return _report(
+            "run withdraw", "not_withdrawable", str(exc), EXIT_NOT_WITHDRAWABLE, args.json_output
+        )
+    except StateError:
+        # The store refused the write — a stale revision, a lost lease, a missing
+        # row: the withdrawal did not happen. The text may embed identifiers, so
+        # it is not echoed (ADR-009).
+        return _report(
+            "run withdraw",
+            "invalid_input",
+            "the state store refused the withdrawal (conflict, lost lease or missing state)",
+            EXIT_INVALID_INPUT,
+            args.json_output,
+        )
+    except SQLAlchemyError:
+        return _unreachable("run withdraw", args.json_output)
+    print(
+        render_withdraw_json(withdrawal) if args.json_output else render_withdraw_text(withdrawal)
+    )
+    return EXIT_OK
+
+
+def _withdraw_in_session(
+    session: Session,
+    args: RunWithdrawArgs,
+    *,
+    owner_id: str,
+    now: datetime | None,
+) -> RunWithdrawal:
+    """Apply the operator withdrawal in the caller's transaction (T064, TD-030)."""
+    return RunStore(session).withdraw_run(
+        args.run_id,
+        actor=CLI_ACTOR,
+        role=None,
+        reason=args.reason,
+        owner_id=owner_id,
+        now=now if now is not None else datetime.now(UTC),
+    )
 
 
 def _unreachable(command: str, json_output: bool) -> int:

@@ -1,15 +1,23 @@
-"""Read-only run endpoints of the factory API (T035, contract api.md).
+"""Run endpoints of the factory API: reads plus the operator withdrawal (T035, T064).
 
-All reads are stateless: one session per request, no token required on the
+The reads are stateless: one session per request, no token required on the
 local contour (ADR-009 p.7). Unknown runs answer 404 with the RFC 7807-like
 body produced by the app-level exception handlers.
+
+``POST /runs/{run_id}/withdraw`` is the one mutation (T064, TD-030): it needs a
+bearer token with the ``runs:write`` scope and the operator role (agents must
+not retract the work that gates them), and it writes the decision through the
+core transition ``RunStore.withdraw_run`` together with its audit row in the
+same transaction.
 """
 
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, cast
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -20,6 +28,12 @@ from dark_factory.api.aggregates import (
     latest_gate_results,
     open_blocker_count,
 )
+from dark_factory.api.auth import (
+    SCOPE_RUNS_WRITE,
+    ApiToken,
+    ApiTokenStore,
+    require_write,
+)
 from dark_factory.api.dto import RunCard, RunSummary, RunTrace, StageSummary, UsageAggregate
 from dark_factory.changes.enums import FindingSeverity, FindingStatus, RunStatus, Stage
 from dark_factory.changes.findings import Finding, GateResult
@@ -27,6 +41,12 @@ from dark_factory.changes.refs import Evidence
 from dark_factory.changes.run import StageResult
 from dark_factory.orchestration.state.models import Execution, UsageRecord
 from dark_factory.orchestration.state.models import Stage as StageRow
+from dark_factory.orchestration.state.repositories import StateError
+from dark_factory.orchestration.state.run_store import (
+    RunNotWithdrawableError,
+    RunStore,
+    UnknownRunError,
+)
 from dark_factory.orchestration.state.stage_results import StageResultRepository
 
 
@@ -46,9 +66,13 @@ def _summary(row: Execution) -> RunSummary:
 
 def create_runs_router(
     session_dependency: Callable[..., Iterator[Session]],
+    token_store: ApiTokenStore,
 ) -> APIRouter:
-    """Build the ``/runs`` router bound to the per-request session dependency."""
+    """Build the ``/runs`` router: the reads and the operator withdrawal (T064)."""
     SessionDep = Annotated[Session, Depends(session_dependency)]
+    withdraw_write = require_write(token_store, SCOPE_RUNS_WRITE, require_operator_role=True)
+    WithdrawTokenDep = Annotated[ApiToken, Depends(withdraw_write)]
+    IdempotencyKey = Annotated[str | None, Header()]
     router = APIRouter()
 
     def _require_run(run_id: str, session: Session) -> Execution:
@@ -176,5 +200,42 @@ def create_runs_router(
             and (status is None or finding.status is status)
         ]
         return sorted(selected, key=lambda finding: finding.id)
+
+    @router.post("/runs/{run_id}/withdraw", response_model=RunSummary)
+    def withdraw_run(
+        run_id: str,
+        token: WithdrawTokenDep,
+        session: SessionDep,
+        idempotency_key: IdempotencyKey = None,
+    ) -> RunSummary:
+        """Retract a parked run by operator decision (T064, TD-030).
+
+        The run and its non-terminal stages move to ``canceled``; the committed
+        stage results are not rewritten. A repeat is idempotent: the run is
+        returned as it stands and only the audit row records the replay. A
+        finished run (``succeeded``/``failed``/``superseded``) is refused with
+        409 — a withdrawal never resurrects or reclassifies it.
+        """
+        try:
+            RunStore(session).withdraw_run(
+                run_id,
+                actor=token.actor,
+                role=token.role,
+                owner_id=f"api-withdraw-{uuid4().hex[:8]}",
+                idempotency_key=idempotency_key,
+                now=datetime.now(UTC),
+            )
+        except UnknownRunError as exc:
+            raise HTTPException(status_code=404, detail=f"Run {run_id!r} does not exist") from exc
+        except RunNotWithdrawableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except StateError as exc:
+            # A stale revision or the live lease of a concurrent advance: the
+            # store refused the write, so nothing was withdrawn (ADR-006 p.4/p.6).
+            raise HTTPException(
+                status_code=409,
+                detail="The run could not be withdrawn (conflict, lost lease or missing state)",
+            ) from exc
+        return _summary(_require_run(run_id, session))
 
     return router

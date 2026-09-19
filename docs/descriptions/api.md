@@ -11,27 +11,27 @@
 Что API даёт прямо сейчас:
 
 - чтение состояния конвейера: runs, логические стадии, usage, гейты, findings, evidence и trace-цепочки;
-- intake change (`POST /changes`) с дедупликацией и запись решений оператора (`POST .../approvals`);
+- intake change (`POST /changes`) с дедупликацией, запись решений оператора (`POST .../approvals`) и снятие/отзыв запуска (`POST /runs/{run_id}/withdraw`, T064, TD-030);
 - bearer-аутентификацию мутаций, аудит каждой мутации в одной транзакции и идемпотентность по `Idempotency-Key` (ADR-009 п.7);
 - единый RFC 7807-подобный формат тела любой ошибки (`type`, `title`, `status`, `detail`).
 
 Чего нет:
 
-- эндпоинтов retry/pause/cancel — из mutating-операций ADR-009 п.7 реализованы только intake и approvals;
+- эндпоинтов retry/pause — из операторских команд ADR-009 п.7 реализованы intake, approvals и withdraw;
 - аутентификации на чтении: все GET открыты (локальный контур, ADR-009 п.7);
-- запуска стадий: API не вызывает доменный Flow, единственные мутации — intake и approval;
+- запуска стадий: API не вызывает доменный Flow; единственные мутации — intake, approval и withdraw;
 - production-контура: приложение stateless, поднимается локально через `factory api serve` (uvicorn, дефолты `--host 127.0.0.1 --port 8000`) и деплоится Helm-чартом [`charts/dark-factory`](../../charts/dark-factory/) (Deployment 1 реплика, Service ClusterIP, Console — T036); prod-контур отсутствует.
 
 ## 2. Путь запроса
 
-`create_app(session_factory, tokens=None)` собирает приложение: сессия — одна на запрос (commit при успехе, rollback при любой ошибке), `tokens=None` означает чтение `DARK_FACTORY_API_TOKENS`. Роутер runs получает только сессию; роутер changes — сессию и token store.
+`create_app(session_factory, tokens=None)` собирает приложение: сессия — одна на запрос (commit при успехе, rollback при любой ошибке), `tokens=None` означает чтение `DARK_FACTORY_API_TOKENS`. Оба мутирующих роутера получают сессию и token store: changes — для intake/approvals, runs — для единственной мутации `withdraw` (T064).
 
 ```mermaid
 flowchart LR
     CLIENT["Клиент\nConsole (план) / curl и CI (сейчас)"] -->|"чтение"| APP["app.py\ncreate_app + обработчики ошибок"]
     CLIENT -->|"Bearer + мутации"| APP
     APP --> AUTH["auth.py\nApiTokenStore + require_write"]
-    APP --> RUNS["routes_runs.py\n8 read-only эндпоинтов"]
+    APP --> RUNS["routes_runs.py\n8 read-only эндпоинтов\n+ withdraw (T064)"]
     APP --> CHANGES["routes_changes.py\nintake, card, trace, approvals"]
     AUTH --> CHANGES
     RUNS --> AGG["aggregates.py\nlatest-wins проекции"]
@@ -57,6 +57,7 @@ flowchart LR
 | GET | `/runs/{run_id}/evidence/{evidence_id}` | Один evidence | `Evidence` | открыто |
 | GET | `/runs/{run_id}/gates` | Последний `GateResult` на каждый гейт | `GateResult[]` | открыто |
 | GET | `/runs/{run_id}/findings` | Findings после dedup; фильтры `severity`, `status`; сортировка по id | `Finding[]` | открыто |
+| POST | `/runs/{run_id}/withdraw` | Снятие/отзыв паркованного run (T064, TD-030): run и non-terminal стадии → `canceled`, коммитнутая история не переписывается | `RunSummary`; 200 снят/replay, 409 терминальный run | Bearer + `runs:write` + роль `operator` |
 | POST | `/changes` | Intake change (FR-001) с дедупом по `id` и `external_ref` | `Change`; 201 created, 200 replay | Bearer + `changes:write` |
 | GET | `/changes` | Список change-документов | `Change[]` | открыто |
 | GET | `/changes/{change_id}` | Карточка: Change + runs + счётчик решений | `ChangeCard` | открыто |
@@ -74,7 +75,7 @@ flowchart LR
 |---|---|---|
 | `Change` (тело) | `POST /changes` | доменный документ: `id`, `title`, `source` (tracker/console/cli/api), `product`, `risk_class` (R0–R4), опц. `external_ref`, `change_request` |
 | `ApprovalRequest` (тело) | `POST .../approvals` | `gate` (7 значений Gate), `outcome` (approved/rejected/waived), `subject_revision` — обязателен (min_length=1), опц. `comment`, `expected_state_revision` |
-| `Idempotency-Key` (заголовок) | оба POST | опционален; повтор возвращает прежний результат |
+| `Idempotency-Key` (заголовок) | все POST | опционален; повтор возвращает прежний результат |
 | `CiStageToggleRequest` (тело) | `PUT /ci/stages/{job}` | `enabled` — строгий bool (`strict=True`): `"yes"`/`1` не коэрцятся, ответ 422 |
 | `limit` / `offset` | `GET /runs`, `GET /changes` | 1–200 (default 50) / ≥ 0 (default 0); сортировка `(created_at, id)` |
 | `status`, `stage` | `GET /runs` | значения `RunStatus` (8) и `Stage` (5); stage-фильтр — подзапрос по таблице `stage` |
@@ -89,7 +90,7 @@ flowchart LR
 | Переменная среды | `DARK_FACTORY_API_TOKENS` |
 | Формат | JSON-массив записей `{token, actor, role, scopes}` |
 | Роли | только `operator` и `service` (иное значение — ошибка разбора конфига) |
-| Скоупы | `changes:write`, `approvals:write`, `ci:write` |
+| Скоупы | `changes:write`, `approvals:write`, `ci:write`, `runs:write` |
 | Заголовок | `Authorization: Bearer <token>`, схема без учёта регистра |
 | Хранение | только SHA-256-дайджесты; сравнение `hmac.compare_digest`; сырые токены не хранятся и не логируются |
 | Пустая/отсутствующая переменная | пустой store — любая мутация отвечает 401 (fail closed) |
@@ -102,6 +103,7 @@ flowchart LR
 | Заголовка нет, схема не Bearer, значение пустое или токен неизвестен | 401 + `WWW-Authenticate: Bearer`, detail «A valid bearer token is required» |
 | Токен валиден, скоуп не выдан | 403, detail «Scope 'changes:write' is required» (или 'approvals:write') |
 | Approval от роли `service` | 403, detail «The operator role is required» — агенты никогда не аппрувят |
+| Withdraw от роли `service` | 403, detail «The operator role is required» — агенты исполняют конвейер и не снимают работу, которая их гейтит (T064) |
 | Запись переключателя этапа CI от роли `service` | 403, detail «The operator role is required» — агенты не перенастраивают пайплайн, который их гейтит (ADR-027) |
 
 `ApiToken(actor, role, scopes)` возвращается зависимостью и попадает в аудит. Нюансы разбора заголовка: `Bearer` без значения — 401, схема сравнивается в нижнем регистре.
@@ -150,8 +152,8 @@ API читает и пишет только PostgreSQL (ADR-004) через SQLA
 
 ## 7. Аудит и подписи решений
 
-- Каждая мутация пишет одну строку в `audit_log` **в той же транзакции**, что и изменение состояния (`AuditRepository.append`): actor и role берутся из токена, фиксируются `action`, `resource_type="change"`, `resource_id`, `idempotency_key` и `outcome` (`created`/`replayed`); `details` не содержит секретов.
-- Действия: `change.intake` (`CHANGE_INTAKE_ACTION`) и `approval.record` (`APPROVAL_RECORD_ACTION`).
+- Каждая мутация пишет одну строку в `audit_log` **в той же транзакции**, что и изменение состояния (`AuditRepository.append`): actor и role берутся из токена, фиксируются `action`, `resource_type`, `resource_id`, `idempotency_key` и `outcome` (`created`/`replayed`); `details` не содержит секретов.
+- Действия: `change.intake` (`CHANGE_INTAKE_ACTION`), `approval.record` (`APPROVAL_RECORD_ACTION`) и `run.withdraw` (`WITHDRAW_ACTION`, T064) — последнее с `resource_type="run"`, `resource_id=<run id>` и необязательным `details.reason`.
 - Решение оператора хранится version-bound (ADR-009 п.7, FR-003): `Decision.decided_by` всегда `human` (`DecisionSource.HUMAN`), `commit_sha = subject_revision` — решение привязано к конкретной версии, новая версия требует нового решения; `comment` и `idempotency_key` сохраняются рядом.
 - Оптимистическая конкуренция (ADR-006 п.4): `expected_state_revision` из тела сравнивается с `change.state_revision`; при совпадении решение записывается и `state_revision` инкрементируется.
 
@@ -176,6 +178,9 @@ flowchart TD
 | Валидный токен без нужного scope | 403, detail с именем scope |
 | Approval от `service`-роли | 403 «The operator role is required» |
 | Run / change / evidence не существует | 404 с detail вида «Run 'x' does not exist», «Change 'x' does not exist», «Evidence 'e' does not exist in run 'r'» |
+| `POST /runs/{id}/withdraw`: run уже `canceled` | 200 с тем же `RunSummary`, `state_revision` не двигается, audit outcome=replayed (T064) |
+| `POST /runs/{id}/withdraw`: run терминальный и не `canceled` (`succeeded`/`failed`/`superseded`) | 409, detail «run 'x' is terminal (…)»; ни состояние, ни audit не записаны — завершённый run не переписывается |
+| `POST /runs/{id}/withdraw`: lease запуска держит конкурентный advance | 409 — store отказал (conflict/lost lease), снятие не выполнено |
 | `expected_state_revision` не равен текущему `state_revision` | 409 «state_revision mismatch» |
 | Тело не прошло валидацию (например, нет `subject_revision`) | 422, detail = описания ошибок «loc: msg» через «; » |
 | `limit` вне 1–200 или `offset` < 0 | 422 (ограничения `Query`) |
@@ -187,8 +192,9 @@ flowchart TD
 
 ## 9. Где искать проверки
 
-- [`tests/test_api_auth.py`](../../tests/test_api_auth.py) — AuthN/AuthZ и форма контракта без БД: 401/403, fail-closed пустого store, malformed-заголовки, RFC 7807-тела, состав путей OpenAPI;
-- [`tests/integration/test_api.py`](../../tests/integration/test_api.py) — сквозные сценарии против PostgreSQL (требует `DARK_FACTORY_TEST_DATABASE_URL`, без него пропускаются): intake/replay/external_ref-дедуп, идемпотентность и 409 approvals, агрегаты `RunCard`, канонический порядок trace, фильтры `/runs`, идемпотентность `stage_result` по attempt_id;
+- [`tests/test_api_auth.py`](../../tests/test_api_auth.py) — AuthN/AuthZ и форма контракта без БД: 401/403, fail-closed пустого store, malformed-заголовки, RFC 7807-тела, состав путей OpenAPI (включая 401/403 скоупа `runs:write` и роли `operator` для withdraw, T064);
+- [`tests/integration/test_api.py`](../../tests/integration/test_api.py) — сквозные сценарии против PostgreSQL (требует `DARK_FACTORY_TEST_DATABASE_URL`, без него пропускаются): intake/replay/external_ref-дедуп, идемпотентность и 409 approvals, агрегаты `RunCard`, канонический порядок trace, фильтры `/runs`, идемпотентность `stage_result` по attempt_id, снятие run через `POST /runs/{id}/withdraw` (200/200-replay/404/409);
+- [`tests/integration/test_run_withdraw.py`](../../tests/integration/test_run_withdraw.py) — row-level поведение перехода `withdraw` над PostgreSQL: `waiting`/`blocked`/`running` → `canceled`, non-terminal стадии → `canceled`, терминальные не переписываются, коммитнутая `StageResult`-история неприкосновенна, повтор идемпотентен, терминальный не-`canceled` run отвергается, неизвестный run — `UnknownRunError`, решение — в append-only `audit_log`;
 - [`tests/test_chart_dark_factory.py`](../../tests/test_chart_dark_factory.py) — контракт деплоя API: пробы (`/openapi.json` liveness, `/api/v1/runs` readiness), `DATABASE_URL` из секрета, отсутствие токен-секрета по умолчанию, команда `factory api serve --host 0.0.0.0 --port 8000`, опциональная обвязка `ciToggles` (slug + `envFrom` секрета App);
 - [`tests/test_api_ci_stages.py`](../../tests/test_api_ci_stages.py) — эндпоинты переключателей этапов CI: каталог и состояние, `available=false` без конфигурации, 401/403 (scope `ci:write` и роль `operator`), 404 неизвестного этапа, 502 провайдера, строгий bool в теле;
 - [`tests/test_adapters_github_variables.py`](../../tests/test_adapters_github_variables.py) — адаптер repository variables: пагинация, PATCH→POST при 404, идемпотентный DELETE, маппинг ошибок без эха токена.
