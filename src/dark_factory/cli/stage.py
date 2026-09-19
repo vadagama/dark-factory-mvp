@@ -58,7 +58,6 @@ printed. ``--route`` (default: standard) fixes gate applicability (ADR-005);
 """
 
 import hashlib
-import json
 import os
 import sys
 import uuid
@@ -76,10 +75,14 @@ from dark_factory.changes.next_action import StopAction, WaitForInputAction
 from dark_factory.changes.run import Change, StageResult
 from dark_factory.changes.run_records import to_json
 from dark_factory.changes.usage import BudgetSnapshot
+from dark_factory.cli._common import (
+    os_error_reason,
+    report_execution_error,
+    report_invalid_input,
+)
 from dark_factory.cli.main import (
     EXIT_BLOCKED,
     EXIT_ERROR,
-    EXIT_INVALID_INPUT,
     EXIT_OK,
     EXIT_WAITING,
     StageRunArgs,
@@ -95,6 +98,9 @@ from dark_factory.orchestration.idempotency import (
     EvidenceOperationStore,
 )
 from dark_factory.orchestration.stages import build_context, run_deterministic_stage
+
+_COMMAND: Final[str] = "stage run"
+"""Subcommand name of the error reports (``factory stage run: ...``)."""
 
 SNAPSHOT_EVIDENCE_NAME: Final[str] = "change_snapshot.yaml"
 """Evidence file with the byte-exact copy of the input snapshot (FR-001)."""
@@ -156,7 +162,7 @@ def load_change_snapshot(path: str) -> ChangeSnapshot:
         raw = Path(path).read_bytes()
     except OSError as exc:
         raise InvalidStageInput(
-            f"cannot read change snapshot {path!r}: {_os_error_reason(exc)}"
+            f"cannot read change snapshot {path!r}: {os_error_reason(exc)}"
         ) from exc
     try:
         data = yaml.safe_load(raw)
@@ -248,7 +254,7 @@ def run_stage_command(args: StageRunArgs) -> int:
         input_revision = _resolve_input_revision(args.input_revision, snapshot.raw)
         run_id = _resolve_run_id(args.run_id)
     except InvalidStageInput as exc:
-        return _report_invalid_input(str(exc), json_output=args.json_output)
+        return report_invalid_input(_COMMAND, str(exc), json_output=args.json_output)
 
     route = args.route if args.route is not None else DEFAULT_STAGE_ROUTE
     key = operation_key(run_id, args.stage, input_revision)
@@ -265,15 +271,16 @@ def run_stage_command(args: StageRunArgs) -> int:
         try:
             persist_input_snapshot(evidence_dir, snapshot.raw)
         except OSError as exc:
-            return _report_invalid_input(
-                f"cannot fix the input snapshot in {args.evidence_dir!r}: {_os_error_reason(exc)}",
+            return report_invalid_input(
+                _COMMAND,
+                f"cannot fix the input snapshot in {args.evidence_dir!r}: {os_error_reason(exc)}",
                 json_output=args.json_output,
             )
         try:
             # ADR-015 p.5: the stage must not start without a reproducible record.
             manifest = collect_run_manifest(os.environ)
         except RunRecordError as exc:
-            return _report_invalid_input(str(exc), json_output=args.json_output)
+            return report_invalid_input(_COMMAND, str(exc), json_output=args.json_output)
 
     started_at = datetime.now(UTC)
     result = execute_stage(
@@ -290,9 +297,9 @@ def run_stage_command(args: StageRunArgs) -> int:
         except OSError as exc:
             # ADR-006 p.8: exit 10 would claim a persisted result — it does not
             # exist, so the command fails as an execution error instead.
-            return _report_execution_error(
-                f"cannot persist the stage result to {args.evidence_dir!r}:"
-                f" {_os_error_reason(exc)}",
+            return report_execution_error(
+                _COMMAND,
+                f"cannot persist the stage result to {args.evidence_dir!r}: {os_error_reason(exc)}",
                 json_output=args.json_output,
             )
         try:
@@ -308,14 +315,15 @@ def run_stage_command(args: StageRunArgs) -> int:
             )
             persist_run_record(evidence_dir, record)
         except RunRecordError as exc:
-            return _report_execution_error(
-                f"cannot build the run record: {exc}", json_output=args.json_output
+            return report_execution_error(
+                _COMMAND, f"cannot build the run record: {exc}", json_output=args.json_output
             )
         except OSError as exc:
             # ADR-006 p.8: exit 10 would claim a persisted run record — it does
             # not exist, so the command fails as an execution error too.
-            return _report_execution_error(
-                f"cannot persist the run record to {args.evidence_dir!r}: {_os_error_reason(exc)}",
+            return report_execution_error(
+                _COMMAND,
+                f"cannot persist the run record to {args.evidence_dir!r}: {os_error_reason(exc)}",
                 json_output=args.json_output,
             )
 
@@ -354,11 +362,6 @@ def _resolve_run_id(value: str | None) -> str:
     return value
 
 
-def _os_error_reason(exc: OSError) -> str:
-    """Short OS error text without echoing the raw exception (ADR-009 hygiene)."""
-    return exc.strerror or exc.__class__.__name__
-
-
 def _format_validation_errors(exc: ValidationError) -> str:
     """First pydantic error locations and messages; the input data is not echoed."""
     errors = exc.errors()
@@ -369,22 +372,3 @@ def _format_validation_errors(exc: ValidationError) -> str:
     if len(errors) > 3:
         shown.append(f"and {len(errors) - 3} more")
     return "; ".join(shown)
-
-
-def _report_invalid_input(message: str, *, json_output: bool) -> int:
-    """Report invalid input/configuration (exit 2, the stage did not start)."""
-    return _report_error("invalid_input", message, EXIT_INVALID_INPUT, json_output=json_output)
-
-
-def _report_execution_error(message: str, *, json_output: bool) -> int:
-    """Report an execution failure after the stage started (exit 1)."""
-    return _report_error("execution_error", message, EXIT_ERROR, json_output=json_output)
-
-
-def _report_error(tag: str, message: str, code: int, *, json_output: bool) -> int:
-    """Emit one error report: JSON payload on stdout, or a line on stderr."""
-    if json_output:
-        print(json.dumps({"error": tag, "detail": message}))
-    else:
-        print(f"factory stage run: {message}", file=sys.stderr)
-    return code

@@ -34,6 +34,8 @@ MINIMUM_PYTHON_VERSION: Final[tuple[int, int]] = (3, 12)
 """Minimal interpreter version; mirrors ``requires-python >= 3.12`` (pyproject.toml)."""
 
 DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
+"""State-store URL variable (ADR-004); the store-backed commands read it via ``cli._common``."""
+
 DISTRIBUTION_NAME: Final[str] = "dark-factory"
 
 

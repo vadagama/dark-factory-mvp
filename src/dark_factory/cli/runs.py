@@ -23,16 +23,19 @@ and raw exceptions are never echoed (ADR-009).
 
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Final
 
 from pydantic import ValidationError
 
 from dark_factory.changes.run_records import RunRecord, from_json
-from dark_factory.cli.main import EXIT_ERROR, EXIT_INVALID_INPUT, EXIT_OK, RunPublishArgs
+from dark_factory.cli._common import os_error_reason, report_error, report_invalid_input
+from dark_factory.cli.main import EXIT_ERROR, EXIT_OK, RunPublishArgs
 from dark_factory.execution.runs import PublishResult, RunRecordStore
 from dark_factory.execution.runs.errors import RunRecordStoreError
+
+_COMMAND: Final[str] = "run publish"
+"""Subcommand name of the error reports (``factory run publish: ...``)."""
 
 RUNS_ROOT_ENV_VAR: Final[str] = "DARK_FACTORY_RUNS_ROOT"
 """Environment variable with the ``dark-factory-runs`` checkout to publish into."""
@@ -50,14 +53,15 @@ def run_publish_command(args: RunPublishArgs) -> int:
     """
     runs_root = _resolve_runs_root(args.runs_root)
     if runs_root is None:
-        return _report_invalid_input(
+        return report_invalid_input(
+            _COMMAND,
             f"no runs repository: pass --runs-root or set {RUNS_ROOT_ENV_VAR}",
             json_output=args.json_output,
         )
     try:
         record = load_record(args.record)
     except InvalidRecordInput as exc:
-        return _report_invalid_input(str(exc), json_output=args.json_output)
+        return report_invalid_input(_COMMAND, str(exc), json_output=args.json_output)
 
     try:
         result = RunRecordStore(runs_root).publish(record)
@@ -65,7 +69,7 @@ def run_publish_command(args: RunPublishArgs) -> int:
         return _report_rejected(str(exc), json_output=args.json_output)
     except OSError as exc:
         return _report_rejected(
-            f"cannot write the run record into the runs repository: {_os_error_reason(exc)}",
+            f"cannot write the run record into the runs repository: {os_error_reason(exc)}",
             json_output=args.json_output,
         )
     _emit(result, json_output=args.json_output)
@@ -83,7 +87,7 @@ def load_record(path: str) -> RunRecord:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise InvalidRecordInput(
-            f"cannot read the run record {path!r}: {_os_error_reason(exc)}"
+            f"cannot read the run record {path!r}: {os_error_reason(exc)}"
         ) from exc
     try:
         return from_json(RunRecord, text)
@@ -126,25 +130,8 @@ def _resolve_runs_root(value: str | None) -> Path | None:
     return Path(candidate)
 
 
-def _os_error_reason(exc: OSError) -> str:
-    """Short OS error text without echoing the raw exception (ADR-009 hygiene)."""
-    return exc.strerror or exc.__class__.__name__
-
-
-def _report_invalid_input(message: str, *, json_output: bool) -> int:
-    """Report invalid input/configuration (exit 2, nothing published)."""
-    return _report("invalid_input", message, EXIT_INVALID_INPUT, json_output=json_output)
-
-
 def _report_rejected(message: str, *, json_output: bool) -> int:
-    """Report a record the publisher refused (exit 1, nothing published)."""
-    return _report("run_record_rejected", message, EXIT_ERROR, json_output=json_output)
-
-
-def _report(tag: str, message: str, code: int, *, json_output: bool) -> int:
-    """Emit one error report: JSON payload on stdout, or a line on stderr."""
-    if json_output:
-        print(json.dumps({"error": tag, "detail": message}))
-    else:
-        print(f"factory run publish: {message}", file=sys.stderr)
-    return code
+    """Report a record the publisher refused (tag ``run_record_rejected``, exit 1)."""
+    return report_error(
+        _COMMAND, "run_record_rejected", message, EXIT_ERROR, json_output=json_output
+    )

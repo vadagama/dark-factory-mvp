@@ -518,7 +518,9 @@ def test_a_trusted_path_in_the_scope_is_raised_to_r4_off_the_quick_route() -> No
     run = _run_with_risk(
         Route.QUICK,
         RiskClass.R1,
-        scope=ChangeScope(in_scope=("src/dark_factory/orchestration/rules/gates.py",), out_of_scope=()),
+        scope=ChangeScope(
+            in_scope=("src/dark_factory/orchestration/rules/gates.py",), out_of_scope=()
+        ),
     )
     result = _result(Stage.SPECIFICATION, ExecuteStageAction(next_stage=Stage.PLANNING), run.route)
     stop = _blocked_stop(run, result)

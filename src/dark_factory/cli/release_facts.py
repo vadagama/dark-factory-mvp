@@ -5,8 +5,9 @@ is resumed by the driver
 (:func:`dark_factory.orchestration.runner.advance_run`) once the release facts
 it waits for resolve. The driver stays port-free (ADR-024 p.5): it consumes
 only the value-level
-:class:`~dark_factory.orchestration.stages.release.ReleaseObservation`, and
-this module is the CLI seam that builds that observation from the command's
+:class:`~dark_factory.quality.release.decision.ReleaseObservation` (the
+release core's own observation, the one ``factory release verify`` decides
+on), and this module is the CLI seam that builds that observation from the command's
 release options — the digest observed on the deployment, the raw Argo
 Application statuses, the smoke probes behind the ``quality.release`` seams.
 
@@ -30,20 +31,19 @@ failed ``SmokeProbeEvidence``), never an exception into the driver.
 """
 
 import asyncio
+from dataclasses import replace
 
 from dark_factory.changes.enums import Stage
 from dark_factory.changes.run import Change, ChangeRun
-from dark_factory.changes.run_records import SmokeProbeEvidence
 from dark_factory.cli.main import RunAdvanceArgs
-from dark_factory.orchestration.stages.release import ReleaseObservation
 from dark_factory.quality.release import (
     HttpDigestProbe,
     HttpHealthProbe,
+    ReleaseObservation,
     SmokeProbe,
     pre_smoke_failure,
     run_smoke_probes,
 )
-from dark_factory.quality.release.decision import ReleaseObservation as DecisionObservation
 
 
 class CliReleaseFactsProvider:
@@ -121,25 +121,19 @@ class CliReleaseFactsProvider:
         evidence and the decision core reports the pre-smoke failure or the
         ``not_run`` smoke — fail-closed either way.
         """
-        observation = DecisionObservation(
+        observation = ReleaseObservation(
             expected_digest=self._expected_digest,
             observed_digest=self._observed_digest,
             argo_sync_raw=self._argo_sync,
             argo_health_raw=self._argo_health,
+            application=self._application,
         )
-        smoke: tuple[SmokeProbeEvidence, ...] = ()
         if pre_smoke_failure(observation) is None:
             probes = self._probes()
             if probes:
                 smoke = asyncio.run(run_smoke_probes(probes)).probes
-        return ReleaseObservation(
-            expected_digest=self._expected_digest,
-            observed_digest=self._observed_digest,
-            argo_sync_raw=self._argo_sync,
-            argo_health_raw=self._argo_health,
-            smoke=smoke,
-            application=self._application,
-        )
+                observation = replace(observation, smoke=smoke)
+        return observation
 
     def _probes(self) -> list[SmokeProbe]:
         """MVP probe set from the smoke options; empty means no smoke at all."""

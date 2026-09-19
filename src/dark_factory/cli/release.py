@@ -44,15 +44,20 @@ caller passed explicitly (ADR-009).
 import asyncio
 import json
 import os
-import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final
 from urllib.parse import urlparse
 
 from dark_factory.changes.enums import ReleaseStatus
 from dark_factory.changes.run_records import ReleaseEvidence, RunManifest
-from dark_factory.cli.main import EXIT_ERROR, EXIT_INVALID_INPUT, EXIT_OK, ReleaseVerifyArgs
+from dark_factory.cli._common import (
+    os_error_reason,
+    report_execution_error,
+    report_invalid_input,
+)
+from dark_factory.cli.main import EXIT_ERROR, EXIT_OK, ReleaseVerifyArgs
 from dark_factory.cli.run_records import (
     RunRecordError,
     build_release_run_record,
@@ -75,6 +80,9 @@ from dark_factory.quality.release import (
     pre_smoke_failure,
     run_smoke_probes,
 )
+
+_COMMAND: Final[str] = "release verify"
+"""Subcommand name of the error reports (``factory release verify: ...``)."""
 
 DIGEST_FIELD: str = "digest"
 """Field of the T033 ``image-digest.json`` artifact the expected digest is read from."""
@@ -147,7 +155,7 @@ def run_release_verify_command(args: ReleaseVerifyArgs) -> int:
     try:
         inputs = _resolve_inputs(args)
     except (ReleaseVerifyError, InvalidStageInput, RunRecordError) as exc:
-        return _report_invalid_input(str(exc), json_output=args.json_output)
+        return report_invalid_input(_COMMAND, str(exc), json_output=args.json_output)
 
     observation = ReleaseObservation(
         expected_digest=inputs.expected_digest,
@@ -158,13 +166,9 @@ def run_release_verify_command(args: ReleaseVerifyArgs) -> int:
     decision = pre_smoke_failure(observation)
     if decision is None:
         probes = _build_probes(inputs)
-        observation = ReleaseObservation(
-            expected_digest=inputs.expected_digest,
-            observed_digest=args.observed_digest,
-            argo_sync_raw=args.argo_sync,
-            argo_health_raw=args.argo_health,
-            smoke=asyncio.run(run_smoke_probes(probes)) if probes else None,
-        )
+        if probes:
+            smoke = asyncio.run(run_smoke_probes(probes)).probes
+            observation = replace(observation, smoke=smoke)
         decision = evaluate_release(observation)
     evidence = build_release_evidence(
         observation,
@@ -192,8 +196,9 @@ def run_release_verify_command(args: ReleaseVerifyArgs) -> int:
             evidence_path = str(persist_run_record(Path(inputs.evidence_dir), record))
         except OSError as exc:
             # The evidence must not be lost silently: report and go red (exit 1).
-            return _report_execution_error(
-                f"cannot persist the run record: {_os_error_reason(exc)}",
+            return report_execution_error(
+                _COMMAND,
+                f"cannot persist the run record: {os_error_reason(exc)}",
                 json_output=args.json_output,
             )
     return _emit(evidence, evidence_path, json_output=args.json_output)
@@ -280,7 +285,7 @@ def _expected_digest_from_json(path: str) -> str:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except OSError as exc:
         raise ReleaseVerifyError(
-            f"cannot read the image-digest artifact: {_os_error_reason(exc)}"
+            f"cannot read the image-digest artifact: {os_error_reason(exc)}"
         ) from exc
     except json.JSONDecodeError:
         raise ReleaseVerifyError("the image-digest artifact is not valid JSON") from None
@@ -355,27 +360,3 @@ def _resolve_run_id(value: str | None) -> str:
     if not stripped:
         raise ReleaseVerifyError("--run-id must be a non-empty string")
     return stripped
-
-
-def _os_error_reason(exc: OSError) -> str:
-    """Short OS error text without echoing the raw exception (ADR-009 hygiene)."""
-    return exc.strerror or exc.__class__.__name__
-
-
-def _report_invalid_input(message: str, *, json_output: bool) -> int:
-    """Report invalid input/configuration (exit 2, nothing was verified)."""
-    return _report_error("invalid_input", message, EXIT_INVALID_INPUT, json_output=json_output)
-
-
-def _report_execution_error(message: str, *, json_output: bool) -> int:
-    """Report an execution failure after the verification ran (exit 1)."""
-    return _report_error("execution_error", message, EXIT_ERROR, json_output=json_output)
-
-
-def _report_error(tag: str, message: str, code: int, *, json_output: bool) -> int:
-    """Emit one error report: JSON payload on stdout, or a line on stderr."""
-    if json_output:
-        print(json.dumps({"error": tag, "detail": message}))
-    else:
-        print(f"factory release verify: {message}", file=sys.stderr)
-    return code
