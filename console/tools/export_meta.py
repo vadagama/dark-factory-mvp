@@ -1,10 +1,10 @@
 """Generate the console meta snapshot from the Python sources of truth.
 
 T036 / ADR-021 p.5: the budgets/limits and settings/profiles screens need the
-factory's configured limits (``dark_factory.rules.limits`` over the
+factory's configured limits (``dark_factory.orchestration.rules.limits`` over the
 ``BudgetSnapshot`` defaults), the agent role profiles
 (``dark_factory.agents.profiles``) and the human-participation facts
-(``dark_factory.flows.routes.HUMAN_GATES``, ``orchestration.policy.merge``).
+(``dark_factory.orchestration.routes.HUMAN_GATES``, ``orchestration.policy.merge``).
 None of these are exposed by the API in the MVP, so the console ships a
 static snapshot generated mechanically from these sources:
 
@@ -33,8 +33,8 @@ from dark_factory.agents.profiles.manifest import AgentProfile
 from dark_factory.agents.profiles.registry import CORE_ROLES, get_profile
 from dark_factory.changes.enums import Gate
 from dark_factory.changes.usage import BudgetSnapshot
-from dark_factory.flows.routes import HUMAN_GATES, STAGE_SEQUENCE
 from dark_factory.orchestration.policy.merge import DEFAULT_MERGE_POLICY
+from dark_factory.orchestration.routes import HUMAN_GATES, STAGE_SEQUENCE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_PATH = REPO_ROOT / "console" / "src" / "generated" / "meta.json"

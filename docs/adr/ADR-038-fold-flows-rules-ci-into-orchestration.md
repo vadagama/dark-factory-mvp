@@ -32,4 +32,4 @@
 
 - Позитивные: на три пакета верхнего уровня меньше; таблица модулей HLD §6 и карта `docs/descriptions` короче; оркестрация читается как одно целое («какая стадия следующая», «можно ли продолжать», «какие CI-гейты есть»).
 - Негативные: исторические ADR ([ADR-021](ADR-021-console-mvp-delivery.md), [ADR-023](ADR-023-risk-classes-and-control-points.md), [ADR-027](ADR-027-console-ci-stage-toggles.md), [ADR-029](ADR-029-human-gates-at-design-phase.md)) и журналы пилота ссылаются на старые пути; они не переписываются — это записи на дату принятия, актуальные пути даёт HLD §6 и этот ADR.
-- Нейтральные: `docs/descriptions/routes.md` и `rules.md` сохраняют имена файлов, меняются только ссылки на исходники.
+- Нейтральные: список доверенных путей `TRUSTED_CHANGE_PATHS` (`orchestration/policy/risk.py`, ADR-023 п.7) указывает на `src/dark_factory/orchestration/rules/`; генератор `console/tools/export_meta.py` читает лимиты и человеческие гейты из новых модулей. `docs/descriptions/routes.md` и `rules.md` сохраняют имена файлов, меняются только ссылки на исходники.
