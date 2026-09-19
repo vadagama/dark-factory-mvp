@@ -10,6 +10,8 @@ driver replaying the checkpoint.
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
+
 from dark_factory.adapters.fakes import FakeMergeRequests
 from dark_factory.changes.enums import (
     ChangeRequestStatus,
@@ -212,10 +214,10 @@ def test_reobserving_the_same_reviews_yields_the_same_decisions() -> None:
     assert second.approvals == first.approvals
 
 
-def _run_declaring(risk_class: RiskClass) -> ChangeRun:
-    """A run whose approved contract declares ``risk_class`` (the effective-class input)."""
+def _run_declaring(risk_class: RiskClass, route: Route = Route.STANDARD) -> ChangeRun:
+    """A run on ``route`` whose approved contract declares ``risk_class`` (the effective input)."""
     contract = make_contract().model_copy(update={"risk_class": risk_class})
-    return make_run().model_copy(update={"implementation_contract": contract})
+    return make_run(route).model_copy(update={"implementation_contract": contract})
 
 
 def _change_with_an_approving_review() -> tuple[Change, FakeMergeRequests]:
@@ -268,6 +270,55 @@ def test_an_r1_run_keeps_the_planning_review_on_the_fallback_merge_gate() -> Non
     assert not gate_resolved(
         observed, stage=Stage.PLANNING, route=Route.STANDARD, risk_class=RiskClass.R1
     )
+
+
+@pytest.mark.parametrize(
+    ("route", "declared", "expected_gate", "resolves"),
+    [
+        # quick keeps planning machine-gated on R1: the risk set adds only
+        # ``ui``, which planning does not require, so a review there falls back
+        # to the merge gate and authorizes nothing (T062 quick/standard matrix).
+        (Route.QUICK, RiskClass.R1, Gate.REVIEW, False),
+        # The widening is class-driven, not route-driven: R2 makes planning
+        # human on quick too, even though the band refuses to carry an R2 change.
+        (Route.QUICK, RiskClass.R2, Gate.PLANNING, True),
+        (Route.STANDARD, RiskClass.R1, Gate.REVIEW, False),
+        (Route.STANDARD, RiskClass.R2, Gate.PLANNING, True),
+    ],
+)
+def test_the_planning_review_gate_follows_the_route_and_the_risk_class(
+    route: Route, declared: RiskClass, expected_gate: Gate, resolves: bool
+) -> None:
+    # B1 (T-043 increment 1) pinned the R2 widening on standard; the matrix keeps
+    # it honest across the routes a run may travel (T062 DoD).
+    run = _run_declaring(declared, route)
+    change, merge_requests = _change_with_an_approving_review()
+
+    observed = _provider(merge_requests, StubPipelines())(run, Stage.PLANNING, change)
+
+    assert observed is not None
+    assert [decision.gate for decision in observed.approvals] == [expected_gate]
+    assert (
+        gate_resolved(observed, stage=Stage.PLANNING, route=route, risk_class=declared) is resolves
+    )
+
+
+@pytest.mark.parametrize("route", [Route.QUICK, Route.STANDARD])
+@pytest.mark.parametrize("declared", [RiskClass.R1, RiskClass.R2])
+def test_specification_and_review_keep_their_base_gates_across_the_matrix(
+    route: Route, declared: RiskClass
+) -> None:
+    run = _run_declaring(declared, route)
+    change, merge_requests = _change_with_an_approving_review()
+    provider = _provider(merge_requests, StubPipelines())
+
+    at_specification = provider(run, Stage.SPECIFICATION, change)
+    at_review = provider(run, Stage.REVIEW_VERIFICATION, change)
+
+    assert at_specification is not None
+    assert [decision.gate for decision in at_specification.approvals] == [Gate.SPECIFICATION]
+    assert at_review is not None
+    assert [decision.gate for decision in at_review.approvals] == [Gate.REVIEW]
 
 
 def test_the_specification_and_review_mappings_are_unchanged() -> None:
