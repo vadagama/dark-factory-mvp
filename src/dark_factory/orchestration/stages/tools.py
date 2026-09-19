@@ -31,6 +31,7 @@ from dark_factory.agents.profiles.manifest import AgentProfile
 from dark_factory.ports import (
     ExecutionPort,
     ExecutionResult,
+    UnsafeWorkspacePathError,
     WorkspaceHandle,
 )
 
@@ -83,6 +84,13 @@ def resolve_path(path: str) -> str:
     segments = [segment for segment in normalized.split("/") if segment not in ("", ".")]
     if any(segment == ".." for segment in segments):
         raise UnsafeWorkspacePath(f"path {path!r} must not escape the workspace")
+    if not segments:
+        # ``.`` or ``./`` names the workspace root, not a file: the execution
+        # port would refuse it and abort the attempt (M3 live run) — tell the
+        # model instead, so it can list or name a file.
+        raise UnsafeWorkspacePath(
+            f"path {path!r} names the workspace root; name a file inside the workspace"
+        )
     return "/".join(segments)
 
 
@@ -130,7 +138,9 @@ def _model_facing[**P](
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
         try:
             return await tool(*args, **kwargs)
-        except UnsafeWorkspacePath as exc:
+        except (UnsafeWorkspacePath, UnsafeWorkspacePathError) as exc:
+            # The tools' own check and the execution port's (a different class
+            # behind the port) both mean the same thing to the model.
             return f"error: {exc}"
         except KeyError as exc:
             detail = exc.args[0] if exc.args else exc

@@ -33,12 +33,16 @@ from collections.abc import Sequence
 
 from dark_factory.cli.main import (
     ApiServeArgs,
+    ChangeAlternativeArgs,
     ChangeAnswerArgs,
     ChangeApproveArgs,
     ChangeArtifactsArgs,
     ChangeCommentArgs,
+    ChangeDecisionsArgs,
+    ChangePhasesArgs,
     ChangeReworkArgs,
     ChangeStatusArgs,
+    ChangeUiArgs,
     ProductBootstrapArgs,
     ProductValidateArgs,
     RunAdvanceArgs,
@@ -52,13 +56,17 @@ __all__ = ["main"]
 
 _CHANGE_REPOSITORY_COMMANDS = (
     ChangeStatusArgs,
+    ChangePhasesArgs,
     ChangeAnswerArgs,
     ChangeCommentArgs,
     ChangeReworkArgs,
     ChangeApproveArgs,
     ChangeArtifactsArgs,
+    ChangeDecisionsArgs,
+    ChangeAlternativeArgs,
+    ChangeUiArgs,
 )
-"""``factory change`` commands that consume the product repository seam (T086)."""
+"""``factory change`` commands that consume the product repository seam (T086, T093/T094)."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -137,6 +145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             executor=release_executor if release_executor is not None else executor,
             revision_of=runtime.revision_of(),
             gate_facts=runtime.facts_provider(),
+            repository=runtime.repository,
         )
     finally:
         asyncio.run(runtime.aclose())

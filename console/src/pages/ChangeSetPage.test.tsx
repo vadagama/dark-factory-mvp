@@ -7,8 +7,12 @@ import * as token from "../api/token";
 import type { Guidance, Phase, PhaseGate } from "../api/types";
 import {
   HEAD_REVISION,
+  alternativeOrderPending,
   artifactTree,
+  artifactTreeDesign,
   assumptionText,
+  changeGuidanceArchitecture,
+  changeGuidanceInterfaceBackendOnly,
   changeGuidanceRequirementsClosed,
   changeGuidanceRequirementsOpen,
   changeGuidanceStart,
@@ -16,14 +20,21 @@ import {
   commentDetached,
   commentOpen,
   decision,
+  decisionsView,
+  designOverviewDocument,
   intentDocument,
   makeChangeCard,
+  phaseGateArchitecture,
+  phaseGateInterfaceBackendOnly,
   phaseGateOf,
   phaseGateOpen,
+  phasesProjection,
+  phasesProjectionArchitecture,
   questionChoice,
   reworkOrderDone,
   runCard,
   specDocument,
+  uiSpecView,
 } from "../test/fixtures";
 import { bodyOf, jsonResponse, stubFetch } from "../test/mock-fetch";
 import type { FetchRoute } from "../test/mock-fetch";
@@ -39,9 +50,14 @@ function renderPage(): void {
   );
 }
 
-function workspaceRoutes(guidance: Guidance, gateOverride?: (phase: Phase) => PhaseGate): FetchRoute[] {
+function workspaceRoutes(guidance: Guidance, gateOverride?: (phase: Phase) => PhaseGate, extra: FetchRoute[] = []): FetchRoute[] {
   return [
+    ...extra,
     { method: "GET", pattern: /\/api\/v1\/changes\/chg_demo_001$/, handler: () => jsonResponse(200, makeChangeCard(1, changeWithBrief)) },
+    { method: "GET", pattern: /\/changes\/chg_demo_001\/phases$/, handler: () => jsonResponse(200, phasesProjection) },
+    { method: "GET", pattern: /\/changes\/chg_demo_001\/decisions$/, handler: () => jsonResponse(200, decisionsView) },
+    { method: "GET", pattern: /\/changes\/chg_demo_001\/ui$/, handler: () => jsonResponse(200, uiSpecView) },
+    { method: "GET", pattern: /\/artifacts\/.*design\/overview\.md$/, handler: () => jsonResponse(200, designOverviewDocument) },
     { method: "GET", pattern: /\/changes\/chg_demo_001\/guidance$/, handler: () => jsonResponse(200, guidance) },
     { method: "GET", pattern: /\/runs\/run_demo_001$/, handler: () => jsonResponse(200, runCard) },
     { method: "GET", pattern: /\/changes\/chg_demo_001\/approvals$/, handler: () => jsonResponse(200, [decision]) },
@@ -83,9 +99,12 @@ describe("ChangeSetPage (T088, ADR-037 p.4)", () => {
       expect(screen.getByTestId("phase-requirements")).toHaveTextContent("вопросов 4 · замечаний 2 · итерация 1"),
     );
     expect(screen.getByTestId("phase-requirements")).toHaveAttribute("aria-current", "true");
+    // The states come from GET /phases, not from a local projection; the reason is the tooltip.
     expect(screen.getByTestId("phase-requirements")).toHaveTextContent("в работе");
+    expect(screen.getByTestId("phase-requirements")).toHaveAttribute("title", "Блокирующих вопросов без ответа: 2");
     expect(screen.getByTestId("phase-initiative")).toHaveTextContent("пройдена");
     expect(screen.getByTestId("phase-plan")).toHaveTextContent("не начата");
+    expect(screen.getByTestId("workspace-phase")).toHaveTextContent("в работе");
 
     const tabs = screen.getByRole("tablist");
     expect(tabs).toHaveTextContent("Результат");
@@ -132,8 +151,8 @@ describe("ChangeSetPage (T088, ADR-037 p.4)", () => {
     stubFetch(workspaceRoutes(changeGuidanceRequirementsClosed));
     renderPage();
     await screen.findByRole("heading", { name: "Add /health endpoint" });
-    await user.click(screen.getByTestId("phase-architecture"));
-    expect(screen.getByTestId("phase-placeholder")).toHaveTextContent("появится в M3");
+    await user.click(screen.getByTestId("phase-plan"));
+    expect(screen.getByTestId("phase-placeholder")).toHaveTextContent("появится в M4");
     await user.click(screen.getByTestId("phase-execution"));
     expect(screen.getByTestId("phase-placeholder")).toHaveTextContent("появится в M4");
     await user.click(screen.getByTestId("phase-delivery"));
@@ -178,11 +197,24 @@ describe("ChangeSetPage (T088, ADR-037 p.4)", () => {
     const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit).method === "POST") as [string, RequestInit];
     expect(bodyOf(post[1])).toEqual({
       gate: "specification",
+      phase: "requirements",
       outcome: "approved",
       subject_revision: HEAD_REVISION,
       comment: "требования понятны",
       expected_state_revision: 2,
     });
+  });
+
+  it("says so when the phases projection is unavailable instead of inventing states", async () => {
+    stubFetch(
+      workspaceRoutes(changeGuidanceRequirementsClosed, undefined, [
+        { method: "GET", pattern: /\/phases$/, handler: () => jsonResponse(404, { type: "about:blank", title: "Not Found", status: 404, detail: "phases projection is not available on this contour" }) },
+      ]),
+    );
+    renderPage();
+    await screen.findByRole("heading", { name: "Add /health endpoint" });
+    await waitFor(() => expect(screen.getByTestId("phases-unavailable")).toHaveTextContent("phases projection is not available on this contour"));
+    expect(screen.getByTestId("phase-requirements")).not.toHaveTextContent("в работе");
   });
 
   it("shows the 409 detail of a stale approval and offers a reload", async () => {
@@ -216,6 +248,97 @@ describe("ChangeSetPage (T088, ADR-037 p.4)", () => {
     expect(screen.getByTestId("artifact-editor-pane")).toHaveTextContent("REQ-001-health.md");
     await user.click(screen.getByTestId("editor-back"));
     expect(screen.queryByTestId("markdown-editor")).toBeNull();
+  });
+
+  it("architecture: renders the left column from /phases, the decisions overview, and approves with phase=architecture", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("operator-token");
+    const user = userEvent.setup();
+    const fetchMock = stubFetch(
+      workspaceRoutes(changeGuidanceArchitecture, (phase) => (phase === "architecture" ? phaseGateArchitecture : phaseGateOf(phase)), [
+        { method: "GET", pattern: /\/changes\/chg_demo_001\/phases$/, handler: () => jsonResponse(200, phasesProjectionArchitecture) },
+        { method: "GET", pattern: /\/changes\/chg_demo_001\/artifacts$/, handler: () => jsonResponse(200, artifactTreeDesign) },
+        { method: "GET", pattern: /\/changes\/chg_demo_001\/rework-orders$/, handler: () => jsonResponse(200, [reworkOrderDone, alternativeOrderPending]) },
+        {
+          method: "POST",
+          pattern: /\/changes\/chg_demo_001\/approvals$/,
+          handler: () => jsonResponse(201, { ...decision, id: "dec_arch", gate: "specification", phase: "architecture", commit_sha: HEAD_REVISION }),
+        },
+      ]),
+    );
+    renderPage();
+    await screen.findByRole("heading", { name: "Add /health endpoint" });
+    await waitFor(() => expect(screen.getByTestId("phase-architecture")).toHaveTextContent("ждёт решения"));
+    expect(screen.getByTestId("phase-architecture")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTestId("phase-requirements")).toHaveTextContent("согласована");
+    expect(screen.getByTestId("phase-interface")).toHaveTextContent("не требуется");
+    expect(screen.getByTestId("phase-interface")).toHaveAttribute("title", "Маршрут quick не требует UI");
+    expect(screen.getByTestId("phase-architecture")).toHaveTextContent("итерация 1");
+
+    // The phase workspace: overview + decision cards; the ADR opens in the editor pane.
+    await screen.findByTestId("decision-adr:prd_demo_001:0001");
+    expect(screen.getByTestId("design-overview")).toHaveTextContent("Проверка живости живёт в отдельном модуле");
+    await user.click(screen.getByTestId("open-adr-adr:prd_demo_001:0001"));
+    await screen.findByTestId("artifact-editor-pane");
+    expect(screen.getByTestId("artifact-editor-pane")).toHaveTextContent("ADR-001-probe.md");
+    await user.click(screen.getByTestId("editor-back"));
+
+    // The guidance CTA approves the architecture: the body names the phase explicitly.
+    expect(screen.getByTestId("next-step-primary")).toHaveTextContent("Согласовать архитектуру");
+    await user.click(screen.getByTestId("next-step-primary"));
+    await user.click(await screen.findByTestId("approval-submit"));
+    await waitFor(() => expect(screen.getByTestId("approval-recorded")).toHaveTextContent("dec_arch"));
+    const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit).method === "POST") as [string, RequestInit];
+    expect(bodyOf(post[1])).toMatchObject({ gate: "specification", phase: "architecture", outcome: "approved", subject_revision: HEAD_REVISION });
+    // The history shows the phase of every decision.
+    await user.click(screen.getByTestId("tab-history"));
+    expect(screen.getByTestId("history-decisions")).toHaveTextContent("Фаза");
+    expect(screen.getByTestId("history-tab")).toHaveTextContent("решения: adr:prd_demo_001:0002");
+  });
+
+  it("interface: scenarios open by default; «Подтвердить пропуск UI» prefills a waived decision on gate ui", async () => {
+    vi.spyOn(token, "getToken").mockReturnValue("operator-token");
+    const user = userEvent.setup();
+    const fetchMock = stubFetch(
+      // The backend-only interface phase has no artifacts, hence no revision: the waiver is recorded without one (M3).
+      workspaceRoutes(changeGuidanceInterfaceBackendOnly, (phase) => (phase === "interface" ? { ...phaseGateInterfaceBackendOnly, current_revision: null } : phaseGateOf(phase)), [
+        {
+          method: "POST",
+          pattern: /\/changes\/chg_demo_001\/approvals$/,
+          handler: () => jsonResponse(201, { ...decision, id: "dec_waived", gate: "ui", outcome: "waived", phase: "interface", commit_sha: null }),
+        },
+      ]),
+    );
+    renderPage();
+    await screen.findByRole("heading", { name: "Add /health endpoint" });
+    expect(screen.getByTestId("phase-interface")).toHaveAttribute("aria-current", "true");
+    await screen.findByTestId("scenario-SCN-001");
+    expect(screen.getByTestId("ui-tab-scenarios")).toHaveAttribute("aria-selected", "true");
+
+    // «Комментарий» on an element prefills the context panel composer with the screen and the EL anchor.
+    await user.click(screen.getByTestId("ui-tab-screens"));
+    await user.click(screen.getByTestId("comment-SCR-001-EL-refresh"));
+    expect(screen.getByTestId("context-fragment")).toHaveTextContent("EL-refresh");
+    expect((screen.getByTestId("comment-anchor") as HTMLSelectElement).value).toBe("EL-refresh");
+
+    // The checks tab: planned checks are never green; the requirement says «Не требуется».
+    await user.click(screen.getByTestId("tab-checks"));
+    await waitFor(() => expect(screen.getByTestId("phase-gate-ui-not-required")).toHaveTextContent("Не требуется"));
+
+    expect(screen.getByTestId("next-step-primary")).toHaveTextContent("Подтвердить пропуск UI");
+    await user.click(screen.getByTestId("next-step-primary"));
+    const form = await screen.findByTestId("approval-form");
+    expect((within(form).getByTestId("approval-comment") as HTMLTextAreaElement).value).toBe("Изменение только серверное: /health не имеет экрана");
+    expect((within(form).getByDisplayValue("waived") as HTMLInputElement).checked).toBe(true);
+    await user.click(within(form).getByTestId("approval-submit"));
+    await waitFor(() => expect(screen.getByTestId("approval-recorded")).toHaveTextContent("dec_waived"));
+    const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit).method === "POST") as [string, RequestInit];
+    expect(bodyOf(post[1])).toEqual({
+      gate: "ui",
+      phase: "interface",
+      outcome: "waived",
+      comment: "Изменение только серверное: /health не имеет экрана",
+      expected_state_revision: 2,
+    });
   });
 
   it("is honest when the contour has no repository (503 on artifacts)", async () => {

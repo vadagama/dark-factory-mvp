@@ -139,6 +139,11 @@ class Stage(Base):
     operation_key: Mapped[str] = mapped_column(String(512), unique=True)
     state_revision: Mapped[int] = mapped_column(Integer, default=1)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+    """When the operation row was created (``0008_stage_created_at``): orders the occurrences of
+    one stage — a rework or phase round of the same stage is a later occurrence (ADR-039)."""
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -392,11 +397,16 @@ class Decision(Base):
         JSONB, default=list, server_default=text("'[]'::jsonb")
     )
     idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    phase: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    """The operator phase the decision approves (M3, ADR-039; ``0007_phase_rounds``):
+    tells a requirements approval from an architecture one on the shared
+    ``specification`` gate. NULL — a pre-M3 decision, read as the phase of its gate."""
 
     __table_args__ = (
         CheckConstraint(f"gate IN ({GATE_VALUES})", name="gate_allowed"),
         CheckConstraint(f"outcome IN ({DECISION_OUTCOME_VALUES})", name="outcome_allowed"),
         CheckConstraint(f"decided_by IN ({DECISION_SOURCE_VALUES})", name="decided_by_allowed"),
+        CheckConstraint(f"phase IS NULL OR phase IN ({PHASE_VALUES})", name="phase_allowed"),
         Index(
             "uq_decision_idempotency_key",
             "idempotency_key",

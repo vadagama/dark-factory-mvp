@@ -153,8 +153,13 @@ def issue_rework_order(
     expected_revision: str | None = None,
     idempotency_key: str | None = None,
     artifacts: ArtifactService | None = None,
+    decision_ids: Sequence[str] = (),
 ) -> tuple[ReworkOrder, bool]:
     """The explicit send-back (ADR-034 p.2/p.3); ``(order, False)`` replays the same key.
+
+    ``decision_ids`` (T093, ADR-039) names the architecture decisions the
+    order asks to reconsider — «Запросить альтернативу»: the refusal is about
+    those decisions, and the recorded ``rejected`` decision carries the phase.
 
     Refused while another order of the phase is pending or running (one round
     at a time), when a named comment or question is unknown, when the order is
@@ -203,6 +208,7 @@ def issue_rework_order(
             comment_ids=tuple(comment_ids),
             question_ids=tuple(question_ids),
             instruction=instruction,
+            decision_ids=tuple(decision_ids),
             issued_by=issued_by,
         )
     except ValueError as error:
@@ -222,6 +228,7 @@ def issue_rework_order(
                 decided_at=datetime.now(UTC),
                 commit_sha=head,
                 comment=instruction or f"rework order {stored.id}",
+                phase=phase,
             ),
             change_id=change.id,
             idempotency_key=f"rework:{stored.id}",
@@ -267,7 +274,9 @@ def record_phase_decision(
                 f"subject_revision {revision} is not the current revision"
                 f" {gate.current_revision}: reload and decide on what you see"
             )
-    if revision is None:
+    if revision is None and outcome is not DecisionOutcome.WAIVED:
+        # A waiver is about the phase, not a document (ADR-032 p.5): a UI-free
+        # change has no interface artifacts to bind to, so it stays unbound.
         raise ConversationInputError(
             "the decision needs a revision to bind to: set subject_revision"
             " (no repository is bound to read the current one)"
@@ -280,6 +289,7 @@ def record_phase_decision(
         decided_at=datetime.now(UTC),
         commit_sha=revision,
         comment=comment,
+        phase=phase,
     )
     stored, _ = DecisionRepository(session).record(
         decision, change_id=change.id, idempotency_key=idempotency_key, actor_role=actor_role

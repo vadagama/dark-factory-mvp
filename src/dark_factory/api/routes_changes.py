@@ -40,14 +40,15 @@ from dark_factory.api.dto import (
     ChangeRunRef,
     ChangeTrace,
 )
-from dark_factory.changes.enums import DecisionOutcome, DecisionSource
+from dark_factory.changes.enums import DecisionOutcome, DecisionSource, Phase
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.intake import IntakeBrief
 from dark_factory.changes.run import Change
 from dark_factory.orchestration.artifacts import ArtifactService
 from dark_factory.orchestration.guidance import Guidance
 from dark_factory.orchestration.intake import BriefFormulator
-from dark_factory.orchestration.phase_gate import phase_of_gate
+from dark_factory.orchestration.phase_gate import gate_of_phase, phase_of_gate
+from dark_factory.orchestration.phases import PhasesProjection
 from dark_factory.orchestration.state.change_store import (
     APPROVAL_RECORD_ACTION,
     CHANGE_BRIEF_ACTION,
@@ -60,10 +61,13 @@ from dark_factory.orchestration.state.guidance import (
     build_change_guidance,
     build_phase_gate,
     latest_run,
+    waiting_on,
+    waiting_phase,
 )
 from dark_factory.orchestration.state.models import Change as ChangeRow
 from dark_factory.orchestration.state.models import Decision as DecisionRow
 from dark_factory.orchestration.state.models import Execution
+from dark_factory.orchestration.state.phases import build_phases
 
 
 def create_changes_router(
@@ -103,6 +107,7 @@ def create_changes_router(
         ``waived`` — the explicit skip of a phase — needs a stated reason;
         ``rejected`` is always allowed (a send-back is never blocked).
         """
+        phase = _approval_phase(body)
         if body.outcome == "rejected":
             return
         if body.outcome == "waived":
@@ -113,7 +118,6 @@ def create_changes_router(
                 )
             return
         change = Change.model_validate(change_row.payload)
-        phase = phase_of_gate(body.gate)
         gate = build_phase_gate(
             session, change, phase=phase, run=latest_run(session, change.id), artifacts=artifacts
         )
@@ -122,7 +126,11 @@ def create_changes_router(
             raise HTTPException(
                 status_code=409, detail=f"the {phase.value} gate is closed: {reasons}"
             )
-        if gate.current_revision is not None and body.subject_revision != gate.current_revision:
+        if (
+            body.outcome == "approved"
+            and gate.current_revision is not None
+            and body.subject_revision != gate.current_revision
+        ):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -130,6 +138,17 @@ def create_changes_router(
                     f" {gate.current_revision}: reload and decide on what you see"
                 ),
             )
+
+    def _approval_phase(body: ApprovalRequest) -> Phase:
+        """The phase an approval is about (M3): the stated one, else the phase of its gate."""
+        if body.phase is None:
+            return phase_of_gate(body.gate)
+        if gate_of_phase(body.phase) is not body.gate:
+            raise HTTPException(
+                status_code=422,
+                detail=f"phase {body.phase.value} is not approved on gate {body.gate.value}",
+            )
+        return body.phase
 
     def _audit(
         token: ApiToken,
@@ -226,6 +245,26 @@ def create_changes_router(
             raise HTTPException(status_code=404, detail=f"Change {change_id!r} does not exist")
         return build_change_guidance(session, change, artifacts=artifacts)
 
+    @router.get("/changes/{change_id}/phases", response_model=PhasesProjection)
+    def get_change_phases(change_id: str, session: SessionDep) -> PhasesProjection:
+        """The eight operator phases of the change and the current one (T098, ADR-039).
+
+        A read model over the decisions, the phase revisions of the change
+        branch and the discussion — the same facts ``Guidance`` reads.
+        """
+        change = ChangeRepository(session).get(change_id)
+        if change is None:
+            raise HTTPException(status_code=404, detail=f"Change {change_id!r} does not exist")
+        run = latest_run(session, change.id)
+        return build_phases(
+            session,
+            change,
+            run=run,
+            artifacts=artifacts,
+            waiting_on=waiting_on(session, run),
+            waiting_phase=waiting_phase(session, run),
+        )
+
     @router.get("/changes/{change_id}", response_model=ChangeCard)
     def get_change(change_id: str, session: SessionDep) -> ChangeCard:
         change = ChangeRepository(session).get(change_id)
@@ -297,6 +336,7 @@ def create_changes_router(
             decided_at=datetime.now(UTC),
             commit_sha=body.subject_revision,
             comment=body.comment,
+            phase=_approval_phase(body),
         )
         stored, _ = decisions.record(
             decision,

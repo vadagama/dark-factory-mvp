@@ -1,9 +1,11 @@
-"""Registry of the built-in skill manifests (T-011, T-046, T-047).
+"""Registry of the built-in skill manifests (T-011, T-046, T-047, T092/T094).
 
-Twenty skills: product drives intake through the change request, design
-turns the specification into UX artifacts, architect assesses impact and
-drafts ADRs, develop implements and reworks, quality reviews and verifies,
-security threat-models and analyzes (IAM, secrets, dependencies),
+Twenty-two skills: product drives intake through the change request, design
+turns the specification into UX artifacts and the UI spec of the interface
+phase, architect assesses impact, drafts ADRs and produces the architecture
+phase artifacts (design overview + ADRs), develop implements and reworks,
+quality reviews and verifies, security threat-models and analyzes (IAM,
+secrets, dependencies),
 infrastructure designs and implements infrastructure as code, ci_cd delivers
 the pipeline and runs the task git cycle, and operation verifies smoke and
 analyzes rollback for the Operation verdict of the release gate. Binding
@@ -158,6 +160,65 @@ _SKILLS: Final[Mapping[str, SkillManifest]] = {
             " architecture decision - escalate.",
         ),
     ),
+    "ui-spec": SkillManifest(
+        id="ui-spec",
+        version="1.0.0",
+        role=Role.DESIGN,
+        purpose=(
+            "Produce the interface phase artifacts of a ChangeSet: user scenarios"
+            " and screens as markdown nodes with frontmatter, mapped onto the UI kit."
+        ),
+        inputs=(ArtifactKind.SPEC, ArtifactKind.ADR_PROPOSAL, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.UX_SPEC,),
+        instruction=(
+            "You write the UI specification of the interface phase (ADR-032 phase"
+            " interface, ADR-035). Layout: the ChangeSet lives under"
+            " .factory/changes/<year>/CHG-<slug>/ next to spec/ and design/; you"
+            " write one markdown file per scenario in"
+            " design/ui/scenarios/SCN-NNN-<slug>.md and one per screen in"
+            " design/ui/screens/SCR-NNN-<slug>.md. Never edit spec/**,"
+            " design/overview.md or design/decisions/** in this round."
+            " Scenario frontmatter (exact keys): schema: dark-factory.dev/ui-scenario/v1,"
+            " id: SCN-NNN, type: ui_scenario, title, product, status: proposed, change:"
+            " <change id>, steps: a YAML list of {id: S<n>, text, screen: SCR-NNN"
+            " (optional)}; the body describes the scenario. The first scenario"
+            " (SCN-001) is the primary user flow of the change."
+            " Screen frontmatter (exact keys): schema: dark-factory.dev/ui-screen/v1,"
+            " id: SCR-NNN, type: ui_screen, title, product, status: proposed, change,"
+            " route (optional), preview_url (optional; absolute URL as is, a relative"
+            " path is resolved against the product dev_url), states: a mapping with"
+            " all five keys loading, empty, error, success, access - every screen"
+            " must describe all five, a missing state is a defect; elements: a YAML"
+            " list of {id: EL-<slug>, kind: text|button|input|list|..., label,"
+            " component: <UI kit component>}; transitions: a YAML list of"
+            " {to: SCR-NNN, trigger, condition (optional)}; the body describes the"
+            " screen's purpose. Map every element onto an existing component or"
+            " pattern of the UI kit (packs/ui: Alert, Badge, Button, Card, Checkbox,"
+            " Dialog, Input, Select, Spinner, Switch, Tabs, Textarea; patterns"
+            " ConfirmDialog, EmptyState, FormField, StatusBadge, Toolbar) and never"
+            " invent a component the kit does not have. The ids SCN-*, SCR-*, EL-*"
+            " and the step ids S<n> are stable comment anchors: never rename or"
+            " renumber them in a rework round, edit the existing files in place"
+            " and add new ids at the end. Ground every scenario in the"
+            " specification requirements and the design overview; when the"
+            " discussion lists answers or comments, apply every answer and address"
+            " every comment. When a screen behaviour is undecidable, ask the"
+            " operator instead of guessing: end your reply with a fenced block"
+            " labelled `questions` holding a YAML list of {text, kind:"
+            " choice|text|number, options (choice only), anchor: '<path>#<id>',"
+            " blocking: true|false}. After a rework round also end with a fenced"
+            " block labelled `rework-summary` holding YAML {changed: [...],"
+            " remaining: [...], addressed_comments: [<comment ids>]}."
+        ),
+        stop_conditions=(
+            "The design overview says ui: not_required - there is no interface to"
+            " specify; stop and report it.",
+            "A flow requires a UI-kit pattern that does not exist in the kit -"
+            " escalate to the kit backlog.",
+            "The specification leaves the screen behaviour undecidable and"
+            " clarification is unavailable.",
+        ),
+    ),
     "impact-analysis": SkillManifest(
         id="impact-analysis",
         version="1.0.0",
@@ -200,6 +261,63 @@ _SKILLS: Final[Mapping[str, SkillManifest]] = {
         stop_conditions=(
             "The pending decision belongs to a human (product priority, budget, risk acceptance).",
             "The impact analysis does not support any option strongly enough to draft one.",
+        ),
+    ),
+    "solution-design": SkillManifest(
+        id="solution-design",
+        version="1.0.0",
+        role=Role.ARCHITECT,
+        purpose=(
+            "Produce the architecture phase artifacts of a ChangeSet: the design"
+            " overview and one proposed ADR per significant decision."
+        ),
+        inputs=(ArtifactKind.SPEC, ArtifactKind.REQUIREMENTS, ArtifactKind.CONTEXT),
+        outputs=(ArtifactKind.DESIGN_OVERVIEW, ArtifactKind.ADR_PROPOSAL),
+        instruction=(
+            "You design the solution of the architecture phase (ADR-032 phase"
+            " architecture, ADR-035). Layout: the ChangeSet lives under"
+            " .factory/changes/<year>/CHG-<slug>/ next to spec/; you write"
+            " design/overview.md and one file per significant decision in"
+            " design/decisions/ADR-NNN-<slug>.md. Never edit spec/** in this round."
+            " Overview frontmatter (exact keys): schema: dark-factory.dev/design/v1,"
+            " id: design:<product>:<change-slug>, type: design, title, product,"
+            " status: proposed, change: <change id>, ui: required | not_required,"
+            " ui_reason: <why> (mandatory when not_required). Overview body, in"
+            " this order: `## Обзор`, a ```mermaid``` diagram of the components"
+            " and their interactions, `## Компоненты`, `## Решения` with a link"
+            " to every ADR. ADR frontmatter (exact keys): schema:"
+            " dark-factory.dev/adr/v1, id: adr:<product>:NNNN, type: adr, title,"
+            " product, status: proposed, change: <change id>, impact: [<area>, ...]"
+            " (public_api, data_schema, ui, ...). ADR body, exactly these sections:"
+            " `## Контекст`, `## Решение` (the proposal), `## Обоснование`,"
+            " `## Альтернативы` as a table `| Вариант | Плюсы | Минусы | Почему не"
+            " выбран |`, `## Последствия`. Write status: proposed only - accepting"
+            " or rejecting a decision is the operator's call at the phase gate and"
+            " is never written by you. When the change is backend-only, set ui:"
+            " not_required with a concrete ui_reason instead of inventing screens;"
+            " the operator confirms the waiver. Ids (design:*, adr:*, ADR-NNN file"
+            " numbers) are stable comment anchors: never renumber or rename them in"
+            " a rework round, edit the existing files in place and add new ADRs at"
+            " the next free number. A rework order that names an ADR id (the"
+            " operator asked for an alternative or left comments) is answered by"
+            " revising that ADR: state the alternatives with their trade-offs in"
+            " `## Альтернативы`, update `## Решение` when the proposal changes, and"
+            " address every comment; do not touch unrelated ADRs. Ground every"
+            " decision in the requirements, the specification and the accepted"
+            " ADRs of the baseline. When a decision cannot be made from the"
+            " context, ask the operator instead of guessing: end your reply with a"
+            " fenced block labelled `questions` holding a YAML list of {text, kind:"
+            " choice|text|number, options (choice only), anchor: '<path>#<id>',"
+            " blocking: true|false}. After a rework round also end with a fenced"
+            " block labelled `rework-summary` holding YAML {changed: [...],"
+            " remaining: [...], addressed_comments: [<comment ids>]}."
+        ),
+        stop_conditions=(
+            "The decision belongs to a human (budget, product priority, risk"
+            " acceptance) - stop and ask.",
+            "The requirements are not approved or not available - stop; the"
+            " architecture phase follows the requirements phase.",
+            "The change conflicts with an accepted ADR of the baseline - escalate.",
         ),
     ),
     "implementation": SkillManifest(

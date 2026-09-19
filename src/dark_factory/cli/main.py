@@ -264,6 +264,14 @@ class ChangeStatusArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangePhasesArgs:
+    """Arguments of ``factory change phases`` (T098, ADR-039): the phases and the current one."""
+
+    change_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ChangeAnswerArgs:
     """Arguments of ``factory change answer`` (T086, ADR-034 p.1): the operator's answer."""
 
@@ -342,6 +350,47 @@ class ChangeArtifactsArgs:
     to_revision: str | None
     file: str | None
     base_revision: str | None
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeDecisionsArgs:
+    """Arguments of ``factory change decisions`` (T093, ADR-039): the ADR cards of a change."""
+
+    change_id: str
+    json_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeAlternativeArgs:
+    """Arguments of ``factory change alternative`` (T093): «Запросить альтернативу».
+
+    A rework order of the architecture phase about one decision (``decision_id``
+    is the ADR's frontmatter id or file stem); ``instruction`` is required and
+    ``comment_ids`` carries the operator's remarks along.
+    """
+
+    change_id: str
+    decision_id: str
+    instruction: str
+    comment_ids: tuple[str, ...]
+    json_output: bool
+
+
+class UiSection(StrEnum):
+    """Sections of ``factory change ui`` (T094)."""
+
+    SCENARIOS = "scenarios"
+    SCREENS = "screens"
+    LINKS = "links"
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeUiArgs:
+    """Arguments of ``factory change ui`` (T094): the UI spec, optionally one section."""
+
+    change_id: str
+    section: UiSection | None
     json_output: bool
 
 
@@ -449,11 +498,15 @@ CommandArgs = (
     | ProductShowArgs
     | ChangeCreateArgs
     | ChangeStatusArgs
+    | ChangePhasesArgs
     | ChangeAnswerArgs
     | ChangeCommentArgs
     | ChangeReworkArgs
     | ChangeApproveArgs
     | ChangeArtifactsArgs
+    | ChangeDecisionsArgs
+    | ChangeAlternativeArgs
+    | ChangeUiArgs
     | ProductBootstrapArgs
     | ReconcileArgs
     | OutboxDispatchArgs
@@ -776,6 +829,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     change_status.set_defaults(command="change_status")
 
+    change_phases = change_commands.add_parser(
+        "phases", help="Show the eight operator phases of a change and the current one (T098)."
+    )
+    change_phases.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_phases.add_argument(
+        "--json", action="store_true", help="Emit the phases projection as JSON."
+    )
+    change_phases.set_defaults(command="change_phases")
+
     phase_choices = [phase.value for phase in Phase]
     change_answer = change_commands.add_parser(
         "answer", help="Answer an agent question (T086, ADR-034 p.1)."
@@ -879,6 +941,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     change_artifacts.add_argument("--json", action="store_true", help="Emit the result as JSON.")
     change_artifacts.set_defaults(command="change_artifacts")
+
+    change_decisions = change_commands.add_parser(
+        "decisions", help="Show the architecture decisions (ADR cards) of a change (T093)."
+    )
+    change_decisions.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_decisions.add_argument(
+        "--json", action="store_true", help="Emit the decisions view as JSON."
+    )
+    change_decisions.set_defaults(command="change_decisions")
+
+    change_alternative = change_commands.add_parser(
+        "alternative",
+        help="Ask the architect for another option on one decision (a rework order, T093).",
+    )
+    change_alternative.add_argument(
+        "--id", dest="change_id", required=True, help="Id of the change."
+    )
+    change_alternative.add_argument(
+        "--decision", dest="decision_id", required=True, help="Id of the ADR (frontmatter id)."
+    )
+    change_alternative.add_argument(
+        "--instruction", required=True, help="What the agent should reconsider."
+    )
+    change_alternative.add_argument(
+        "--comment",
+        dest="comment_ids",
+        action="append",
+        default=[],
+        help="Id of a comment to carry (repeatable).",
+    )
+    change_alternative.add_argument(
+        "--json", action="store_true", help="Emit the rework order and the guidance as JSON."
+    )
+    change_alternative.set_defaults(command="change_alternative")
+
+    change_ui = change_commands.add_parser(
+        "ui", help="Show the UI spec of a change: scenarios, screens, links (T094)."
+    )
+    change_ui.add_argument("--id", dest="change_id", required=True, help="Id of the change.")
+    change_ui.add_argument(
+        "--section",
+        choices=[section.value for section in UiSection],
+        help="Show one section only (default: all).",
+    )
+    change_ui.add_argument("--json", action="store_true", help="Emit the UI spec as JSON.")
+    change_ui.set_defaults(command="change_ui")
 
     reconcile = commands.add_parser(
         "reconcile", help="Perform one idempotent Reconciler pass (ADR-019 p.5)."
@@ -1145,6 +1253,11 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 change_id=_required_str(data, "change_id"),
                 json_output=_flag(data, "json"),
             )
+        case "change_phases":
+            return ChangePhasesArgs(
+                change_id=_required_str(data, "change_id"),
+                json_output=_flag(data, "json"),
+            )
         case "change_answer":
             return ChangeAnswerArgs(
                 change_id=_required_str(data, "change_id"),
@@ -1193,6 +1306,26 @@ def build_command_args(ns: argparse.Namespace) -> CommandArgs:
                 to_revision=_option_str(data, "to_revision"),
                 file=_option_str(data, "file"),
                 base_revision=_option_str(data, "base_revision"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_decisions":
+            return ChangeDecisionsArgs(
+                change_id=_required_str(data, "change_id"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_alternative":
+            return ChangeAlternativeArgs(
+                change_id=_required_str(data, "change_id"),
+                decision_id=_required_str(data, "decision_id"),
+                instruction=_required_str(data, "instruction"),
+                comment_ids=_str_list(data, "comment_ids"),
+                json_output=_flag(data, "json"),
+            )
+        case "change_ui":
+            section = _option_str(data, "section")
+            return ChangeUiArgs(
+                change_id=_required_str(data, "change_id"),
+                section=UiSection(section) if section is not None else None,
                 json_output=_flag(data, "json"),
             )
         case "product_bootstrap":
@@ -1295,12 +1428,17 @@ def _advance_run(
     executor: "StageExecutor | None" = None,
     revision_of: "RevisionResolver | None" = None,
     gate_facts: "FactsProvider | None" = None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
     # Imported here for the same reason as ``_show_run_status``.
     from dark_factory.cli import runner
 
     return runner.run_advance_command(
-        args, executor=executor, revision_of=revision_of, gate_facts=gate_facts
+        args,
+        executor=executor,
+        revision_of=revision_of,
+        gate_facts=gate_facts,
+        repository=repository,
     )
 
 
@@ -1364,6 +1502,14 @@ def _show_change_status(
     return changes.run_change_status_command(args, repository=repository)
 
 
+def _show_change_phases(
+    args: ChangePhasesArgs, *, repository: "RepositoryPort | None" = None
+) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_phases_command(args, repository=repository)
+
+
 def _answer_question(args: ChangeAnswerArgs, *, repository: "RepositoryPort | None" = None) -> int:
     from dark_factory.cli import changes
 
@@ -1394,6 +1540,28 @@ def _change_artifacts(
     from dark_factory.cli import changes
 
     return changes.run_change_artifacts_command(args, repository=repository)
+
+
+def _change_decisions(
+    args: ChangeDecisionsArgs, *, repository: "RepositoryPort | None" = None
+) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_decisions_command(args, repository=repository)
+
+
+def _change_alternative(
+    args: ChangeAlternativeArgs, *, repository: "RepositoryPort | None" = None
+) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_alternative_command(args, repository=repository)
+
+
+def _change_ui(args: ChangeUiArgs, *, repository: "RepositoryPort | None" = None) -> int:
+    from dark_factory.cli import changes
+
+    return changes.run_change_ui_command(args, repository=repository)
 
 
 def _bootstrap_product(
@@ -1506,7 +1674,11 @@ def dispatch(
             return _show_run_status(command)
         case RunAdvanceArgs():
             return _advance_run(
-                command, executor=executor, revision_of=revision_of, gate_facts=gate_facts
+                command,
+                executor=executor,
+                revision_of=revision_of,
+                gate_facts=gate_facts,
+                repository=repository,
             )
         case RunPublishArgs():
             return _publish_run(command)
@@ -1524,6 +1696,8 @@ def dispatch(
             return _create_change(command)
         case ChangeStatusArgs():
             return _show_change_status(command, repository=repository)
+        case ChangePhasesArgs():
+            return _show_change_phases(command, repository=repository)
         case ChangeAnswerArgs():
             return _answer_question(command, repository=repository)
         case ChangeCommentArgs():
@@ -1534,6 +1708,12 @@ def dispatch(
             return _approve_change(command, repository=repository)
         case ChangeArtifactsArgs():
             return _change_artifacts(command, repository=repository)
+        case ChangeDecisionsArgs():
+            return _change_decisions(command, repository=repository)
+        case ChangeAlternativeArgs():
+            return _change_alternative(command, repository=repository)
+        case ChangeUiArgs():
+            return _change_ui(command, repository=repository)
         case ProductBootstrapArgs():
             return _bootstrap_product(command, provisioning=provisioning)
         case ReconcileArgs():

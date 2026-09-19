@@ -113,10 +113,14 @@ def classify_path(path: str) -> ArtifactKind:
         return ArtifactKind.SPEC
     if head == "decisions" or (head == "design" and len(parts) > 1 and parts[1] == "decisions"):
         return ArtifactKind.ADR
+    if head in {"ui", "screens"} or (
+        head == "design" and len(parts) > 1 and parts[1].lower() in {"ui", "screens"}
+    ):
+        # ``design/ui/scenarios/SCN-*.md`` and ``design/ui/screens/SCR-*.md`` are the
+        # interface phase (M3, ADR-039), not the architecture overview.
+        return ArtifactKind.UI
     if head == "design":
         return ArtifactKind.DESIGN
-    if head in {"ui", "screens"}:
-        return ArtifactKind.UI
     if head in {"tasks", "plan", "verification"}:
         return ArtifactKind.PLAN
     return ArtifactKind.OTHER
@@ -215,9 +219,18 @@ class ArtifactDiff(BaseModel):
 
 
 _STABLE_ID: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:REQ|AC|SCN|CAP|ADR|TASK|EVD|FR|NFR|US|Q)-[0-9]+(?:[.-][A-Za-z0-9]+)*\b"
+    r"\b(?:"
+    r"(?:REQ|AC|SCN|SCR|CAP|ADR|TASK|EVD|FR|NFR|US|Q)-[0-9]+(?:[.-][A-Za-z0-9]+)*"
+    r"|EL-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*"
+    r"|S[0-9]+"
+    r")\b"
 )
-"""Stable element ids the ChangeSet layout uses (ADR-020 stable ids; packs REQ-/AC-/ADR-)."""
+"""Stable element ids the ChangeSet layout uses (ADR-020 stable ids; packs REQ-/AC-/ADR-).
+
+Since M3 (ADR-039) the UI spec adds screen ids (``SCR-001``), element ids
+(``EL-display``, ``EL-btn-percent``) and scenario steps (``S1``, ``S12``, whole
+words only) — the anchors a comment on a screen element binds to.
+"""
 
 _HEADING: Final[re.Pattern[str]] = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$", flags=re.MULTILINE)
 _EXPLICIT_ANCHOR: Final[re.Pattern[str]] = re.compile(r"\{#([A-Za-z0-9_.:-]+)\}")
@@ -254,6 +267,9 @@ def anchors_of(content: str) -> tuple[str, ...]:
         identifier = raw.get("id")
         if isinstance(identifier, str) and identifier.strip():
             found.append(identifier.strip())
+        # UI specs declare their elements and steps in the frontmatter (M3): the
+        # ``EL-*`` / ``S<n>`` / ``SCR-*`` ids there are anchors too.
+        found.extend(_STABLE_ID.findall(_frontmatter_block(content)))
     text = _FENCE.sub("", body)
     for match in _HEADING.finditer(text):
         found.extend(_EXPLICIT_ANCHOR.findall(match.group(2)))
@@ -270,6 +286,17 @@ def anchors_of(content: str) -> tuple[str, ...]:
             seen.add(anchor)
             ordered.append(anchor)
     return tuple(ordered)
+
+
+def _frontmatter_block(content: str) -> str:
+    """The raw text between the ``---`` delimiters, or ``""`` without a block."""
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join(lines[1:index])
+    return ""
 
 
 def resolve_anchor(content: str | None, anchor_id: str | None) -> bool:

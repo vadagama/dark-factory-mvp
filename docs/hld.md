@@ -137,15 +137,15 @@ flowchart TD
 | Модуль (пакет) | Ответственность | ADR |
 |---|---|---|
 | `changes` | Доменная модель изменения: intake, спецификация, состояние изменения | [ADR-002](adr/ADR-002-python-core-stack.md), T-003 |
-| `orchestration` | Межстадийный Flow: таблица переходов, гейты, rework-лимиты; маршруты (`routes.py`), правила гейтов/лимитов/branch protection (`rules/`) и каталог этапов CI (`ci.py`) | [ADR-005](adr/ADR-005-stage-scoped-graphs-light-workflow-core.md), [ADR-026](adr/ADR-026-parameterizable-ci-stages.md), [ADR-027](adr/ADR-027-console-ci-stage-toggles.md), [ADR-038](adr/ADR-038-fold-flows-rules-ci-into-orchestration.md), T-004 |
+| `orchestration` | Межстадийный Flow: таблица переходов, гейты, rework-лимиты; маршруты (`routes.py`), правила гейтов/лимитов/branch protection (`rules/`) и каталог этапов CI (`ci.py`) | [ADR-005](adr/ADR-005-stage-scoped-graphs-light-workflow-core.md), [ADR-026](adr/ADR-026-parameterizable-ci-stages.md), [ADR-027](adr/ADR-027-console-ci-stage-toggles.md), [ADR-038](adr/ADR-038-fold-flows-rules-ci-into-orchestration.md), [ADR-039](adr/ADR-039-phase-rounds-and-phase-bound-decisions.md), T-004 |
 | `agents` | Ролевые профили как сменные исполнители стадий | [ADR-007](adr/ADR-007-nine-role-catalog.md), T-011 |
-| `context` | Сборка и фиксация `ContextBundle` для агентов | T-012 |
+| `context` | Сборка и фиксация `ContextBundle` для агентов; SDD-слой (`sdd/`) и чистые read-model'ы документов ChangeSet — классификация путей и якоря (`artifacts.py`), карточка ADR (`decisions.py`), UI-спека (`ui_spec.py`), `ui`-предложение архитектора из `design/overview.md` (`design.py`) | T-012, [ADR-020](adr/ADR-020-native-sdd-core.md), [ADR-035](adr/ADR-035-document-artifacts-git-source-of-truth.md), [ADR-039](adr/ADR-039-phase-rounds-and-phase-bound-decisions.md) |
 | `execution` | Провайдеры исполнения агентной работы (worktree, контейнер, job) | [ADR-006](adr/ADR-006-ephemeral-job-pods-reconciler-cronjob.md) |
 | `runtime` | Composition root и entry point: ленивая сборка `Runtime`; единственный слой, которому разрешён импорт адаптеров | [ADR-024](adr/ADR-024-durable-run-driver-and-composition-root.md), [ADR-025](adr/ADR-025-process-entry-point-and-lazy-composition.md) |
 | `quality` | Детерминированные гейты качества результата изменения | [ADR-020](adr/ADR-020-native-sdd-core.md), T-013 |
 | `ports` | Абстрактные интерфейсы, развязывающие ядро и внешние системы | [ADR-002](adr/ADR-002-python-core-stack.md), [ADR-015](adr/ADR-015-repository-boundaries.md) п.3 |
 | `adapters` | Конкретные реализации портов для внешних систем и runtime | [ADR-019](adr/ADR-019-multi-provider-sc-ci-github-first.md) |
-| `api`, `cli`, `console`, `packs` | Точки входа и расширения (наполняются задачами T-030…T-090) | [ADR-008](adr/ADR-008-plugin-architecture-core-sdk.md) |
+| `api`, `cli`, `console`, `packs` | Точки входа и расширения (наполняются задачами T-030…T-099); с M3 — `GET /changes/{id}/decisions`, `POST …/decisions/{id}/alternative`, `GET …/ui`, `GET …/phases` и `factory change phases` / `decisions` / `alternative` / `ui`; шаблоны узлов проектирования — `packs/product-baseline/changeset/design/**` | [ADR-008](adr/ADR-008-plugin-architecture-core-sdk.md), [ADR-039](adr/ADR-039-phase-rounds-and-phase-bound-decisions.md) |
 
 **Правила границ (проверяются CI).** Зависимости направлены от адаптеров к контрактам ядра: адаптеры импортируют только `dark_factory.ports` (и собственные подпакеты); импорт `adapters` из ядра запрещён; прямой доступ агентов/flows к Git-провайдеру, Kubernetes и хранилищам в обход портов запрещён ([ADR-015](adr/ADR-015-repository-boundaries.md) п.3). Инвариант закреплён тестом `tests/test_import_boundaries.py` (правила A и B).
 

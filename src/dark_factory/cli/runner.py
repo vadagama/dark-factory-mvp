@@ -105,13 +105,13 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dark_factory.changes.enums import Role, Route, StageStatus
+from dark_factory.changes.enums import Phase, Role, Route, Stage, StageStatus
 from dark_factory.changes.implementation_contract import (
     ContractApproval,
     ImplementationContract,
@@ -147,6 +147,8 @@ from dark_factory.cli.release import (
 from dark_factory.cli.release_facts import CliReleaseFactsProvider
 from dark_factory.cli.run_records import RunRecordError, collect_run_manifest
 from dark_factory.execution.runs.store import RunRecordStore
+from dark_factory.orchestration.artifacts import ArtifactService
+from dark_factory.orchestration.phase_gate import SPECIFICATION_PHASES
 from dark_factory.orchestration.routes import route_profile
 from dark_factory.orchestration.runner import (
     FactsProvider,
@@ -166,7 +168,11 @@ from dark_factory.orchestration.state.conversations import (
     with_store_facts,
 )
 from dark_factory.orchestration.state.engine import session_scope
+from dark_factory.orchestration.state.phases import current_change_phase
 from dark_factory.orchestration.state.repositories import ContractConflictError, StateError
+
+if TYPE_CHECKING:
+    from dark_factory.ports import RepositoryPort
 from dark_factory.orchestration.state.run_store import (
     RunNotWithdrawableError,
     RunStore,
@@ -320,6 +326,7 @@ def run_advance_command(
     revision_of: RevisionResolver | None = None,
     gate_facts: FactsProvider | None = None,
     release_facts: ReleaseFactsProvider | None = None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
     """Handle ``factory run advance``; return the process exit code (contract cli.md).
 
@@ -372,6 +379,7 @@ def run_advance_command(
             gate_facts=gate_facts,
             release_facts=release_facts,
             contract=contract,
+            repository=repository,
         )
     try:
         with open_state_store() as factory:
@@ -385,6 +393,7 @@ def run_advance_command(
                 gate_facts=gate_facts,
                 release_facts=release_facts,
                 contract=contract,
+                repository=repository,
             )
     except StateStoreUnreachableError:
         return _unreachable("run advance", args.json_output)
@@ -553,6 +562,7 @@ def _advance(
     gate_facts: FactsProvider | None,
     release_facts: ReleaseFactsProvider | None,
     contract: ImplementationContract | None,
+    repository: "RepositoryPort | None" = None,
 ) -> int:
     """Advance one stage in one transaction and emit the outcome (contract cli.md)."""
     try:
@@ -567,6 +577,7 @@ def _advance(
                 gate_facts=gate_facts,
                 release_facts=release_facts,
                 contract=contract,
+                repository=repository,
             )
     except (InvalidRunnerInput, RunnerError, ContractConflictError) as exc:
         # Invalid input, nothing written, and the text is safe to echo:
@@ -605,6 +616,7 @@ def _advance_in_session(
     gate_facts: FactsProvider | None,
     release_facts: ReleaseFactsProvider | None,
     contract: ImplementationContract | None,
+    repository: "RepositoryPort | None" = None,
 ) -> RunAdvance:
     """Resolve the run and its change snapshot, then advance one stage."""
     store = RunStore(session)
@@ -612,11 +624,21 @@ def _advance_in_session(
     # The discussion of the phase is a typed input of the attempt (T080, ADR-034
     # p.5) and the store's decisions/rework orders join the observed facts
     # (T081); what the advance did to the discussion is recorded in the same
-    # transaction, so a rollback leaves nothing half-applied.
+    # transaction, so a rollback leaves nothing half-applied. The phase of the
+    # attempt (M3, ADR-039) — the round of the specification stage — is read
+    # from the decisions and the phase revisions of the change branch.
+    artifacts = ArtifactService(repository) if repository is not None else None
     run = store.load(run_id)
     stage = next_stage(run) if run is not None else None
+    phase: Phase | None = None
+    if stage is Stage.SPECIFICATION:
+        phase = current_change_phase(session, change, run=run, artifacts=artifacts)
+        if phase not in SPECIFICATION_PHASES:
+            phase = None
     conversation = (
-        load_conversation_inputs(session, change.id, stage) if stage is not None else None
+        load_conversation_inputs(session, change.id, stage, phase=phase)
+        if stage is not None
+        else None
     )
     advance = advance_run(
         store=store,
@@ -625,10 +647,11 @@ def _advance_in_session(
         owner_id=owner_id,
         executor=executor,
         revision_of=revision_of,
-        gate_facts=with_store_facts(gate_facts, session, change.id),
+        gate_facts=with_store_facts(gate_facts, session, change.id, artifacts=artifacts),
         release_facts=release_facts,
         now=now,
         conversation=conversation,
+        phase=phase,
     )
     record_stage_outcome(session, advance, change_id=change.id)
     return advance

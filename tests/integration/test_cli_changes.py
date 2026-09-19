@@ -9,6 +9,7 @@ computes for the same state.
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
@@ -182,7 +183,7 @@ def _seed_question(session_factory: sessionmaker[Session], change_id: str, head:
     return question.id
 
 
-def _json_out(capsys: pytest.CaptureFixture[str]) -> dict[str, object]:
+def _json_out(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     return dict(json.loads(capsys.readouterr().out.strip().splitlines()[-1]))
 
 
@@ -206,7 +207,7 @@ def test_answer_comment_rework_and_approve_from_the_cli(
     )
     assert code == EXIT_OK
     status = _json_out(capsys)
-    assert [q["id"] for q in status["questions"]] == [question_id]  # type: ignore[index]
+    assert [q["id"] for q in status["questions"]] == [question_id]
 
     # An answer outside the options is invalid input; a valid one is recorded.
     code = changes_module.run_change_answer_command(
@@ -236,7 +237,7 @@ def test_answer_comment_rework_and_approve_from_the_cli(
     assert code == EXIT_OK
     answered = _json_out(capsys)
     assert answered["outcome"] == "answered"
-    assert answered["question"]["status"] == "answered"  # type: ignore[index]
+    assert answered["question"]["status"] == "answered"
 
     # A comment binds to the head revision; alone it does not start rework.
     code = changes_module.run_change_comment_command(
@@ -253,7 +254,7 @@ def test_answer_comment_rework_and_approve_from_the_cli(
     )
     assert code == EXIT_OK
     comment = _json_out(capsys)["comment"]
-    assert comment["anchor"]["revision"] == head  # type: ignore[index]
+    assert comment["anchor"]["revision"] == head
 
     # The send-back creates the pending order and records the rejected decision.
     code = changes_module.run_change_rework_command(
@@ -264,13 +265,13 @@ def test_answer_comment_rework_and_approve_from_the_cli(
             question_ids=(question_id,),
             instruction="tighten",
             json_output=True,
-        ),  # type: ignore[index]
+        ),
         session_factory=session_factory,
         repository=repository,
     )
     assert code == EXIT_OK
     order = _json_out(capsys)["rework_order"]
-    assert order["status"] == "pending" and order["revisions"][REQ] == head  # type: ignore[index]
+    assert order["status"] == "pending" and order["revisions"][REQ] == head
     # A second send-back while one is pending is refused; approval is closed too.
     code = changes_module.run_change_rework_command(
         ChangeReworkArgs(
@@ -327,8 +328,8 @@ def test_approve_binds_to_the_current_revision_and_artifacts_commands_read_git(
     )
     assert code == EXIT_OK
     approved = _json_out(capsys)
-    assert approved["decision"]["commit_sha"] == head  # type: ignore[index]
-    assert approved["phase_gate"]["approved"] is True  # type: ignore[index]
+    assert approved["decision"]["commit_sha"] == head
+    assert approved["phase_gate"]["approved"] is True
 
     # artifacts: list, show, edit (a new revision makes the approval stale), versions, diff.
     code = changes_module.run_change_artifacts_command(
@@ -388,7 +389,7 @@ def test_approve_binds_to_the_current_revision_and_artifacts_commands_read_git(
     written = _json_out(capsys)
     assert written["outcome"] == "created" and written["previous_revision"] == head
     new_revision = str(written["revision"])
-    assert written["guidance"]["headline"], "every command ends with the next step"  # type: ignore[index]
+    assert written["guidance"]["headline"], "every command ends with the next step"
     code = changes_module.run_change_artifacts_command(
         ChangeArtifactsArgs(
             change_id="chg_calc_0001",
@@ -431,8 +432,8 @@ def test_approve_binds_to_the_current_revision_and_artifacts_commands_read_git(
     )
     assert code == EXIT_OK
     status = _json_out(capsys)
-    assert status["phase_gate"]["approved"] is False  # type: ignore[index]
-    assert status["phase_gate"]["approvals"][0]["state"] == "stale"  # type: ignore[index]
+    assert status["phase_gate"]["approved"] is False
+    assert status["phase_gate"]["approvals"][0]["state"] == "stale"
     code = changes_module.run_change_artifacts_command(
         ChangeArtifactsArgs(
             change_id="chg_calc_0001",

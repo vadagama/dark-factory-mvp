@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError } from "../api/client";
 import type { ApiClient } from "../api/client";
-import type { Decision, Gate, PhaseGate } from "../api/types";
+import type { Decision, Gate, Phase, PhaseGate } from "../api/types";
 import { shortRevision } from "../lib/artifacts";
 import { deriveExpectedStateRevision } from "../lib/meta";
 import { Notice } from "./Section";
@@ -13,6 +13,11 @@ export interface ApprovalFormProps {
   gate: PhaseGate;
   /** The gate the approval records against (`specification` for requirements). */
   gateName: Gate;
+  /** The phase the decision is about (M3): explicit, since `specification` serves two phases. */
+  phase: Phase;
+  /** Prefill for the guidance «Подтвердить пропуск UI»: `waived` with the architect's reason (T097). */
+  initialOutcome?: "approved" | "waived";
+  initialComment?: string;
   /** From the change card: the optimistic lock is derived as 1 + decisions_count. */
   decisionsCount: number;
   hasToken: boolean;
@@ -38,6 +43,9 @@ export function ApprovalForm({
   api,
   gate,
   gateName,
+  phase,
+  initialOutcome = "approved",
+  initialComment = "",
   decisionsCount,
   hasToken,
   onTokenRequired,
@@ -46,8 +54,8 @@ export function ApprovalForm({
   onCancel,
   onReload,
 }: ApprovalFormProps) {
-  const [outcome, setOutcome] = useState<"approved" | "waived">("approved");
-  const [comment, setComment] = useState("");
+  const [outcome, setOutcome] = useState<"approved" | "waived">(initialOutcome);
+  const [comment, setComment] = useState(initialComment);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ detail: string; conflict: boolean } | null>(null);
   const revision = gate.current_revision;
@@ -58,7 +66,7 @@ export function ApprovalForm({
       onTokenRequired();
       return;
     }
-    if (revision === null) {
+    if (revision === null && outcome !== "waived") {
       return;
     }
     if (outcome === "waived" && comment.trim().length === 0) {
@@ -70,8 +78,10 @@ export function ApprovalForm({
     try {
       const decision = await api.recordApproval(changeId, {
         gate: gateName,
+        phase,
         outcome,
-        subject_revision: revision,
+        // A waiver is about the phase: the revision travels only when there is one (M3).
+        ...(revision !== null ? { subject_revision: revision } : {}),
         comment: comment.trim() || null,
         expected_state_revision: deriveExpectedStateRevision(decisionsCount),
       });
@@ -91,14 +101,14 @@ export function ApprovalForm({
         <strong className="mono" data-testid="approval-revision" title={revision ?? undefined}>
           {shortRevision(revision)}
         </strong>
-        {revision === null ? <span className="muted"> — ревизии нет, согласовывать нечего</span> : null}.
+        {revision === null ? <span className="muted"> — ревизии нет: согласовать нельзя, пропуск с основанием возможен</span> : null}.
       </p>
       <div className="radio-group">
         <label>
           <input type="radio" name="outcome" value="approved" checked={outcome === "approved"} onChange={() => setOutcome("approved")} disabled={busy} />
           <span>Согласовать (approved)</span>
         </label>
-        {gate.skippable ? (
+        {gate.skippable || outcome === "waived" ? (
           <label>
             <input type="radio" name="outcome" value="waived" checked={outcome === "waived"} onChange={() => setOutcome("waived")} disabled={busy} />
             <span>Пропустить фазу с основанием (waived)</span>
@@ -110,7 +120,7 @@ export function ApprovalForm({
         <textarea value={comment} onChange={(event) => setComment(event.target.value)} rows={2} disabled={busy} data-testid="approval-comment" />
       </label>
       <div className="form-actions">
-        <button type="submit" className="button button--primary" disabled={busy || revision === null} data-testid="approval-submit">
+        <button type="submit" className="button button--primary" disabled={busy || (revision === null && outcome !== "waived")} data-testid="approval-submit">
           {busy ? "Записываю…" : "Записать решение"}
         </button>
         <button type="button" className="button" onClick={onCancel} disabled={busy}>

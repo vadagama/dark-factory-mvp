@@ -12,15 +12,19 @@ import type {
   Decision,
   Phase,
   PhaseGate,
+  PhaseView,
+  PhasesProjection,
   Question,
   ReworkOrder,
   RunCard,
   Scenario,
 } from "../api/types";
 import { ApprovalForm } from "../components/ApprovalForm";
+import { ArchitecturePhase } from "../components/ArchitecturePhase";
 import { BriefSection } from "../components/BriefSection";
 import { ContextPanel } from "../components/ContextPanel";
 import type { CommentSeed, Fragment } from "../components/ContextPanel";
+import { InterfacePhase } from "../components/InterfacePhase";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { NextStep } from "../components/NextStep";
 import { PhaseGatePanel } from "../components/PhaseGatePanel";
@@ -33,19 +37,17 @@ import {
   PHASES,
   PHASE_GATE,
   PHASE_MILESTONE,
-  PHASE_STATE_LABELS,
+  PHASE_VIEW_STATE_LABELS,
+  PHASE_VIEW_STATE_TONES,
   artifactName,
   budgetFact,
   phaseIndexLabel,
   phaseLabel,
-  phaseState,
   shortRevision,
 } from "../lib/artifacts";
-import type { PhaseState } from "../lib/artifacts";
 import { formatCost, formatDateTime, formatNumber, formatStage, formatTime } from "../lib/format";
 import type { ConsoleAction } from "../lib/guidance";
 import { statusTone } from "../lib/statusTone";
-import type { StatusTone } from "../lib/statusTone";
 
 type Tab = "result" | "changes" | "checks" | "history";
 
@@ -61,15 +63,8 @@ const SCENARIO_LABELS: Record<Scenario, string> = {
   full: "полный",
 };
 
-const PHASE_STATE_TONES: Record<PhaseState, StatusTone> = {
-  approved: "success",
-  decision: "warning",
-  active: "info",
-  rework: "warning",
-  passed: "neutral",
-  pending: "muted",
-  skipped: "muted",
-};
+/** Artifact kinds whose documents the workspace reads up front (anchors, counts, the design overview). */
+const DOCUMENT_KINDS = new Set(["spec", "design", "ui"]);
 
 export interface WorkspaceModel {
   card: ChangeCard;
@@ -79,6 +74,9 @@ export interface WorkspaceModel {
   questions: Question[];
   comments: CommentView[];
   orders: ReworkOrder[];
+  /** `GET /changes/{id}/phases` (T098); null when the read failed — the left column then says so. */
+  phases: PhasesProjection | null;
+  phasesError: string | null;
 }
 
 export interface ArtifactsModel {
@@ -88,17 +86,24 @@ export interface ArtifactsModel {
   documents: ArtifactDocumentView[];
 }
 
+/** Prefill of the approval form when the guidance CTA is the explicit UI waiver (T097). */
+interface ApprovalPrefill {
+  outcome: "approved" | "waived";
+  comment: string;
+}
+
 /**
  * ChangeSet workspace (T088, ADR-037 p.4): the main screen of a change.
  * Top panel — title, id, current phase and its state, budget (fact / limit /
- * forecast), blockers; left — the phases F0–F7 with state, open counts and
- * the iteration number; centre — the selected phase with the tabs
- * Результат · Изменения · Проверки · История (or the markdown editor of an
- * opened artifact); right — the collapsible context panel (discussion of the
+ * forecast), blockers; left — the phases F0–F7 as the server projects them
+ * (`GET /changes/{id}/phases`: state, open counts, iteration — nothing is
+ * computed here); centre — the selected phase with the tabs Результат ·
+ * Изменения · Проверки · История (or the markdown editor of an opened
+ * artifact); right — the collapsible context panel (discussion of the
  * selected fragment, rework orders); bottom — the decision panel rendered
- * only from `Guidance` with exactly one CTA (`NextStep`). Phases other than
- * F0/F1 are honest placeholders naming their milestone. Nothing here shows
- * a percentage of completion (ADR-037 p.6).
+ * only from `Guidance` with exactly one CTA (`NextStep`). Ф1–Ф3 have real
+ * workspaces (M2/M3); Ф4–Ф7 are honest placeholders naming their milestone.
+ * Nothing here shows a percentage of completion (ADR-037 p.6).
  */
 export function ChangeSetPage() {
   const { changeId = "" } = useParams();
@@ -113,9 +118,11 @@ export function ChangeSetPage() {
   const [commentSeed, setCommentSeed] = useState<CommentSeed | null>(null);
   const [reworkOpen, setReworkOpen] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
+  const [approvalPrefill, setApprovalPrefill] = useState<ApprovalPrefill>({ outcome: "approved", comment: "" });
   const [recorded, setRecorded] = useState<Decision | null>(null);
   const [editorPath, setEditorPath] = useState<string | null>(null);
   const questionsRef = useRef<HTMLElement | null>(null);
+  const decisionsRef = useRef<HTMLElement | null>(null);
   const problemRef = useRef<HTMLTextAreaElement | null>(null);
   const hasToken = getToken() !== null;
 
@@ -128,13 +135,17 @@ export function ChangeSetPage() {
   const workspace = useAsync<WorkspaceModel>(
     async () => {
       const card = await api.getChange(changeId);
-      const [runs, approvals, questions, comments, orders, gates] = await Promise.all([
+      const [runs, approvals, questions, comments, orders, gates, phasesResult] = await Promise.all([
         Promise.all(card.runs.map((run) => api.getRun(run.run_id))),
         api.getChangeApprovals(changeId),
         api.listQuestions(changeId),
         api.listComments(changeId),
         api.listReworkOrders(changeId),
         Promise.all(PHASES.map((phase) => api.getPhaseGate(changeId, phase).catch(() => null))),
+        api
+          .getPhases(changeId)
+          .then((phases) => ({ phases, error: null as string | null }))
+          .catch((cause: unknown) => ({ phases: null, error: cause instanceof ApiError ? cause.detail : String(cause) })),
       ]);
       const byPhase: Partial<Record<Phase, PhaseGate>> = {};
       PHASES.forEach((phase, index) => {
@@ -143,7 +154,17 @@ export function ChangeSetPage() {
           byPhase[phase] = gate;
         }
       });
-      return { card, runs, approvals, gates: byPhase, questions, comments, orders };
+      return {
+        card,
+        runs,
+        approvals,
+        gates: byPhase,
+        questions,
+        comments,
+        orders,
+        phases: phasesResult.phases,
+        phasesError: phasesResult.error,
+      };
     },
     [changeId, reloadNonce],
     { pollMs: POLL_MS },
@@ -153,9 +174,9 @@ export function ChangeSetPage() {
   const artifacts = useAsync<ArtifactsModel>(async () => {
     try {
       const tree = await api.getArtifactTree(changeId);
-      const specs = tree.nodes.filter((node) => node.kind === "spec");
+      const wanted = tree.nodes.filter((node) => DOCUMENT_KINDS.has(node.kind));
       const documents = await Promise.all(
-        specs.map((node) => api.getArtifact(changeId, node.path).catch(() => null)),
+        wanted.map((node) => api.getArtifact(changeId, node.path).catch(() => null)),
       );
       return { tree, error: null, documents: documents.filter((doc): doc is ArtifactDocumentView => doc !== null) };
     } catch (cause) {
@@ -163,13 +184,24 @@ export function ChangeSetPage() {
     }
   }, [changeId, reloadNonce]);
 
-  const currentPhase: Phase | null = guidance.data?.phase ?? null;
+  const phaseViews = useMemo(() => {
+    const views: Partial<Record<Phase, PhaseView>> = {};
+    for (const view of workspace.data?.phases?.phases ?? []) {
+      views[view.phase] = view;
+    }
+    return views;
+  }, [workspace.data?.phases]);
+
+  // The guidance names the phase its CTA is about; the projection is the fallback.
+  const currentPhase: Phase | null = guidance.data?.phase ?? workspace.data?.phases?.current ?? null;
   const selectedPhase: Phase =
     chosenPhase ?? (currentPhase === null ? "initiative" : currentPhase === "done" ? "delivery" : currentPhase);
   const gate = workspace.data?.gates[selectedPhase] ?? null;
   const phaseQuestions = workspace.data?.questions.filter((question) => question.phase === selectedPhase) ?? [];
   const phaseComments = workspace.data?.comments.filter((comment) => comment.phase === selectedPhase) ?? [];
   const phaseOrders = workspace.data?.orders.filter((order) => order.phase === selectedPhase) ?? [];
+  const designOverview =
+    artifacts.data?.documents.find((doc) => doc.kind === "design" && /(^|\/)design\/overview\.md$/.test(doc.path)) ?? null;
 
   const selectPhase = (phase: Phase) => {
     setChosenPhase(phase);
@@ -184,28 +216,50 @@ export function ChangeSetPage() {
     }
   };
 
+  const scrollTo = (target: HTMLElement | null) => {
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   const perform = (action: ConsoleAction) => {
     switch (action.kind) {
       case "approve_phase":
-        focusCurrentPhase();
+        if (action.phase) {
+          setChosenPhase(action.phase);
+        } else {
+          focusCurrentPhase();
+        }
         setRecorded(null);
+        setApprovalPrefill({ outcome: "approved", comment: "" });
         setApprovalOpen(true);
+        return;
+      case "waive_phase": {
+        setChosenPhase(action.phase);
+        setRecorded(null);
+        const reason = workspace.data?.gates[action.phase]?.ui_requirement?.reason ?? "";
+        setApprovalPrefill({ outcome: "waived", comment: reason });
+        setApprovalOpen(true);
+        return;
+      }
+      case "request_alternative":
+        setChosenPhase("architecture");
+        setEditorPath(null);
+        setTab("result");
+        // The overview mounts with the phase; the scroll waits for that render.
+        setTimeout(() => scrollTo(decisionsRef.current), 0);
         return;
       case "rework":
         focusCurrentPhase();
         setContextOpen(true);
         setReworkOpen(true);
         return;
-      case "focus_questions": {
+      case "focus_questions":
         focusCurrentPhase();
         setEditorPath(null);
         setTab("result");
-        const target = questionsRef.current;
-        if (target && typeof target.scrollIntoView === "function") {
-          target.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
+        scrollTo(questionsRef.current);
         return;
-      }
       case "open_artifacts":
         setEditorPath(null);
         setTab("changes");
@@ -249,6 +303,7 @@ export function ChangeSetPage() {
   const card = workspace.data?.card ?? null;
   const fact = workspace.data ? budgetFact(workspace.data.runs.map((run) => run.usage.cost)) : null;
   const approvalGate = PHASE_GATE[selectedPhase];
+  const currentView = currentPhase && currentPhase !== "done" ? (phaseViews[currentPhase] ?? null) : null;
 
   return (
     <div className="workspace" data-testid="changeset-workspace">
@@ -287,11 +342,10 @@ export function ChangeSetPage() {
                   ) : (
                     <>
                       {phaseLabel(currentPhase)}{" "}
-                      {currentPhase ? (
-                        <StatusBadge
-                          label={PHASE_STATE_LABELS[phaseState(currentPhase, currentPhase, workspace.data?.gates[currentPhase] ?? null)]}
-                          tone={PHASE_STATE_TONES[phaseState(currentPhase, currentPhase, workspace.data?.gates[currentPhase] ?? null)]}
-                        />
+                      {currentView ? (
+                        <span title={currentView.state_reason ?? undefined}>
+                          <StatusBadge label={PHASE_VIEW_STATE_LABELS[currentView.state]} tone={PHASE_VIEW_STATE_TONES[currentView.state]} />
+                        </span>
                       ) : null}
                     </>
                   )}
@@ -330,10 +384,14 @@ export function ChangeSetPage() {
 
       <div className={`workspace__body${contextOpen ? "" : " workspace__body--collapsed"}`}>
         <nav className="workspace__phases card" aria-label="Фазы" data-testid="workspace-phases">
+          {workspace.data && workspace.data.phases === null ? (
+            <p className="field__hint" data-testid="phases-unavailable">
+              Состояние фаз недоступно: {workspace.data.phasesError ?? "нет ответа"}
+            </p>
+          ) : null}
           <ul>
             {PHASES.map((phase) => {
-              const phaseGate = workspace.data?.gates[phase] ?? null;
-              const state = phaseState(phase, currentPhase, phaseGate);
+              const view = phaseViews[phase] ?? null;
               return (
                 <li key={phase}>
                   <button
@@ -342,15 +400,17 @@ export function ChangeSetPage() {
                     aria-current={phase === selectedPhase ? "true" : undefined}
                     onClick={() => selectPhase(phase)}
                     data-testid={`phase-${phase}`}
+                    title={view?.state_reason ?? undefined}
                   >
                     <span className="phase-item__name">
                       <span className="muted">{phaseIndexLabel(phase)}</span> {phaseLabel(phase)}
                     </span>
-                    <StatusBadge label={PHASE_STATE_LABELS[state]} tone={PHASE_STATE_TONES[state]} />
-                    {phaseGate ? (
+                    {view ? (
+                      <StatusBadge label={PHASE_VIEW_STATE_LABELS[view.state]} tone={PHASE_VIEW_STATE_TONES[view.state]} />
+                    ) : null}
+                    {view ? (
                       <span className="phase-item__counts muted">
-                        вопросов {phaseGate.open_questions} · замечаний {phaseGate.open_comments} · итерация{" "}
-                        {phaseGate.rework_rounds_used}
+                        вопросов {view.open_questions} · замечаний {view.open_comments} · итерация {view.iteration}
                       </span>
                     ) : null}
                   </button>
@@ -417,6 +477,33 @@ export function ChangeSetPage() {
                       onSelectFragment={openFragment}
                       questionsRef={questionsRef}
                     />
+                  ) : selectedPhase === "architecture" ? (
+                    <ArchitecturePhase
+                      changeId={changeId}
+                      api={api}
+                      hasToken={hasToken}
+                      onTokenRequired={() => setDialogOpen(true)}
+                      tree={artifacts.data?.tree ?? null}
+                      treeError={artifacts.data?.error ?? null}
+                      overview={designOverview}
+                      comments={phaseComments}
+                      orders={phaseOrders}
+                      reloadKey={reloadNonce}
+                      onChanged={reloadAll}
+                      onOpenArtifact={setEditorPath}
+                      decisionsRef={decisionsRef}
+                    />
+                  ) : selectedPhase === "interface" ? (
+                    <InterfacePhase
+                      changeId={changeId}
+                      api={api}
+                      tree={artifacts.data?.tree ?? null}
+                      treeError={artifacts.data?.error ?? null}
+                      comments={phaseComments}
+                      reloadKey={reloadNonce}
+                      onOpenArtifact={setEditorPath}
+                      onSelectFragment={openFragment}
+                    />
                   ) : selectedPhase === "initiative" ? (
                     card ? (
                       <BriefSection
@@ -434,7 +521,16 @@ export function ChangeSetPage() {
                   )
                 ) : null}
                 {tab === "changes" ? <ArtifactsTab model={artifacts.data} loading={artifacts.loading} onOpen={setEditorPath} /> : null}
-                {tab === "checks" ? <PhaseGatePanel gate={gate} /> : null}
+                {tab === "checks" ? (
+                  <PhaseGatePanel
+                    gate={gate}
+                    changeId={changeId}
+                    api={api}
+                    hasToken={hasToken}
+                    decisionsCount={card?.decisions_count ?? 0}
+                    onChanged={reloadAll}
+                  />
+                ) : null}
                 {tab === "history" ? (
                   <HistoryTab approvals={workspace.data?.approvals ?? []} orders={workspace.data?.orders ?? []} runs={workspace.data?.runs ?? []} />
                 ) : null}
@@ -492,10 +588,14 @@ export function ChangeSetPage() {
         ) : null}
         {approvalOpen && card && gate && approvalGate ? (
           <ApprovalForm
+            key={`${selectedPhase}-${approvalPrefill.outcome}`}
             changeId={changeId}
             api={api}
             gate={gate}
             gateName={approvalGate}
+            phase={selectedPhase}
+            initialOutcome={approvalPrefill.outcome}
+            initialComment={approvalPrefill.comment}
             decisionsCount={card.decisions_count}
             hasToken={hasToken}
             onTokenRequired={() => setDialogOpen(true)}
@@ -613,6 +713,7 @@ function HistoryTab({ approvals, orders, runs }: { approvals: Decision[]; orders
             <tr>
               <th>Решение</th>
               <th>Когда</th>
+              <th>Фаза</th>
               <th>Гейт</th>
               <th>Исход</th>
               <th>Кто</th>
@@ -625,6 +726,7 @@ function HistoryTab({ approvals, orders, runs }: { approvals: Decision[]; orders
               <tr key={decision.id}>
                 <td className="mono">{decision.id}</td>
                 <td className="muted">{formatDateTime(decision.decided_at)}</td>
+                <td>{decision.phase ? phaseLabel(decision.phase) : <span className="muted">—</span>}</td>
                 <td>{decision.gate}</td>
                 <td>
                   <StatusBadge label={decision.outcome} tone={statusTone(decision.outcome, "decision")} />
@@ -647,7 +749,8 @@ function HistoryTab({ approvals, orders, runs }: { approvals: Decision[]; orders
           {orders.map((order) => (
             <li key={order.id}>
               <span className="mono">{order.id}</span> · {phaseLabel(order.phase)} · {order.status}
-              {order.round !== null ? ` · раунд ${order.round}` : ""} · {formatDateTime(order.created_at)}
+              {order.round !== null ? ` · раунд ${order.round}` : ""}
+              {order.decision_ids.length > 0 ? ` · решения: ${order.decision_ids.join(", ")}` : ""} · {formatDateTime(order.created_at)}
             </li>
           ))}
         </ul>

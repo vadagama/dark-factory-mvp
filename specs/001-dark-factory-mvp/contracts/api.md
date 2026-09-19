@@ -50,7 +50,8 @@ API — операторский контроль и точка данных д�
 | `POST` | `/changes/{change_id}/comments/{comment_id}/close` · `/reopen` | закрывает/переоткрывает только оператор |
 | `GET` | `/changes/{change_id}/rework-orders` | поручения на доработку; фильтры `phase`, `status` |
 | `POST` | `/changes/{change_id}/rework-orders` | «На доработку» `{phase?, comment_ids[], question_ids[], instruction?, expected_revision?}`: одно поручение на фазу одновременно (409), пустое — 422, неизвестный комментарий/вопрос — 404; в той же транзакции пишется version-bound решение `rejected` по гейту фазы |
-| `GET` | `/changes/{change_id}/phase-gate` | прекондиции гейта фазы (T087): `available`, `reasons[{what, how}]`, `current_revision`, `approved`, `approvals[{state: current|stale|unbound}]`, счётчики вопросов/замечаний, состояние доработки; `phase` — параметр, по умолчанию текущая фаза |
+| `GET` | `/changes/{change_id}/phase-gate` | прекондиции гейта фазы (T087): `available`, `reasons[{what, how}]`, `current_revision` (с M3 для фаз стадии `specification` — ревизия артефактов **самой фазы**, ADR-039), `approved`, `waived`, `approvals[{state: current|stale|unbound, phase}]`, счётчики вопросов/замечаний, состояние доработки; для `interface` — `ui_requirement{required, source: route|agent|operator|default, reason}` и `checks[{id: axe|visual_regression, status: planned|not_required|passed|failed, note}]` (T097: axe/visual regression никогда не зелёные до исполнения); `phase` — параметр, по умолчанию текущая фаза |
+| `GET` | `/changes/{change_id}/phases` | проекция восьми фаз (T098, ADR-039): `current` и `phases[8]{phase, index, label, stage, gate, state: pending|active|needs_decision|approved|waived|not_required|stale|done|blocked, state_reason, revision, approved_revision, open_questions, blocking_questions, open_comments, iteration}`; левая колонка Console и `factory change phases` рендерят её, не вычисляя состояние сами |
 
 ### Artifacts (T082–T086, ADR-035)
 
@@ -65,6 +66,48 @@ API — операторский контроль и точка данных д�
 | `GET` | `/changes/{change_id}/artifact-diff/{path}?from_revision=&to_revision=` | unified diff между двумя ревизиями |
 | `GET` · `PUT` · `DELETE` | `/changes/{change_id}/artifact-drafts/{path}` | черновик автосейва вне git (`{content, base_revision}` → `{…, stale}`); 404 без черновика; явное «сохранить» — это `PUT …/artifacts/{path}` |
 | `POST` | `/changes/{change_id}/artifact-views/{path}` | «просмотрено» для ревизии `{revision}` — не согласование |
+
+### Decisions and UI spec (T093–T094, ADR-039)
+
+Read-model'ы фаз «Архитектура» и «Интерфейс» над git (ADR-035 п.1): карточка решения читается из `design/decisions/ADR-NNN-<slug>.md`, UI-спека — из `design/ui/scenarios/SCN-NNN-<slug>.md` и `design/ui/screens/SCR-NNN-<slug>.md` на голове ветки изменения. Без сконфигурированного `RepositoryPort` эндпоинты отвечают 503. Статус карточки производный и в файл не пишется.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `GET` | `/changes/{change_id}/decisions` | карточки решений `DecisionsView{change_id, revision, approved, decisions[DecisionCard], errors[]}`; `revision` — ревизия артефактов фазы `architecture`, `approved` — фаза согласована на этой ревизии (stale не считается) |
+| `POST` | `/changes/{change_id}/decisions/{decision_id}/alternative` | «Запросить альтернативу» `{instruction, comment_ids[]}` → `ReworkOrder` фазы `architecture` с `decision_ids: [decision_id]`; в той же транзакции — version-bound `rejected` по гейту фазы; 201, 200 replay по `Idempotency-Key`, 404 — `decision_id` не среди ADR ветки, 409 — открытое поручение фазы уже есть, 422 — пустая инструкция |
+| `GET` | `/changes/{change_id}/ui` | UI-спека `UiSpecView{change_id, revision, dev_url, scenarios[], screens[], links[], components[], errors[]}`; `revision` — ревизия артефактов фазы `interface`, `dev_url` — из `.factory/product/factory.yaml` ветки изменения |
+
+Формы (имена полей — pydantic-модели `context/decisions.py`, `context/ui_spec.py`, `orchestration/decisions.py`, `orchestration/ui_spec.py`):
+
+```ts
+interface DecisionAlternative { title: string; summary: string | null; rejected_because: string | null }
+interface DecisionCard {
+  id: string;                       // frontmatter id (adr:<product>:NNNN) или имя файла без расширения
+  path: string; title: string;
+  status: "proposed" | "accepted" | "needs_revision" | "superseded";   // производный
+  document_status: string | null;   // как написал агент
+  revision: string | null;          // последний коммит, тронувший ADR
+  proposal: string | null; rationale: string | null; consequences: string | null;
+  alternatives: DecisionAlternative[]; impact: string[];
+  pending_alternative: ReworkOrder | null;   // открытое поручение «Запросить альтернативу»
+  affected_artifacts: string[];              // design/adr/ui/spec-файлы, изменённые после последнего выполненного поручения по решению
+  errors: string[];                          // что не удалось разобрать
+}
+interface DecisionsView { change_id: string; revision: string | null; approved: boolean; decisions: DecisionCard[]; errors: string[] }
+
+interface UiStep { id: string; text: string; screen: string | null }
+interface UiScenario { id: string; path: string; title: string; summary: string | null; steps: UiStep[]; screens: string[] }
+interface UiState { kind: "loading" | "empty" | "error" | "success" | "access"; description: string | null }
+interface UiElement { id: string; kind: string | null; label: string | null; component: string | null }
+interface UiScreen { id: string; path: string; title: string; purpose: string | null; route: string | null; preview_url: string | null;
+                     states: UiState[]; elements: UiElement[]; components: string[] }
+interface UiLink { id: string; from_screen: string; to_screen: string; trigger: string | null; condition: string | null }  // id `SCR-A->SCR-B`, при повторе пары — `#n`
+interface UiComponentUse { name: string; screens: string[] }
+interface UiSpecView { change_id: string; revision: string | null; dev_url: string | null;
+                       scenarios: UiScenario[]; screens: UiScreen[]; links: UiLink[]; components: UiComponentUse[]; errors: string[] }
+```
+
+Правила: статус карточки — `superseded` из frontmatter; `needs_revision` — открытое (`pending`/`in_progress`) поручение с решением в `decision_ids` или устаревшее согласование архитектуры при ADR, изменённом после него; `accepted` — действующее согласование фазы `architecture`; иначе `proposed`. Необъявленное состояние экрана отсутствует в `states` (не подменяется); `preview_url` — абсолютный как есть, относительный — `dev_url` + путь, без `dev_url` — как написан. Расширения доменных моделей: `ReworkOrder.decision_ids: string[]` (payload, без миграции), `Decision.phase: Phase | null` (миграция `0007_phase_rounds`; `null` — решение до M3, читается как фаза своего гейта).
 
 ### Briefs
 
@@ -88,9 +131,9 @@ API — операторский контроль и точка данных д�
 | Метод | Путь | Назначение |
 |---|---|---|
 | `GET` | `/changes/{change_id}/approvals` | список согласований/решений |
-| `POST` | `/changes/{change_id}/approvals` | записать решение `{gate, outcome, subject_revision, comment}` |
+| `POST` | `/changes/{change_id}/approvals` | записать решение `{gate, outcome, subject_revision?, comment, phase?}`; `phase` (M3, ADR-039) различает решения на общем гейте `specification` (`requirements` / `architecture`), по умолчанию — фаза гейта, несогласие с `gate` — 422 |
 
-`subject_revision` (hash/SHA) обязателен: изменение ревизии инвалидирует approval (FR-003, ADR-009 §7, ADR-018 §3). С T087 `approved` проходит через прекондиции гейта фазы (`GET …/phase-gate`): 409 при закрытом гейте (блокирующие вопросы, ожидающая/идущая доработка, отсутствие ревизии артефактов) и при `subject_revision`, отличной от текущей головы ветки изменения; `waived` (пропуск фазы, ADR-032 §5) требует `comment` с основанием (422); `rejected` не блокируется — явный возврат делается через `POST …/rework-orders`.
+`subject_revision` (hash/SHA) обязателен для `approved` и `rejected`: изменение ревизии инвалидирует approval (FR-003, ADR-009 §7, ADR-018 §3); для `waived` он необязателен — пропуск относится к фазе, а не к документу (backend-only изменение без UI-артефактов, ADR-039 п.6). С M3 «текущая ревизия» фазы стадии `specification` — ревизия её собственных артефактов, поэтому раунд архитектора не делает согласование требований неактуальным. С T087 `approved` проходит через прекондиции гейта фазы (`GET …/phase-gate`): 409 при закрытом гейте (блокирующие вопросы, ожидающая/идущая доработка, отсутствие ревизии артефактов) и при `subject_revision`, отличной от текущей головы ветки изменения; `waived` (пропуск фазы, ADR-032 §5) требует `comment` с основанием (422); `rejected` не блокируется — явный возврат делается через `POST …/rework-orders`.
 
 ### Evidence
 
@@ -125,7 +168,7 @@ API — операторский контроль и точка данных д�
 | Чтение `Guidance` | открыто (read-model, ничего не исполняет — ADR-033 p.2) |
 | Approval/decision | авторизованный оператор (не агент) |
 | Заявить вопрос, отметить замечание «исправлено» | агент (service) или оператор: scope `changes:write` |
-| Ответ на вопрос, замечание, закрытие замечания, поручение на доработку, правка артефакта, черновик, «просмотрено» | авторизованный оператор: scope `changes:write` + роль `operator` |
+| Ответ на вопрос, замечание, закрытие замечания, поручение на доработку (в т.ч. «Запросить альтернативу»), правка артефакта, черновик, «просмотрено» | авторизованный оператор: scope `changes:write` + роль `operator` |
 | Bootstrap baseline продукта | авторизованный оператор: scope `products:write` + роль `operator` |
 | Переключение этапов CI | авторизованный оператор (не агент): scope `ci:write` + роль `operator` |
 | Merge/deploy | **вне API ядра** — доверенный финализатор / человек (FR-010, FR-023) |

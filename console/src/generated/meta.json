@@ -28,11 +28,11 @@
   "profiles": [
     {
       "constraints": [
-        "Make significant technical decisions only through an ADR, using the repository ADR template.",
+        "Make significant technical decisions only through an ADR, using the repository ADR template; an ADR is written as proposed - acceptance is the operator's decision at the phase gate.",
         "Never change the stack, dependencies or repository structure outside an ADR.",
         "Ground every conclusion in the current codebase and accepted ADRs, not assumptions."
       ],
-      "description": "Assesses the change's impact on architecture boundaries, contracts, the data model and NFRs, and drafts an ADR when a significant decision is required.",
+      "description": "Assesses the change's impact on architecture boundaries, contracts, the data model and NFRs, drafts an ADR when a significant decision is required, and produces the architecture phase artifacts of a ChangeSet (design/overview.md and proposed ADRs under design/decisions/, T092).",
       "inputs": [
         "requirements",
         "spec",
@@ -41,13 +41,15 @@
       "name": "Architect",
       "outputs": [
         "architecture_review",
-        "adr_proposal"
+        "adr_proposal",
+        "design_overview"
       ],
       "role": "architect",
       "schema_version": 1,
       "skills": [
         "impact-analysis",
-        "adr-proposal"
+        "adr-proposal",
+        "solution-design"
       ],
       "stop_conditions": [
         "A decision belongs to a human (product priority, budget, risk acceptance) - stop and ask.",
@@ -56,9 +58,10 @@
       ],
       "tools": [
         "read_file",
-        "search_repo"
+        "search_repo",
+        "write_file"
       ],
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "constraints": [
@@ -99,11 +102,12 @@
       "constraints": [
         "Design at the UX level; never modify code, infrastructure or pipeline configuration directly.",
         "Map screens onto the existing UI kit patterns instead of inventing new components.",
-        "Every screen carries its states (loading/empty/error) and accessibility requirements."
+        "Every screen carries its states (loading/empty/error/success/access) and accessibility requirements; SCN-/SCR-/EL- ids are stable anchors."
       ],
-      "description": "Turns approved requirements into user flows, a screen inventory with loading/empty/error states, UI-kit component mapping and accessibility requirements (WCAG 2.2 AA).",
+      "description": "Turns approved requirements into user flows, a screen inventory with loading/empty/error states, UI-kit component mapping and accessibility requirements (WCAG 2.2 AA), and writes the UI specification of the interface phase (scenarios and screens under design/ui/, T094).",
       "inputs": [
         "spec",
+        "adr_proposal",
         "context"
       ],
       "name": "Design",
@@ -114,7 +118,8 @@
       "schema_version": 1,
       "skills": [
         "ux-flow",
-        "accessibility-review"
+        "accessibility-review",
+        "ui-spec"
       ],
       "stop_conditions": [
         "A requirement contradicts the accepted UI or architecture decisions (e.g. ADR-014) - escalate.",
@@ -123,9 +128,10 @@
       ],
       "tools": [
         "read_file",
-        "search_repo"
+        "search_repo",
+        "write_file"
       ],
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "constraints": [

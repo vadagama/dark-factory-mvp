@@ -26,3 +26,13 @@ class ProvisioningOperationUnsupportedError(PortError):
     def __init__(self, operation: str) -> None:
         super().__init__(f"provisioning operation {operation!r} is not supported by this adapter")
         self.operation = operation
+
+
+class UnsafeWorkspacePathError(PortError, ValueError):
+    """A tool call addressed a path outside (or at the root of) the isolated workspace.
+
+    Raised by the execution port and translated by the role tools into a
+    model-facing ``error:`` result (found on the M3 live run: a read of ``.``
+    passed the tools' check, was refused by the workspace and aborted the
+    whole attempt instead of correcting the model's next call).
+    """

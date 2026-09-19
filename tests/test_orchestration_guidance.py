@@ -28,6 +28,7 @@ from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
     NextAction,
+    PhaseRoundAction,
     ReleaseAction,
     RequestApprovalAction,
     ReworkAction,
@@ -505,3 +506,131 @@ def test_a_running_rework_round_names_itself_on_a_running_run() -> None:
     assert guidance.headline == "Доработка «Требования»: раунд 1 из 3"
     assert guidance.primary.label == "Выполнить раунд доработки"
     assert guidance.primary.cli == "factory run advance --change-id chg-001"
+
+
+# --- M3 (ADR-039): the design rounds of the specification stage -------------------------
+
+
+def test_the_architecture_phase_offers_the_alternative_request() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=WaitForInputAction(reason="design produced"),
+        phase_gate=_gate(phase=Phase.ARCHITECTURE, current_revision="d1"),
+        phase=Phase.ARCHITECTURE,
+    )
+    _holds_the_rules(guidance)
+    assert guidance.phase is Phase.ARCHITECTURE
+    assert guidance.headline == "Фаза «Архитектура» готова к согласованию"
+    assert guidance.primary.label == "Согласовать архитектуру"
+    assert guidance.primary.cli == "factory change approve --id chg-001 --phase architecture"
+    assert guidance.secondary[0].label == "Запросить альтернативу"
+    assert guidance.secondary[0].api == "POST /changes/chg-001/decisions/{decision_id}/alternative"
+    assert guidance.after is not None and "интерфейс" in guidance.after
+
+
+def test_a_ui_free_change_asks_the_operator_to_confirm_the_skip() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=WaitForInputAction(reason="design produced"),
+        phase_gate=_gate(
+            phase=Phase.INTERFACE,
+            gate=Gate.UI,
+            available=False,
+            current_revision=None,
+            reasons=[GateReason(what="UI не требуется", how="подтвердите")],
+            ui_requirement={"required": False, "source": "agent", "reason": "backend-only"},
+        ),
+        phase=Phase.INTERFACE,
+    )
+    _holds_the_rules(guidance)
+    assert guidance.headline == "Фаза «Интерфейс» не требуется: подтвердите пропуск"
+    assert guidance.primary.label == "Подтвердить пропуск UI"
+    assert guidance.primary.enabled
+    assert "--phase interface --waive" in (guidance.primary.cli or "")
+    assert "backend-only" in guidance.why
+    assert guidance.after is not None and "план" in guidance.after.lower()
+
+
+def test_a_waived_phase_reads_as_settled_and_continues() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=WaitForInputAction(reason="design produced"),
+        phase_gate=_gate(
+            phase=Phase.INTERFACE,
+            gate=Gate.UI,
+            available=False,
+            current_revision=None,
+            waived=True,
+            ui_requirement={"required": False, "source": "operator", "reason": "backend-only"},
+        ),
+        phase=Phase.INTERFACE,
+    )
+    _holds_the_rules(guidance)
+    assert guidance.headline == "Фаза «Интерфейс» пропущена с основанием"
+    assert guidance.primary.label == "Продолжить после согласования"
+    assert guidance.primary.cli == "factory run advance --change-id chg-001"
+
+
+def test_a_phase_round_wait_names_the_next_round() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=PhaseRoundAction(phase=Phase.ARCHITECTURE, reason="requirements approved"),
+        phase=Phase.REQUIREMENTS,
+    )
+    _holds_the_rules(guidance)
+    assert guidance.headline == "Следующий раунд: «Архитектура»"
+    assert guidance.primary.label == "Запустить раунд «Архитектура»"
+    assert guidance.primary.cli == "factory run advance --change-id chg-001"
+
+
+def test_the_known_phase_overrides_the_stage_projection() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_run(RunStatus.RUNNING),
+        phase=Phase.INTERFACE,
+    )
+    assert guidance.phase is Phase.INTERFACE
+    assert guidance.headline == "Идёт фаза «Интерфейс»"
+
+
+def test_a_settled_earlier_round_asks_for_the_advance_not_for_a_decision() -> None:
+    """M3 (ADR-039): the requirements checkpoint is parked, its approval is already recorded
+    and the decisions read as the architecture phase — the next step is the advance that
+    starts the architect's round, not «Согласовать архитектуру» (found on the M3 live run)."""
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=WaitForInputAction(reason="spec produced"),
+        phase_gate=_gate(phase=Phase.ARCHITECTURE, current_revision=None, available=False),
+        phase=Phase.ARCHITECTURE,
+        waiting_phase=Phase.REQUIREMENTS,
+    )
+    _holds_the_rules(guidance)
+    assert guidance.phase is Phase.ARCHITECTURE
+    assert guidance.headline == "Следующий раунд: «Архитектура»"
+    assert guidance.primary.label == "Запустить раунд «Архитектура»"
+    assert guidance.primary.cli == "factory run advance --change-id chg-001"
+    assert "Требования" in guidance.why
+
+
+def test_the_waiting_round_of_the_current_phase_still_renders_its_gate() -> None:
+    guidance = change_guidance(
+        _change(),
+        product=_product(ProductStatus.READY),
+        run=_waiting_run(),
+        waiting_on=WaitForInputAction(reason="spec produced"),
+        phase_gate=_gate(),
+        phase=Phase.REQUIREMENTS,
+        waiting_phase=Phase.REQUIREMENTS,
+    )
+    assert guidance.primary.label == "Согласовать требования"

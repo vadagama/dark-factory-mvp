@@ -22,6 +22,7 @@ from dark_factory.api.routes_artifacts import create_artifacts_router
 from dark_factory.api.routes_changes import create_changes_router
 from dark_factory.api.routes_ci import create_ci_router
 from dark_factory.api.routes_conversations import create_conversations_router
+from dark_factory.api.routes_decisions import create_decisions_router
 from dark_factory.api.routes_products import create_products_router
 from dark_factory.api.routes_runs import create_runs_router
 from dark_factory.orchestration.artifacts import ArtifactService
@@ -140,6 +141,9 @@ def create_app(
     )
     app.include_router(
         create_artifacts_router(session_dependency, token_store, artifacts), prefix=API_PREFIX
+    )
+    app.include_router(
+        create_decisions_router(session_dependency, token_store, artifacts), prefix=API_PREFIX
     )
     app.include_router(
         create_products_router(session_dependency, token_store, provisioning), prefix=API_PREFIX

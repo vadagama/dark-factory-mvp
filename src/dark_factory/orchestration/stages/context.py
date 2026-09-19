@@ -11,7 +11,7 @@ the persisted snapshot and calls no harness/LLM (ADR-003).
 
 from dataclasses import dataclass
 
-from dark_factory.changes.enums import Gate, RiskClass, Route, Stage
+from dark_factory.changes.enums import Gate, Phase, RiskClass, Route, Stage
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.run import Change
 from dark_factory.changes.usage import BudgetSnapshot
@@ -73,6 +73,16 @@ class StageContext:
     path ignores it, the agent executor renders it into the instruction.
     """
 
+    phase: Phase | None = None
+    """The operator phase this attempt is a round of (M3, ADR-039).
+
+    The specification stage runs requirements → architecture → interface as
+    rounds of one stage; the driver computes the current phase from the
+    decisions and the phase revisions and the agent executor picks the role
+    and the skill of the round from it. ``None`` — the stage has no rounds
+    (or the caller has no store): the stage's default role and skill apply.
+    """
+
     enforce_contract_entry: bool = True
     """Whether entering Construction is gated on ``implementation_contract`` (T-063).
 
@@ -99,6 +109,7 @@ def build_context(
     implementation_contract: ImplementationContract | None = None,
     enforce_contract_entry: bool = True,
     conversation: ConversationInputs | None = None,
+    phase: Phase | None = None,
 ) -> StageContext:
     """Assemble the stage context from the validated snapshot and the flow tables.
 
@@ -115,7 +126,8 @@ def build_context(
     contract of the run the attempt belongs to and ``enforce_contract_entry``
     says whether the Construction entry gate applies to this context (T-063).
     ``conversation`` is the discussion the attempt must take into account
-    (T080, ADR-034 p.5), assembled by the driver from the store.
+    (T080, ADR-034 p.5), assembled by the driver from the store. ``phase`` is
+    the operator phase of the round (M3, ADR-039), computed by the driver.
     """
     effective_class = risk_class if risk_class is not None else change.risk_class
     return StageContext(
@@ -131,4 +143,5 @@ def build_context(
         implementation_contract=implementation_contract,
         enforce_contract_entry=enforce_contract_entry,
         conversation=conversation,
+        phase=phase,
     )

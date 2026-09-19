@@ -131,6 +131,15 @@ class ArtifactService:
         """Revisions of one document on the change branch, newest first."""
         return asyncio.run(self._versions(change, path))
 
+    def latest_revision(self, change: Change, paths: Sequence[str]) -> str | None:
+        """The newest commit that touched any of ``paths`` — the revision of a phase (M3).
+
+        A phase approval binds to the revision of the phase's *own* artifacts
+        (ADR-039), so a later round of another phase does not stale it. ``None``
+        without a branch or when none of the paths has a commit yet.
+        """
+        return asyncio.run(self._latest_revision(change, paths))
+
     def diff(
         self, change: Change, path: str, *, from_revision: str, to_revision: str
     ) -> ArtifactDiff:
@@ -247,6 +256,26 @@ class ArtifactService:
             )
             for commit in commits
         ]
+
+    async def _latest_revision(self, change: Change, paths: Sequence[str]) -> str | None:
+        head = await self._head(change)
+        if head is None or not paths:
+            return None
+        heads: set[str] = set()
+        for path in paths:
+            commits = await self._repository.list_commits(change.product, head, path=path)
+            if commits:
+                heads.add(commits[0].sha)
+        if not heads:
+            return None
+        if len(heads) == 1:
+            return next(iter(heads))
+        # Several paths, several latest commits: the newest is the first one the
+        # branch history (newest first) names among them.
+        for commit in await self._repository.list_commits(change.product, head):
+            if commit.sha in heads:
+                return commit.sha
+        return head
 
     async def _diff(
         self, change: Change, path: str, from_revision: str, to_revision: str

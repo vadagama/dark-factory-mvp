@@ -1,15 +1,16 @@
 """NextAction: the closed discriminated union returned by every stage (ADR-005 p.2).
 
 Variant names follow hld-mvp 8: execute_stage, wait_for_input, wait_for_ci,
-rework, request_approval, merge, release, stop. The union is closed: stage
-handlers (T-004) must cover every variant and end with ``assert_never``.
+rework, request_approval, merge, release, stop — plus ``phase_round`` (M3,
+ADR-039): the next operator phase of the *same* stage. The union is closed:
+stage handlers (T-004) must cover every variant and end with ``assert_never``.
 """
 
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from dark_factory.changes.enums import Gate, Role, Stage, StopOutcome
+from dark_factory.changes.enums import Gate, Phase, Role, Stage, StopOutcome
 from dark_factory.changes.refs import ChangeRequestRef
 
 
@@ -43,6 +44,21 @@ class ReworkAction(BaseModel):
     round: int = Field(ge=1)
     max_rounds: int = Field(ge=1)
     reason: str
+
+
+class PhaseRoundAction(BaseModel):
+    """Re-enter the same stage for its next operator phase (ADR-039, ADR-032 p.3).
+
+    The ``specification`` stage runs requirements → architecture → interface
+    as *rounds* of one stage: the approval of a non-final phase ends the
+    attempt and starts a new operation of the same stage at the revision the
+    approval was bound to — without spending a rework round (a phase round is
+    progress, not a send-back). ``phase`` is the phase the next round prepares.
+    """
+
+    type: Literal["phase_round"] = "phase_round"
+    phase: Phase
+    reason: str | None = None
 
 
 class RequestApprovalAction(BaseModel):
@@ -83,6 +99,7 @@ NextAction = Annotated[
     | WaitForInputAction
     | WaitForCIAction
     | ReworkAction
+    | PhaseRoundAction
     | RequestApprovalAction
     | MergeAction
     | ReleaseAction

@@ -126,8 +126,8 @@ flowchart TD
 | Константа | `name` | `version` | inputs | outputs | tools | skills |
 |---|---|---|---|---|---|---|
 | `PRODUCT_PROFILE` | `Product` | `1.0.0` | task, context | requirements, spec, change_request | `read_file`, `search_repo` | intake, requirements-refinement, spec-authoring, change-request |
-| `DESIGN_PROFILE` | `Design` | `1.0.0` | spec, context | ux_spec | `read_file`, `search_repo` | ux-flow, accessibility-review |
-| `ARCHITECT_PROFILE` | `Architect` | `1.0.0` | requirements, spec, context | architecture_review, adr_proposal | `read_file`, `search_repo` | impact-analysis, adr-proposal |
+| `DESIGN_PROFILE` | `Design` | `1.0.1` | spec, adr_proposal, context | ux_spec | `read_file`, `search_repo`, `write_file` | ux-flow, accessibility-review, ui-spec |
+| `ARCHITECT_PROFILE` | `Architect` | `1.0.1` | requirements, spec, context | architecture_review, adr_proposal, design_overview | `read_file`, `search_repo`, `write_file` | impact-analysis, adr-proposal, solution-design |
 | `DEVELOP_PROFILE` | `Develop` | `1.0.0` | spec, review_report, context | code | `read_file`, `write_file`, `apply_patch`, `run_command` | implementation, implementation-rework |
 | `QUALITY_PROFILE` | `Quality` | `1.0.0` | spec, code, context | review_report, acceptance_verdict | `read_file`, `run_tests`, `run_command` | code-review, acceptance-verification |
 | `SECURITY_PROFILE` | `Security` | `1.0.0` | spec, code, context | security_review | `read_file`, `search_repo`, `run_command` | threat-model, security-analysis |
@@ -141,7 +141,7 @@ flowchart TD
 
 ## 6. Скиллы (`skills/`)
 
-`SkillManifest` — frozen, `AGENT_SKILL_SCHEMA_VERSION = 1`. `id` валидируется паттерном `^[a-z0-9]+(-[a-z0-9]+)*$` (kebab-case wire-id, его ссылают профили); `instruction` (min_length=1) — по замыслу текст, который уходит агенту как промпт, `stop_conditions` — свободный текст до T-016. Зарегистрировано 20 скиллов, все `version="1.0.0"`:
+`SkillManifest` — frozen, `AGENT_SKILL_SCHEMA_VERSION = 1`. `id` валидируется паттерном `^[a-z0-9]+(-[a-z0-9]+)*$` (kebab-case wire-id, его ссылают профили); `instruction` (min_length=1) — по замыслу текст, который уходит агенту как промпт, `stop_conditions` — свободный текст до T-016. Зарегистрировано 22 скилла, все `version="1.0.0"`:
 
 | id | Роль | inputs | outputs |
 |---|---|---|---|
@@ -151,8 +151,10 @@ flowchart TD
 | `change-request` | product | requirements, context | change_request |
 | `ux-flow` | design | spec, context | ux_spec |
 | `accessibility-review` | design | ux_spec, context | ux_spec |
+| `ui-spec` | design | spec, adr_proposal, context | ux_spec |
 | `impact-analysis` | architect | requirements, spec, context | architecture_review |
 | `adr-proposal` | architect | architecture_review, context | adr_proposal |
+| `solution-design` | architect | spec, requirements, context | design_overview, adr_proposal |
 | `implementation` | develop | spec, context | code |
 | `implementation-rework` | develop | review_report, context | code |
 | `code-review` | quality | code, context | review_report |
@@ -166,7 +168,9 @@ flowchart TD
 | `smoke-verification` | operation | spec, context | ops_verdict |
 | `rollback-analysis` | operation | code, context | ops_verdict |
 
-`get_skill(skill_id)` бросает `SkillNotFoundError(f"unknown skill id {skill_id!r}")` — опечатка в id обязана падать громко. `ArtifactKind` (`artifacts.py`, StrEnum): `task`, `requirements`, `spec`, `change_request`, `code`, `review_report`, `acceptance_verdict`, `context`, `ux_spec`, `architecture_review`, `adr_proposal`, `infrastructure_change`, `security_review`, `pipeline_config`, `ops_verdict` — значения сериализуются в манифестах, переименование считается breaking change (ADR-015 п.3). Ошибки определения (`errors.py`): `AgentDefinitionError(RuntimeError)` → `ProfileNotFoundError`, `SkillNotFoundError`.
+Скиллы фаз M3 (T092/T094, ADR-032/ADR-035): `solution-design` (architect) пишет артефакты фазы «Архитектура» — `design/overview.md` (frontmatter `ui: required | not_required` + `ui_reason`, тело `## Обзор` / mermaid / `## Компоненты` / `## Решения`) и по одному ADR на значимое решение `design/decisions/ADR-NNN-<slug>.md` (frontmatter `impact`, секции `## Контекст` / `## Решение` / `## Обоснование` / `## Альтернативы` / `## Последствия`, только `status: proposed` — принятие решения остаётся за оператором на гейте фазы); поручение «Запросить альтернативу» с id ADR отрабатывается пересмотром этого ADR. `ui-spec` (design) пишет артефакты фазы «Интерфейс» — `design/ui/scenarios/SCN-NNN-<slug>.md` (`steps` с `id/text/screen`) и `design/ui/screens/SCR-NNN-<slug>.md` (`route`, `preview_url`, пять `states` loading/empty/error/success/access, `elements` с `EL-*` и компонентом UIKit `packs/ui`, `transitions`); ids `SCN-*`/`SCR-*`/`EL-*`/`S<n>` — стабильные якоря комментариев и не переименовываются при доработке; при `ui: not_required` скилл останавливается. Шаблоны-примеры — `packs/product-baseline/changeset/design/`.
+
+`get_skill(skill_id)` бросает `SkillNotFoundError(f"unknown skill id {skill_id!r}")` — опечатка в id обязана падать громко. `ArtifactKind` (`artifacts.py`, StrEnum): `task`, `requirements`, `spec`, `change_request`, `code`, `review_report`, `acceptance_verdict`, `context`, `ux_spec`, `architecture_review`, `adr_proposal`, `design_overview`, `infrastructure_change`, `security_review`, `pipeline_config`, `ops_verdict` — значения сериализуются в манифестах, переименование считается breaking change (ADR-015 п.3). Ошибки определения (`errors.py`): `AgentDefinitionError(RuntimeError)` → `ProfileNotFoundError`, `SkillNotFoundError`.
 
 > `build_envelope` принимает `instruction` параметром и не извлекает промпт из `skill.instruction` — связку «скилл → промпт конверта» реализует пока только вызывающая сторона (в коде — тесты).
 
@@ -219,7 +223,7 @@ flowchart TD
 
 - [`test_agents_contract.py`](../../tests/test_agents_contract.py) — `build_envelope`: фиксация роли/скилла/контекста и четыре отказа связности; `validate_agent_result`: пустой output, `ok=False`, optional `usage`; минимальный конверт без новых полей остаётся валидным;
 - [`test_agents_profiles.py`](../../tests/test_agents_profiles.py) — `CORE_ROLES` — все девять ролей каталога ADR-007 и совпадает с `Role`; у каждой роли профиль; полнота манифеста; каждый skill профиля существует и принадлежит роли;
-- [`test_agents_skills.py`](../../tests/test_agents_skills.py) — 20 скиллов зарегистрированы и уникальны; id в kebab-case; полнота манифестов; каждый скилл привязан к профилю своей роли; неизвестный id — ошибка;
+- [`test_agents_skills.py`](../../tests/test_agents_skills.py) — 22 скилла зарегистрированы и уникальны; id в kebab-case; полнота манифестов; каждый скилл привязан к профилю своей роли; неизвестный id — ошибка;
 - [`test_harness_adapter.py`](../../tests/test_harness_adapter.py) — protocol-совместимость; `instruction` как system и user prompt; mapping usage/cost; structured output; инструменты по роли и изоляция ролей; политика ошибок без текстов исключений; маскирование в `health()`; `HarnessConfig.from_env`/`missing_env_vars`;
 - [`contract/test_harness_port.py`](../../tests/contract/test_harness_port.py) — контракт порта на `FakeHarness` (фикстура `harness_port` в `contract/conftest.py`): версионированный результат, детерминизм, health.
 

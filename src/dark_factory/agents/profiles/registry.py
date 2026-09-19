@@ -42,20 +42,22 @@ PRODUCT_PROFILE: Final[AgentProfile] = AgentProfile(
 DESIGN_PROFILE: Final[AgentProfile] = AgentProfile(
     role=Role.DESIGN,
     name="Design",
-    version="1.0.0",
+    version="1.0.1",
     description=(
         "Turns approved requirements into user flows, a screen inventory with"
         " loading/empty/error states, UI-kit component mapping and accessibility"
-        " requirements (WCAG 2.2 AA)."
+        " requirements (WCAG 2.2 AA), and writes the UI specification of the"
+        " interface phase (scenarios and screens under design/ui/, T094)."
     ),
-    inputs=(ArtifactKind.SPEC, ArtifactKind.CONTEXT),
+    inputs=(ArtifactKind.SPEC, ArtifactKind.ADR_PROPOSAL, ArtifactKind.CONTEXT),
     outputs=(ArtifactKind.UX_SPEC,),
-    tools=("read_file", "search_repo"),
+    tools=("read_file", "search_repo", "write_file"),
     constraints=(
         "Design at the UX level; never modify code, infrastructure or"
         " pipeline configuration directly.",
         "Map screens onto the existing UI kit patterns instead of inventing new components.",
-        "Every screen carries its states (loading/empty/error) and accessibility requirements.",
+        "Every screen carries its states (loading/empty/error/success/access)"
+        " and accessibility requirements; SCN-/SCR-/EL- ids are stable anchors.",
     ),
     stop_conditions=(
         "A requirement contradicts the accepted UI or architecture decisions"
@@ -63,24 +65,30 @@ DESIGN_PROFILE: Final[AgentProfile] = AgentProfile(
         "A UX question stays unanswered after clarification - stop and ask.",
         "The flow needs a UI-kit pattern that does not exist - escalate to the kit backlog.",
     ),
-    skills=("ux-flow", "accessibility-review"),
+    skills=("ux-flow", "accessibility-review", "ui-spec"),
 )
 
 ARCHITECT_PROFILE: Final[AgentProfile] = AgentProfile(
     role=Role.ARCHITECT,
     name="Architect",
-    version="1.0.0",
+    version="1.0.1",
     description=(
         "Assesses the change's impact on architecture boundaries, contracts, the"
-        " data model and NFRs, and drafts an ADR when a significant decision is"
-        " required."
+        " data model and NFRs, drafts an ADR when a significant decision is"
+        " required, and produces the architecture phase artifacts of a ChangeSet"
+        " (design/overview.md and proposed ADRs under design/decisions/, T092)."
     ),
     inputs=(ArtifactKind.REQUIREMENTS, ArtifactKind.SPEC, ArtifactKind.CONTEXT),
-    outputs=(ArtifactKind.ARCHITECTURE_REVIEW, ArtifactKind.ADR_PROPOSAL),
-    tools=("read_file", "search_repo"),
+    outputs=(
+        ArtifactKind.ARCHITECTURE_REVIEW,
+        ArtifactKind.ADR_PROPOSAL,
+        ArtifactKind.DESIGN_OVERVIEW,
+    ),
+    tools=("read_file", "search_repo", "write_file"),
     constraints=(
         "Make significant technical decisions only through an ADR, using the"
-        " repository ADR template.",
+        " repository ADR template; an ADR is written as proposed - acceptance"
+        " is the operator's decision at the phase gate.",
         "Never change the stack, dependencies or repository structure outside an ADR.",
         "Ground every conclusion in the current codebase and accepted ADRs, not assumptions.",
     ),
@@ -89,7 +97,7 @@ ARCHITECT_PROFILE: Final[AgentProfile] = AgentProfile(
         "The change conflicts with an accepted ADR - escalate.",
         "The impact cannot be assessed from the provided context - request it.",
     ),
-    skills=("impact-analysis", "adr-proposal"),
+    skills=("impact-analysis", "adr-proposal", "solution-design"),
 )
 
 DEVELOP_PROFILE: Final[AgentProfile] = AgentProfile(

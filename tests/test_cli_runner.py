@@ -18,7 +18,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import dark_factory.cli._common as cli_common
 import dark_factory.cli.runner as runner_module
-from dark_factory.changes.enums import Provider, Role, Route, RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import (
+    Phase,
+    Provider,
+    Role,
+    Route,
+    RunStatus,
+    Stage,
+    StageStatus,
+)
 from dark_factory.changes.implementation_contract import (
     ContractApproval,
     ImplementationContract,
@@ -182,10 +190,19 @@ def _stub(monkeypatch: pytest.MonkeyPatch, outcome: RunAdvanceOutcome) -> None:
 def _stub_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
     """The M2 discussion seams (T080/T081) are store-backed; the stubbed store has none."""
     monkeypatch.setattr(
-        runner_module, "load_conversation_inputs", lambda session, change_id, stage: None
+        runner_module,
+        "load_conversation_inputs",
+        lambda session, change_id, stage, phase=None: None,
     )
     monkeypatch.setattr(
-        runner_module, "with_store_facts", lambda gate_facts, session, change_id: gate_facts
+        runner_module,
+        "current_change_phase",
+        lambda session, change, run, artifacts: Phase.REQUIREMENTS,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "with_store_facts",
+        lambda gate_facts, session, change_id, artifacts=None: gate_facts,
     )
     monkeypatch.setattr(
         runner_module, "record_stage_outcome", lambda session, advance, change_id: None
@@ -285,6 +302,50 @@ def test_run_advance_hands_the_gate_facts_to_the_driver(monkeypatch: pytest.Monk
 
     assert code == EXIT_WAITING
     assert seen["gate_facts"] is facts
+
+
+def test_run_advance_binds_the_repository_to_the_phase_and_facts_seams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M3 (ADR-039): the product repository port is what lets the advance read
+    # the phase revisions — the round of the specification stage and the
+    # revision a decision is current at. On the M3 live run the port reached
+    # ``run_advance_command`` but was dropped on the way to the session, so the
+    # driver saw no artifacts, read the requirements approval as stale and ran a
+    # second ``product`` round instead of the architect's.
+    repository = object()
+    built: list[object] = []
+    seen: dict[str, Any] = {}
+
+    class RecordingArtifacts:
+        def __init__(self, port: object) -> None:
+            built.append(port)
+
+    def _phase(session: Any, change: Any, run: Any, artifacts: Any) -> Phase:
+        seen["phase_artifacts"] = artifacts
+        return Phase.REQUIREMENTS
+
+    def _facts(gate_facts: Any, session: Any, change_id: str, artifacts: Any = None) -> Any:
+        seen["facts_artifacts"] = artifacts
+        return gate_facts
+
+    _stub(monkeypatch, RunAdvanceOutcome.WAITING)
+    monkeypatch.setattr(runner_module, "ArtifactService", RecordingArtifacts)
+    monkeypatch.setattr(runner_module, "current_change_phase", _phase)
+    monkeypatch.setattr(runner_module, "with_store_facts", _facts)
+
+    code = runner_module.run_advance_command(
+        RunAdvanceArgs(change_id=CHANGE_ID, run_id=None, json_output=False),
+        session_factory=_factory(),
+        owner_id="test-owner",
+        repository=cast(Any, repository),
+    )
+
+    assert code == EXIT_WAITING
+    assert built == [repository], "the artifact service is built over the given port"
+    assert isinstance(seen["facts_artifacts"], RecordingArtifacts)
+    if "phase_artifacts" in seen:
+        assert isinstance(seen["phase_artifacts"], RecordingArtifacts)
 
 
 # --- exit codes -----------------------------------------------------------

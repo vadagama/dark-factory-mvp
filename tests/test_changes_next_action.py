@@ -12,6 +12,7 @@ import pytest
 from dark_factory.changes.enums import (
     ChangeRequestStatus,
     Gate,
+    Phase,
     Provider,
     Role,
     Stage,
@@ -21,6 +22,7 @@ from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
     NextAction,
+    PhaseRoundAction,
     ReleaseAction,
     RequestApprovalAction,
     ReworkAction,
@@ -50,6 +52,8 @@ def _describe(action: NextAction) -> str:
             return "wait_for_ci"
         case ReworkAction():
             return "rework"
+        case PhaseRoundAction():
+            return "phase_round"
         case RequestApprovalAction():
             return "request_approval"
         case MergeAction():
@@ -67,6 +71,7 @@ CASES: list[tuple[NextAction, str]] = [
     (WaitForInputAction(reason="need input"), "wait_for_input"),
     (WaitForCIAction(reason="ci running"), "wait_for_ci"),
     (ReworkAction(round=1, max_rounds=3, reason="findings"), "rework"),
+    (PhaseRoundAction(phase=Phase.ARCHITECTURE, reason="requirements approved"), "phase_round"),
     (RequestApprovalAction(gate=Gate.RELEASE, requested_from=Role.OPERATION), "request_approval"),
     (MergeAction(change_request=_change_request()), "merge"),
     (ReleaseAction(), "release"),

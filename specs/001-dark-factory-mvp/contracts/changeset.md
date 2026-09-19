@@ -1,6 +1,6 @@
 # Contract: ChangeSet artifacts
 
-**Feature**: `001-dark-factory-mvp` | **Date**: 2026-09-13 | **Updated**: 2026-09-14 | **Plan**: [`../plan.md`](../plan.md) | **ADR**: ADR-020
+**Feature**: `001-dark-factory-mvp` | **Date**: 2026-09-13 | **Updated**: 2026-09-19 | **Plan**: [`../plan.md`](../plan.md) | **ADR**: ADR-020, ADR-039
 
 Каноническая SDD-модель — Native SDD Core (ADR-020, полная спецификация — [`docs/sdd-native-core.md`](../../../docs/sdd-native-core.md)). Каждая разработка — ChangeSet со стабильным ID и цепочкой `Intent → Spec → Design → Tasks → Verification → Evidence → Reconciliation`; артефакты ChangeSet — `.factory/changes/<year>/<CHG-NNNN-slug>/`, канонический Product Baseline — `.factory/product/`. ChangeSet содержит дельту (`add/modify/supersede/retire`) относительно baseline и **не принимает решение о прохождении гейта**: гейт T-021 работает поверх нормализованного контракта ChangeSet и фиксирует `GateDecision` (ADR-020).
 
@@ -18,7 +18,15 @@
 │   ├── scenarios/       # сценарии
 │   ├── acceptance/      # критерии приёмки (если отдельные узлы)
 │   └── constraints/     # ограничения
-├── design/              # целевое решение: overview, architecture, decisions, data, ui, deployment
+├── design/              # целевое решение (фазы «Архитектура» и «Интерфейс», ADR-039)
+│   ├── overview.md      # обзор архитектуры: frontmatter `ui: required | not_required` + `ui_reason`; тело — обзор с mermaid-схемой, компоненты, ссылки на ADR
+│   ├── decisions/
+│   │   └── ADR-NNN-<slug>.md   # решение: frontmatter `status: proposed`, `impact: [...]`; секции Контекст / Решение / Обоснование / Альтернативы / Последствия
+│   └── ui/
+│       ├── scenarios/
+│       │   └── SCN-NNN-<slug>.md   # сценарий: `steps[{id: S<n>, text, screen: SCR-…}]`
+│       └── screens/
+│           └── SCR-NNN-<slug>.md   # экран: `route`, `preview_url`, `states{loading, empty, error, success, access}`, `elements[{id: EL-…, kind, label, component}]`, `transitions[{to, trigger, condition}]`
 ├── contracts/           # openapi / asyncapi / schemas (если изменение затрагивает контракты)
 ├── tasks/
 │   ├── graph.yaml       # канонический TaskGraph: зависимости, repository, satisfies
@@ -46,6 +54,17 @@
 ## YAML frontmatter
 
 Все самостоятельно адресуемые SDD-артефакты (requirement, scenario, constraint, design-узел, ADR и т.п.) имеют YAML frontmatter (`schema`, `id`, `type`, `title`, `product`, `status`, `change`, при необходимости `owner`, `relations`) и становятся узлами OKF-графа. Generated views (`tasks.md`, собранная спека) и вспомогательная документация могут его не иметь (ADR-020 §7–8).
+
+### Узлы фазы проектирования (M3, ADR-039 п.6/п.8/п.10)
+
+| Узел | `schema` / `type` | Ключи frontmatter и тело |
+|---|---|---|
+| `design/overview.md` | `dark-factory.dev/design/v1` / `design` | общие (`id: design:<product>:<slug>`, `title`, `product`, `status`, `change`) + `ui: required \| not_required` — предложение архитектора о фазе UI; `ui_reason` — основание (обязательно при `not_required`). Пропуск фазы подтверждает оператор решением `waived`; файл при этом не меняется |
+| `design/decisions/ADR-NNN-<slug>.md` | `dark-factory.dev/adr/v1` / `adr` | общие (`id: adr:<product>:NNNN`) + `impact: [<область>, …]`; агент пишет `status: proposed`; `superseded` читается из frontmatter, `accepted`/`needs_revision` — производные статусы карточки, в git не пишутся. Тело: `## Контекст`, `## Решение`, `## Обоснование`, `## Альтернативы` (таблица `Вариант / Плюсы / Минусы / Почему не выбран` или подразделы `###`), `## Последствия`; английские заголовки допустимы |
+| `design/ui/scenarios/SCN-NNN-<slug>.md` | `dark-factory.dev/ui-scenario/v1` / `ui_scenario` | `id: SCN-NNN`, общие + `steps: [{id: S<n>, text, screen?: SCR-NNN}]`; тело — описание сценария |
+| `design/ui/screens/SCR-NNN-<slug>.md` | `dark-factory.dev/ui-screen/v1` / `ui_screen` | `id: SCR-NNN`, общие + `route?`, `preview_url?` (абсолютный — как есть, относительный — к `dev_url` baseline), `states: {loading, empty, error, success, access}` (необъявленное состояние показывается как «не описано»), `elements: [{id: EL-<slug>, kind, label, component}]` (компонент UIKit), `transitions: [{to: SCR-NNN, trigger, condition?}]`; тело — назначение экрана |
+
+Идентификаторы `SCN-NNN`, `SCR-NNN`, `EL-<slug>` и шаги `S<n>` — стабильные якоря замечаний и вопросов (ADR-034 п.1): `context/artifacts.py: anchors_of` находит их и во frontmatter, и в теле; потерянный якорь — `anchor_state: detached`. Шаблоны узлов — `packs/product-baseline/changeset/design/**`.
 
 ## Нормализованный контракт для гейта (T-021)
 

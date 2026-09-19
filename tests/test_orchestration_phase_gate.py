@@ -13,7 +13,9 @@ from dark_factory.changes import (
     Phase,
     Question,
     ReworkOrder,
+    Route,
 )
+from dark_factory.context.design import UiRequirement
 from dark_factory.orchestration.phase_gate import PHASE_GATE, gate_of_phase, phase_gate
 
 NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
@@ -149,3 +151,98 @@ def test_approvals_are_version_bound_and_stale_after_a_new_revision() -> None:
 def test_a_phase_without_a_gate_is_never_available_nor_skippable() -> None:
     gate = phase_gate(change_id="chg", phase=Phase.INITIATIVE, current_revision="r1")
     assert not gate.available and not gate.skippable and gate.gate is None
+
+
+# --- M3: phase-bound decisions, the interface phase and its honest checks (ADR-039, T097) ---
+
+
+def _phase_decision(
+    phase: Phase, sha: str | None, outcome: DecisionOutcome = DecisionOutcome.APPROVED
+) -> Decision:
+    gate = Gate.UI if phase is Phase.INTERFACE else Gate.SPECIFICATION
+    return Decision(
+        id=f"dec-{phase.value}-{outcome.value}-{sha}",
+        gate=gate,
+        outcome=outcome,
+        decided_by=DecisionSource.HUMAN,
+        decided_at=NOW,
+        commit_sha=sha,
+        comment="backend-only" if outcome is DecisionOutcome.WAIVED else None,
+        phase=phase,
+    )
+
+
+def test_architecture_and_requirements_share_the_gate_but_not_the_decisions() -> None:
+    decisions = [
+        _phase_decision(Phase.REQUIREMENTS, "s1"),
+        _phase_decision(Phase.ARCHITECTURE, "d1"),
+        _decision(DecisionOutcome.APPROVED, "s1"),  # legacy: phase None → requirements
+    ]
+    requirements = phase_gate(
+        change_id="chg", phase=Phase.REQUIREMENTS, decisions=decisions, current_revision="s1"
+    )
+    assert requirements.approved
+    assert [a.decision_id for a in requirements.approvals] == [
+        "dec-requirements-approved-s1",
+        "dec-approved-s1",
+    ], "the legacy decision reads as the phase of its gate; the architecture one is not here"
+    architecture = phase_gate(
+        change_id="chg", phase=Phase.ARCHITECTURE, decisions=decisions, current_revision="d1"
+    )
+    assert architecture.approved and len(architecture.approvals) == 1
+    stale = phase_gate(
+        change_id="chg", phase=Phase.ARCHITECTURE, decisions=decisions, current_revision="d2"
+    )
+    assert not stale.approved and stale.approvals[0].state == "stale"
+
+
+def test_the_interface_phase_is_not_required_on_the_quick_route() -> None:
+    gate = phase_gate(
+        change_id="chg", phase=Phase.INTERFACE, current_revision=None, route=Route.QUICK
+    )
+    assert not gate.available and not gate.skippable
+    assert gate.ui_requirement is not None
+    assert gate.ui_requirement.required is False and gate.ui_requirement.source == "route"
+    assert "не требуется" in gate.reasons[0].what.lower()
+    assert [c.status for c in gate.checks] == ["not_required", "not_required"]
+
+
+def test_the_interface_phase_plans_its_checks_and_never_shows_them_green() -> None:
+    gate = phase_gate(
+        change_id="chg", phase=Phase.INTERFACE, current_revision="u1", route=Route.STANDARD
+    )
+    assert gate.available
+    assert gate.ui_requirement == UiRequirement(required=True, source="default", reason=None)
+    assert [(c.id, c.status) for c in gate.checks] == [
+        ("axe", "planned"),
+        ("visual_regression", "planned"),
+    ]
+    assert all("исполнении" in c.note for c in gate.checks)
+
+
+def test_the_architect_proposes_no_ui_and_the_operator_confirms_the_skip() -> None:
+    proposal = UiRequirement(required=False, source="agent", reason="backend-only change")
+    gate = phase_gate(
+        change_id="chg",
+        phase=Phase.INTERFACE,
+        current_revision=None,
+        route=Route.STANDARD,
+        ui_requirement=proposal,
+    )
+    assert not gate.available and gate.skippable
+    assert gate.ui_requirement == proposal
+    assert "backend-only change" in gate.reasons[0].what
+    assert "--waive" in gate.reasons[0].how and '"waived"' in gate.reasons[0].how
+    assert [c.status for c in gate.checks] == ["not_required", "not_required"]
+    waived = phase_gate(
+        change_id="chg",
+        phase=Phase.INTERFACE,
+        decisions=[_phase_decision(Phase.INTERFACE, None, DecisionOutcome.WAIVED)],
+        current_revision=None,
+        route=Route.STANDARD,
+        ui_requirement=proposal,
+    )
+    assert waived.waived and not waived.approved
+    assert waived.ui_requirement is not None and waived.ui_requirement.source == "operator"
+    assert waived.ui_requirement.reason == "backend-only"
+    assert waived.reasons == (), "a waived phase has nothing left to unblock"

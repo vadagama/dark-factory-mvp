@@ -17,12 +17,14 @@ import type {
   CiStages,
   CommentView,
   Decision,
+  DecisionsView,
   Evidence,
   Finding,
   GateResult,
   Guidance,
   IntakeBrief,
   PhaseGate,
+  PhasesProjection,
   Product,
   ProductValidationView,
   Question,
@@ -31,6 +33,7 @@ import type {
   RunSummary,
   RunTrace,
   StageSummary,
+  UiSpecView,
   UsageAggregate,
 } from "../api/types";
 
@@ -300,6 +303,7 @@ export const decision: Decision = {
   commit_sha: "abc1234def",
   comment: "ok",
   evidence_ids: [],
+  phase: null,
 };
 
 export const evidenceItem: Evidence = {
@@ -643,6 +647,7 @@ export const reworkOrderDone: ReworkOrder = {
   escalation_reason: null,
   created_at: "2026-09-04T13:00:00Z",
   updated_at: "2026-09-05T09:00:00Z",
+  decision_ids: [],
 };
 
 export const reworkOrderPending: ReworkOrder = {
@@ -675,7 +680,7 @@ export const phaseGateClosed: PhaseGate = {
   approved: false,
   skippable: true,
   approvals: [
-    { decision_id: "dec_stale_001", outcome: "approved", revision: OLD_REVISION, state: "stale", comment: "первая версия" },
+    { decision_id: "dec_stale_001", outcome: "approved", revision: OLD_REVISION, state: "stale", comment: "первая версия", phase: "requirements" },
   ],
   blocking_questions: 2,
   open_questions: 4,
@@ -687,6 +692,9 @@ export const phaseGateClosed: PhaseGate = {
   rework_in_progress: false,
   rework_rounds_used: 1,
   rework_rounds_max: 3,
+  rework_orders_spent: 0,
+  ui_requirement: null,
+  checks: [],
 };
 
 export const phaseGateOpen: PhaseGate = {
@@ -758,4 +766,335 @@ export const changeGuidanceRequirementsOpen: Guidance = {
   },
   blockers: [],
   after: "После согласования: фаза «Архитектура».",
+};
+
+// -- M3: phases projection, decisions overview, UI spec, UI gate (T093–T098) --
+
+export const DESIGN_OVERVIEW_PATH = ".factory/changes/2026/CHG-0001-health/design/overview.md";
+export const ADR_001_PATH = ".factory/changes/2026/CHG-0001-health/design/decisions/ADR-001-probe.md";
+export const ADR_002_PATH = ".factory/changes/2026/CHG-0001-health/design/decisions/ADR-002-cache.md";
+export const SCENARIO_PATH = ".factory/changes/2026/CHG-0001-health/design/ui/scenarios/SCN-001-check-health.md";
+export const SCREEN_STATUS_PATH = ".factory/changes/2026/CHG-0001-health/design/ui/screens/SCR-001-status.md";
+export const SCREEN_HISTORY_PATH = ".factory/changes/2026/CHG-0001-health/design/ui/screens/SCR-002-history.md";
+
+export const DESIGN_OVERVIEW_CONTENT = `---
+schema: dark-factory.dev/design/v1
+id: design:prd_demo_001:health
+type: design
+title: Health endpoint design
+product: prd_demo_001
+status: proposed
+change: chg_demo_001
+ui: required
+---
+## Обзор
+
+Проверка живости живёт в отдельном модуле рядом с API.
+
+\`\`\`mermaid
+flowchart LR
+  Client --> API
+  API --> HealthProbe
+\`\`\`
+
+## Решения
+
+- ADR-001 — probe module
+`;
+
+export const designOverviewDocument: ArtifactDocumentView = {
+  path: DESIGN_OVERVIEW_PATH,
+  kind: "design",
+  revision: HEAD_REVISION,
+  content: DESIGN_OVERVIEW_CONTENT,
+  properties: {
+    values: { schema: "dark-factory.dev/design/v1", id: "design:prd_demo_001:health", type: "design", title: "Health endpoint design", status: "proposed", ui: "required" },
+    protected: ["schema", "id", "type", "product", "change"],
+  },
+  body: DESIGN_OVERVIEW_CONTENT.slice(DESIGN_OVERVIEW_CONTENT.indexOf("## Обзор")),
+  anchors: ["design:prd_demo_001:health", "обзор", "решения", "ADR-001"],
+  frontmatter_error: null,
+  draft: null,
+  viewed: false,
+  open_comments: 0,
+  open_questions: 0,
+};
+
+/** The tree of the architecture phase: specs, the design overview and two ADRs. */
+export const artifactTreeDesign: ArtifactTreeView = {
+  ...artifactTree,
+  nodes: [
+    ...artifactTree.nodes.filter((node) => node.kind === "spec"),
+    { path: DESIGN_OVERVIEW_PATH, kind: "design", revision: HEAD_REVISION },
+    { path: ADR_001_PATH, kind: "adr", revision: HEAD_REVISION },
+    { path: ADR_002_PATH, kind: "adr", revision: HEAD_REVISION },
+  ],
+};
+
+export const alternativeOrderPending: ReworkOrder = {
+  ...reworkOrderPending,
+  id: "rw_alt_003",
+  phase: "architecture",
+  revisions: { [ADR_002_PATH]: HEAD_REVISION },
+  comment_ids: [],
+  question_ids: [],
+  instruction: "Рассмотреть кеш в памяти процесса вместо Redis.",
+  decision_ids: ["adr:prd_demo_001:0002"],
+};
+
+export const alternativeOrderDone: ReworkOrder = {
+  ...reworkOrderDone,
+  id: "rw_alt_002",
+  phase: "architecture",
+  revisions: { [ADR_001_PATH]: OLD_REVISION },
+  comment_ids: [],
+  instruction: "Не тянуть зависимость на probe-библиотеку.",
+  summary: { changed: ["ADR-001: probe реализуется без внешней библиотеки"], remaining: [], addressed_comment_ids: [] },
+  decision_ids: ["adr:prd_demo_001:0001"],
+};
+
+export const decisionsView: DecisionsView = {
+  change_id: "chg_demo_001",
+  revision: HEAD_REVISION,
+  approved: false,
+  decisions: [
+    {
+      id: "adr:prd_demo_001:0001",
+      path: ADR_001_PATH,
+      title: "Probe as a separate module",
+      status: "proposed",
+      document_status: "proposed",
+      revision: HEAD_REVISION,
+      proposal: "Вынести проверку живости в модуль `health` с одним обработчиком.",
+      rationale: "Изолирует зависимости probe от бизнес-логики.",
+      consequences: "Появляется отдельный модуль; тесты probe не трогают API.",
+      alternatives: [
+        { title: "Обработчик внутри API-модуля", summary: "Одна функция рядом с остальными маршрутами", rejected_because: "смешивает инфраструктурный код с доменным" },
+        { title: "Внешняя probe-библиотека", summary: null, rejected_because: "новая зависимость запрещена брифом" },
+      ],
+      impact: ["public_api"],
+      pending_alternative: null,
+      affected_artifacts: [ADR_001_PATH, DESIGN_OVERVIEW_PATH],
+    },
+    {
+      id: "adr:prd_demo_001:0002",
+      path: ADR_002_PATH,
+      title: "Cache dependency checks in Redis",
+      status: "needs_revision",
+      document_status: "proposed",
+      revision: HEAD_REVISION,
+      proposal: "Кешировать результат проверки зависимостей в Redis на 5 секунд.",
+      rationale: "Снижает нагрузку на зависимости при частых probe.",
+      consequences: null,
+      alternatives: [],
+      impact: ["data_schema", "architecture_boundary"],
+      pending_alternative: alternativeOrderPending,
+      affected_artifacts: [],
+    },
+  ],
+  errors: ["design/decisions/ADR-003-broken.md: frontmatter is not valid YAML"],
+};
+
+export const uiSpecView: UiSpecView = {
+  change_id: "chg_demo_001",
+  revision: HEAD_REVISION,
+  dev_url: "https://dev.example.test",
+  scenarios: [
+    {
+      id: "SCN-001",
+      path: SCENARIO_PATH,
+      title: "Оператор проверяет живость",
+      summary: "Открывает статус и видит результат probe.",
+      steps: [
+        { id: "S1", text: "Открыть страницу статуса", screen: "SCR-001" },
+        { id: "S2", text: "Посмотреть историю проверок", screen: "SCR-002" },
+        { id: "S3", text: "Закрыть страницу", screen: null },
+      ],
+      screens: ["SCR-001", "SCR-002"],
+    },
+  ],
+  screens: [
+    {
+      id: "SCR-001",
+      path: SCREEN_STATUS_PATH,
+      title: "Статус сервиса",
+      purpose: "Показывает результат последней проверки.",
+      route: "/status",
+      preview_url: "/status",
+      states: [
+        { kind: "loading", description: "Скелет карточки статуса" },
+        { kind: "empty", description: "Проверок ещё не было" },
+        { kind: "error", description: "Probe недоступен — красная плашка" },
+        { kind: "success", description: "Зелёная карточка с временем ответа" },
+        { kind: "access", description: "Доступно всем авторизованным" },
+      ],
+      elements: [
+        { id: "EL-status-badge", kind: "text", label: "Статус", component: "Badge" },
+        { id: "EL-refresh", kind: "button", label: "Обновить", component: "Button" },
+      ],
+      components: ["Badge", "Button"],
+    },
+    {
+      id: "SCR-002",
+      path: SCREEN_HISTORY_PATH,
+      title: "История проверок",
+      purpose: null,
+      route: "/status/history",
+      preview_url: null,
+      states: [
+        { kind: "loading", description: "Скелет таблицы" },
+        { kind: "success", description: "Таблица последних 50 проверок" },
+        { kind: "access", description: null },
+      ],
+      elements: [{ id: "EL-history-table", kind: "list", label: "Таблица проверок", component: "Table" }],
+      components: ["Table"],
+    },
+  ],
+  links: [{ id: "SCR-001->SCR-002", from_screen: "SCR-001", to_screen: "SCR-002", trigger: "клик «История»", condition: "есть хотя бы одна проверка" }],
+  components: [
+    { name: "Badge", screens: ["SCR-001"] },
+    { name: "Button", screens: ["SCR-001"] },
+    { name: "Table", screens: ["SCR-002"] },
+  ],
+  errors: [],
+};
+
+/** A detached remark on an element that disappeared from SCR-001 (ADR-034 p.1). */
+export const commentElementDetached: CommentView = {
+  ...commentOpen,
+  id: "cmt_el_detached_004",
+  phase: "interface",
+  anchor: { artifact: SCREEN_STATUS_PATH, anchor_id: "EL-old-spinner", revision: OLD_REVISION },
+  body: "Спиннер не нужен — хватит скелета.",
+  anchor_state: "detached",
+};
+
+export const commentElementOpen: CommentView = {
+  ...commentOpen,
+  id: "cmt_el_open_005",
+  phase: "interface",
+  anchor: { artifact: SCREEN_STATUS_PATH, anchor_id: "EL-refresh", revision: HEAD_REVISION },
+  body: "Кнопку «Обновить» — второстепенной.",
+};
+
+/** The interface gate of a change that needs a UI: axe/visual regression are planned, never green (T097). */
+export const phaseGateInterface: PhaseGate = {
+  ...phaseGateClosed,
+  phase: "interface",
+  gate: "ui",
+  available: true,
+  reasons: [],
+  approvals: [],
+  blocking_questions: 0,
+  open_questions: 0,
+  answered_questions: 0,
+  open_comments: 1,
+  addressed_comments: 0,
+  detached_comments: 1,
+  rework_rounds_used: 0,
+  ui_requirement: { required: true, source: "agent", reason: "Экран статуса виден оператору" },
+  checks: [
+    { id: "axe", label: "Доступность (axe)", status: "planned", note: "Запускается на dev-окружении после доставки" },
+    { id: "visual_regression", label: "Визуальная регрессия", status: "planned", note: "Снимки сравниваются на исполнении" },
+  ],
+};
+
+/** Backend-only change: the architect proposed `ui: not_required`; the operator confirms with `waived`. */
+export const phaseGateInterfaceBackendOnly: PhaseGate = {
+  ...phaseGateInterface,
+  open_comments: 0,
+  detached_comments: 0,
+  ui_requirement: { required: false, source: "agent", reason: "Изменение только серверное: /health не имеет экрана" },
+  checks: [
+    { id: "axe", label: "Доступность (axe)", status: "not_required", note: "UI не требуется" },
+    { id: "visual_regression", label: "Визуальная регрессия", status: "not_required", note: "UI не требуется" },
+  ],
+};
+
+export const phaseGateArchitecture: PhaseGate = {
+  ...phaseGateClosed,
+  phase: "architecture",
+  gate: "specification",
+  available: true,
+  reasons: [],
+  approvals: [],
+  blocking_questions: 0,
+  open_questions: 0,
+  answered_questions: 0,
+  open_comments: 0,
+  addressed_comments: 0,
+  detached_comments: 0,
+  rework_rounds_used: 1,
+};
+
+/** `GET /changes/{id}/phases` while the requirements phase is active (T098). */
+export const phasesProjection: PhasesProjection = {
+  change_id: "chg_demo_001",
+  current: "requirements",
+  phases: [
+    { phase: "initiative", index: 0, label: "Инициатива", stage: null, gate: null, state: "done", state_reason: "Бриф готов", revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+    { phase: "requirements", index: 1, label: "Требования", stage: "specification", gate: "specification", state: "active", state_reason: "Блокирующих вопросов без ответа: 2", revision: HEAD_REVISION, approved_revision: null, open_questions: 4, blocking_questions: 2, open_comments: 2, iteration: 1 },
+    { phase: "architecture", index: 2, label: "Архитектура", stage: "specification", gate: "specification", state: "pending", state_reason: null, revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+    { phase: "interface", index: 3, label: "Интерфейс", stage: "specification", gate: "ui", state: "pending", state_reason: null, revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+    { phase: "plan", index: 4, label: "План", stage: "planning", gate: "planning", state: "pending", state_reason: null, revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+    { phase: "execution", index: 5, label: "Исполнение", stage: "construction", gate: "code", state: "pending", state_reason: null, revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+    { phase: "demonstration", index: 6, label: "Демонстрация", stage: "review_verification", gate: "verification", state: "pending", state_reason: null, revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+    { phase: "delivery", index: 7, label: "Доставка", stage: "release", gate: "release", state: "pending", state_reason: null, revision: null, approved_revision: null, open_questions: 0, blocking_questions: 0, open_comments: 0, iteration: 0 },
+  ],
+};
+
+/** The architecture phase waits for a decision; requirements were approved; interface is not required (quick route). */
+export const phasesProjectionArchitecture: PhasesProjection = {
+  ...phasesProjection,
+  current: "architecture",
+  phases: phasesProjection.phases.map((view) => {
+    if (view.phase === "requirements") {
+      return { ...view, state: "approved", state_reason: `Согласовано на ревизии ${HEAD_REVISION}`, approved_revision: HEAD_REVISION, open_questions: 0, blocking_questions: 0, open_comments: 0 };
+    }
+    if (view.phase === "architecture") {
+      return { ...view, state: "needs_decision", state_reason: "Гейт открыт: решение оператора", revision: HEAD_REVISION, iteration: 1 };
+    }
+    if (view.phase === "interface") {
+      return { ...view, state: "not_required", state_reason: "Маршрут quick не требует UI" };
+    }
+    return view;
+  }),
+};
+
+export const changeGuidanceArchitecture: Guidance = {
+  schema_version: 1,
+  subject: { kind: "change", id: "chg_demo_001" },
+  phase: "architecture",
+  headline: "Фаза «Архитектура» готова к согласованию",
+  why: "Архитектор оформил обзор и 2 решения; открытых вопросов нет.",
+  primary: {
+    label: "Согласовать архитектуру",
+    cli: "factory change approve --id chg_demo_001 --phase architecture",
+    api: "POST /changes/chg_demo_001/approvals",
+    enabled: true,
+    reason: null,
+  },
+  secondary: [
+    { label: "Запросить альтернативу", cli: "factory change alternative --id chg_demo_001 --decision <adr id> --instruction …", api: "POST /changes/chg_demo_001/decisions/{decision_id}/alternative", enabled: true, reason: null },
+  ],
+  blockers: [],
+  after: "После согласования: фаза «Интерфейс».",
+};
+
+export const changeGuidanceInterfaceBackendOnly: Guidance = {
+  schema_version: 1,
+  subject: { kind: "change", id: "chg_demo_001" },
+  phase: "interface",
+  headline: "Фаза «Интерфейс»: UI не требуется — подтвердите пропуск",
+  why: "Архитектор предложил ui: not_required; пропуск фиксируется решением waived с основанием.",
+  primary: {
+    label: "Подтвердить пропуск UI",
+    cli: "factory change approve --id chg_demo_001 --phase interface --waive --comment \"Изменение только серверное\"",
+    api: "POST /changes/chg_demo_001/approvals",
+    enabled: true,
+    reason: null,
+  },
+  secondary: [],
+  blockers: [],
+  after: "После пропуска: фаза «План».",
 };

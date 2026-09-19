@@ -127,17 +127,34 @@ class StageResultRepository:
         """
         return self.record_outcome(result) is not RecordOutcome.REPLAYED
 
-    def get(self, run_id: str, stage: Stage, attempt_number: int) -> StageResult | None:
-        """One attempt of a stage of a run (the earliest produced when ambiguous)."""
+    def get(
+        self,
+        run_id: str,
+        stage: Stage,
+        attempt_number: int,
+        *,
+        input_revision: str | None = None,
+    ) -> StageResult | None:
+        """One attempt of a stage of a run.
+
+        ``input_revision`` names the logical operation (ADR-006 p.3): a rework
+        round or a phase round of the same stage is another operation whose
+        attempts start at 1 again, so ``(run, stage, attempt)`` alone is
+        ambiguous — without the revision the earliest produced result won
+        and the driver mistook the second round's waiting checkpoint for
+        absent, re-executing it (found on the M3 live run). With the revision
+        the lookup is exact; without it the earliest result stands (the
+        pre-M3 reading, for callers that hold no operation).
+        """
+        query = select(StageResultRow).where(
+            StageResultRow.run_id == run_id,
+            StageResultRow.stage == stage.value,
+            StageResultRow.attempt_number == attempt_number,
+        )
+        if input_revision is not None:
+            query = query.where(StageResultRow.input_revision == input_revision)
         row = self._session.execute(
-            select(StageResultRow)
-            .where(
-                StageResultRow.run_id == run_id,
-                StageResultRow.stage == stage.value,
-                StageResultRow.attempt_number == attempt_number,
-            )
-            .order_by(StageResultRow.produced_at)
-            .limit(1)
+            query.order_by(StageResultRow.produced_at).limit(1)
         ).scalar_one_or_none()
         return _result_from_row(row) if row is not None else None
 

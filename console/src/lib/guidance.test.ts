@@ -29,6 +29,47 @@ describe("parseGuidanceApi", () => {
     expect(parseGuidanceApi("GET /changes/chg-1/artifacts", change)).toEqual({ kind: "open_artifacts", changeId: "chg-1" });
   });
 
+  it("maps the M3 intents: approve with the phase of the CLI hint, waive UI, request an alternative", () => {
+    expect(
+      parseGuidanceApi("POST /changes/chg-1/approvals", change, {
+        cli: "factory change approve --id chg-1 --phase architecture",
+        label: "Согласовать архитектуру",
+      }),
+    ).toEqual({ kind: "approve_phase", changeId: "chg-1", phase: "architecture" });
+    expect(
+      parseGuidanceApi("POST /changes/chg-1/approvals", change, {
+        cli: "factory change approve --id chg-1 --phase interface",
+        label: "Согласовать интерфейс",
+      }),
+    ).toEqual({ kind: "approve_phase", changeId: "chg-1", phase: "interface" });
+    // Requirements keep the plain approval: the phase is not one the parser fixes.
+    expect(
+      parseGuidanceApi("POST /changes/chg-1/approvals", change, {
+        cli: "factory change approve --id chg-1 --phase requirements",
+        label: "Согласовать требования",
+      }),
+    ).toEqual({ kind: "approve_phase", changeId: "chg-1" });
+    expect(
+      parseGuidanceApi("POST /changes/chg-1/approvals", change, {
+        cli: "factory change approve --id chg-1 --phase interface --waive --comment …",
+        label: "Подтвердить пропуск UI",
+      }),
+    ).toEqual({ kind: "waive_phase", changeId: "chg-1", phase: "interface", gate: "ui" });
+    expect(parseGuidanceApi("POST /changes/chg-1/decisions/adr:prd:0002/alternative", change)).toEqual({
+      kind: "request_alternative",
+      changeId: "chg-1",
+      decisionId: "adr:prd:0002",
+    });
+    expect(
+      parseGuidanceApi("POST /changes/chg-1/approvals", change, { cli: null, label: "Запросить альтернативу" }),
+    ).toEqual({ kind: "request_alternative", changeId: "chg-1", decisionId: null });
+    // Hints never turn an unrelated api into an approval.
+    expect(parseGuidanceApi("GET /changes/chg-1/artifacts", change, { cli: "approve --phase architecture", label: "x" })).toEqual({
+      kind: "open_artifacts",
+      changeId: "chg-1",
+    });
+  });
+
   it("returns null for actions the Console does not perform yet (CLI is the way)", () => {
     expect(parseGuidanceApi("POST /runs/run-1/withdraw", change)).toBeNull();
     expect(parseGuidanceApi(null, change)).toBeNull();

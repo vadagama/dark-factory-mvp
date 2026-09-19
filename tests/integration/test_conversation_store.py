@@ -39,7 +39,7 @@ from tests.integration.conftest import alembic_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL_ENV = "DARK_FACTORY_TEST_DATABASE_URL"
-MIGRATION_HEAD = "0006_conversations"
+MIGRATION_HEAD = "0008_stage_created_at"
 MIGRATION_PARENT = "0005_products"
 NEW_TABLES = {"question", "comment", "rework_order", "artifact_draft", "artifact_view"}
 

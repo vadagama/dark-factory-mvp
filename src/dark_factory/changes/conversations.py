@@ -329,6 +329,10 @@ class ReworkOrder(BaseModel):
     question_ids: tuple[str, ...] = ()
     instruction: str | None = None
     """The operator's free-text instruction in addition to the comments."""
+    decision_ids: tuple[str, ...] = ()
+    """Architecture decisions (ADR ids) the order asks to reconsider — «Запросить
+    альтернативу» (T093, ADR-039). The refusal is about *these* decisions, not the phase;
+    the derived status of each named ADR becomes ``needs_revision`` while the order is open."""
     issued_by: str = Field(min_length=1)
     status: ReworkOrderStatus = ReworkOrderStatus.PENDING
     round: int | None = Field(default=None, ge=1)

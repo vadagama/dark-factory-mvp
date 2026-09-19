@@ -58,13 +58,18 @@ from dark_factory.cli.guidance import render_guidance_text
 from dark_factory.cli.main import (
     EXIT_OK,
     ArtifactAction,
+    ChangeAlternativeArgs,
     ChangeAnswerArgs,
     ChangeApproveArgs,
     ChangeArtifactsArgs,
     ChangeCommentArgs,
     ChangeCreateArgs,
+    ChangeDecisionsArgs,
+    ChangePhasesArgs,
     ChangeReworkArgs,
     ChangeStatusArgs,
+    ChangeUiArgs,
+    UiSection,
 )
 from dark_factory.orchestration.artifacts import (
     ArtifactConflictError,
@@ -72,8 +77,10 @@ from dark_factory.orchestration.artifacts import (
     ArtifactService,
 )
 from dark_factory.orchestration.conversations import apply_revision
-from dark_factory.orchestration.guidance import Guidance, phase_of_run
+from dark_factory.orchestration.decisions import DecisionsView
+from dark_factory.orchestration.guidance import Guidance
 from dark_factory.orchestration.phase_gate import PhaseGate, discussion_phase
+from dark_factory.orchestration.phases import PhasesProjection
 from dark_factory.orchestration.state.change_store import (
     APPROVAL_RECORD_ACTION,
     CHANGE_INTAKE_ACTION,
@@ -101,7 +108,11 @@ from dark_factory.orchestration.state.guidance import (
     build_change_guidance,
     build_phase_gate,
     latest_run,
+    waiting_on,
+    waiting_phase,
 )
+from dark_factory.orchestration.state.phases import build_phases, current_change_phase
+from dark_factory.orchestration.ui_spec import UiSpecView, build_ui_spec_view
 
 if TYPE_CHECKING:
     from dark_factory.ports import RepositoryPort
@@ -111,15 +122,20 @@ __all__ = [
     "brief_from_args",
     "new_change_id",
     "render_change_text",
+    "render_decisions_text",
     "render_discussion_text",
     "render_gate_text",
+    "render_ui_text",
+    "run_change_alternative_command",
     "run_change_answer_command",
     "run_change_approve_command",
     "run_change_artifacts_command",
     "run_change_comment_command",
     "run_change_create_command",
+    "run_change_decisions_command",
     "run_change_rework_command",
     "run_change_status_command",
+    "run_change_ui_command",
     "spend_limit_from_args",
 ]
 
@@ -227,6 +243,26 @@ def run_change_status_command(
     )
 
 
+def run_change_phases_command(
+    args: ChangePhasesArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change phases`` (T098, ADR-039): the eight phases and the current one.
+
+    The same projection the API serves as ``GET /changes/{id}/phases`` and the
+    Console renders in its left column; ``repository`` binds the phases to the
+    revisions of their artifacts.
+    """
+    return _with_store(
+        "change phases",
+        args.json_output,
+        session_factory,
+        lambda factory: _phases(factory, args, _artifacts_of(repository)),
+    )
+
+
 def _with_store(
     command: str,
     json_output: bool,
@@ -324,7 +360,9 @@ def _status(
             questions = conversation.list_questions(change.id)
             comments = conversation.list_comments(change.id)
             orders = conversation.list_rework_orders(change.id)
-            phase = discussion_phase(run, phase_of_run(run))
+            phase = discussion_phase(
+                run, current_change_phase(session, change, run=run, artifacts=artifacts)
+            )
             gate = build_phase_gate(session, change, phase=phase, run=run, artifacts=artifacts)
             guidance = build_change_guidance(session, change, artifacts=artifacts)
     except SQLAlchemyError:
@@ -353,7 +391,64 @@ def _status(
     return EXIT_OK
 
 
+def _phases(
+    factory: sessionmaker[Session], args: ChangePhasesArgs, artifacts: ArtifactService | None
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = ChangeRepository(session).get(args.change_id)
+            if change is None:
+                return report_invalid_input(
+                    "change phases",
+                    f"unknown change {args.change_id!r}",
+                    json_output=args.json_output,
+                )
+            run = latest_run(session, change.id)
+            projection = build_phases(
+                session,
+                change,
+                run=run,
+                artifacts=artifacts,
+                waiting_on=waiting_on(session, run),
+                waiting_phase=waiting_phase(session, run),
+            )
+            guidance = build_change_guidance(session, change, artifacts=artifacts)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change phases", json_output=args.json_output)
+    if args.json_output:
+        print(
+            json.dumps(
+                {
+                    "phases": projection.model_dump(mode="json"),
+                    "guidance": guidance.model_dump(mode="json"),
+                }
+            )
+        )
+    else:
+        print(render_phases_text(projection))
+        print(render_guidance_text(guidance))
+    return EXIT_OK
+
+
 # --- rendering --------------------------------------------------------------------------
+
+
+def render_phases_text(projection: PhasesProjection) -> str:
+    """The eight phases as a table: F-number, label, state, revision, counts, iteration (T098)."""
+    lines = [f"phases of {projection.change_id}: current={projection.current.value}"]
+    for view in projection.phases:
+        marker = "*" if view.phase is projection.current else " "
+        counts = (
+            f"q={view.open_questions}(!{view.blocking_questions})"
+            f" c={view.open_comments} iter={view.iteration}"
+        )
+        revision = view.revision[:12] if view.revision else "-"
+        reason = f" — {view.state_reason}" if view.state_reason else ""
+        lines.append(
+            f"{marker} F{view.index} {view.label:<24} {view.state.value:<14} rev={revision:<12}"
+            f" {counts}{reason}"
+        )
+    return "\n".join(lines)
 
 
 def render_discussion_text(
@@ -466,11 +561,18 @@ def _artifacts_of(repository: "RepositoryPort | None") -> ArtifactService | None
     return ArtifactService(repository) if repository is not None else None
 
 
-def _phase_for(session: Session, change: Change, requested: Phase | None) -> Phase:
+def _phase_for(
+    session: Session,
+    change: Change,
+    requested: Phase | None,
+    artifacts: ArtifactService | None = None,
+) -> Phase:
     if requested is not None:
         return requested
     run = latest_run(session, change.id)
-    return discussion_phase(run, phase_of_run(run))
+    return discussion_phase(
+        run, current_change_phase(session, change, run=run, artifacts=artifacts)
+    )
 
 
 def _cli_audit(session: Session, action: str, resource_type: str, resource_id: str) -> None:
@@ -642,7 +744,7 @@ def _comment(
             stored, _created = add_comment(
                 session,
                 change,
-                phase=_phase_for(session, change, args.phase),
+                phase=_phase_for(session, change, args.phase, artifacts),
                 artifact=args.artifact,
                 anchor_id=args.anchor_id,
                 body=args.body,
@@ -677,7 +779,7 @@ def _rework(
                 order, created = issue_rework_order(
                     session,
                     change,
-                    phase=_phase_for(session, change, args.phase),
+                    phase=_phase_for(session, change, args.phase, artifacts),
                     comment_ids=args.comment_ids,
                     question_ids=args.question_ids,
                     instruction=args.instruction,
@@ -717,7 +819,7 @@ def _approve(
                 decision, gate = record_phase_decision(
                     session,
                     change,
-                    phase=_phase_for(session, change, args.phase),
+                    phase=_phase_for(session, change, args.phase, artifacts),
                     outcome=DecisionOutcome.WAIVED if args.waive else DecisionOutcome.APPROVED,
                     subject_revision=args.revision,
                     comment=args.comment,
@@ -873,3 +975,241 @@ def _artifacts(
         return report_execution_error(command, str(error), json_output=args.json_output)
     except SQLAlchemyError:
         return report_state_store_unreachable(command, json_output=args.json_output)
+
+
+# --- decisions and UI spec (M3, T093/T094) ----------------------------------------------
+
+
+def run_change_decisions_command(
+    args: ChangeDecisionsArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change decisions`` (T093): the ADR cards with their derived status.
+
+    The same view ``GET /changes/{id}/decisions`` serves. Without the
+    repository seam the command refuses: a card the factory cannot read is
+    never shown (ADR-035 p.1).
+    """
+    if repository is None:
+        return report_invalid_input(
+            "change decisions", REPOSITORY_UNCONFIGURED, json_output=args.json_output
+        )
+    return _with_store(
+        "change decisions",
+        args.json_output,
+        session_factory,
+        lambda factory: _decisions(factory, args, ArtifactService(repository)),
+    )
+
+
+def run_change_alternative_command(
+    args: ChangeAlternativeArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change alternative`` (T093): «Запросить альтернативу» on one ADR.
+
+    The same operation as ``POST /changes/{id}/decisions/{adr}/alternative``: a
+    rework order of the architecture phase naming the decision, with the
+    version-bound ``rejected`` decision recorded next to it.
+    """
+    if repository is None:
+        return report_invalid_input(
+            "change alternative", REPOSITORY_UNCONFIGURED, json_output=args.json_output
+        )
+    if not args.instruction.strip():
+        return report_invalid_input(
+            "change alternative", "--instruction must not be blank", json_output=args.json_output
+        )
+    return _with_store(
+        "change alternative",
+        args.json_output,
+        session_factory,
+        lambda factory: _alternative(factory, args, ArtifactService(repository)),
+    )
+
+
+def run_change_ui_command(
+    args: ChangeUiArgs,
+    *,
+    session_factory: sessionmaker[Session] | None = None,
+    repository: "RepositoryPort | None" = None,
+) -> int:
+    """Handle ``factory change ui`` (T094): scenarios, screens and links of the change."""
+    if repository is None:
+        return report_invalid_input(
+            "change ui", REPOSITORY_UNCONFIGURED, json_output=args.json_output
+        )
+    return _with_store(
+        "change ui",
+        args.json_output,
+        session_factory,
+        lambda factory: _ui(factory, args, ArtifactService(repository)),
+    )
+
+
+def _decisions_view(session: Session, change: Change, service: ArtifactService) -> DecisionsView:
+    # Imported here: the API module is the one place the view assembly lives
+    # (shared with the router), and cli.changes must not be imported by it.
+    from dark_factory.orchestration.state.decisions import load_decisions_view
+
+    return load_decisions_view(session, change, artifacts=service)
+
+
+def _decisions(
+    factory: sessionmaker[Session], args: ChangeDecisionsArgs, service: ArtifactService
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change decisions", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            view = _decisions_view(session, change, service)
+            guidance = build_change_guidance(session, change, artifacts=service)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change decisions", json_output=args.json_output)
+    return _emit(
+        args.json_output,
+        payload={"decisions": view.model_dump(mode="json")},
+        text=render_decisions_text(view),
+        guidance=guidance,
+    )
+
+
+def _alternative(
+    factory: sessionmaker[Session], args: ChangeAlternativeArgs, service: ArtifactService
+) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change alternative", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            view = _decisions_view(session, change, service)
+            if all(card.id != args.decision_id for card in view.decisions):
+                return report_invalid_input(
+                    "change alternative",
+                    f"decision {args.decision_id!r} is not among the ADRs of the change",
+                    json_output=args.json_output,
+                )
+            try:
+                order, created = issue_rework_order(
+                    session,
+                    change,
+                    phase=Phase.ARCHITECTURE,
+                    comment_ids=args.comment_ids,
+                    question_ids=(),
+                    instruction=args.instruction,
+                    issued_by=CLI_ACTOR,
+                    actor_role=None,
+                    artifacts=service,
+                    decision_ids=[args.decision_id],
+                )
+            except ConversationError as error:
+                return _conversation_error("change alternative", error, args.json_output)
+            _cli_audit(session, REWORK_ORDER_ACTION, "rework_order", order.id)
+            guidance = build_change_guidance(session, change, artifacts=service)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change alternative", json_output=args.json_output)
+    return _emit(
+        args.json_output,
+        payload={
+            "outcome": "created" if created else "replayed",
+            "rework_order": order.model_dump(mode="json"),
+        },
+        text=(
+            f"rework order {order.id}: {order.status.value} (phase={order.phase.value},"
+            f" decisions={', '.join(order.decision_ids)}, comments={len(order.comment_ids)})"
+        ),
+        guidance=guidance,
+    )
+
+
+def _ui(factory: sessionmaker[Session], args: ChangeUiArgs, service: ArtifactService) -> int:
+    try:
+        with session_scope(factory) as session:
+            change = _load_change(session, "change ui", args.change_id, args.json_output)
+            if isinstance(change, int):
+                return change
+            view = build_ui_spec_view(change, artifacts=service)
+    except SQLAlchemyError:
+        return report_state_store_unreachable("change ui", json_output=args.json_output)
+    if args.json_output:
+        payload = view.model_dump(mode="json")
+        if args.section is not None:
+            keep = {"change_id", "revision", "dev_url", "errors", args.section.value}
+            payload = {key: value for key, value in payload.items() if key in keep}
+        print(json.dumps(payload))
+    else:
+        print(render_ui_text(view, section=args.section))
+    return EXIT_OK
+
+
+def render_decisions_text(view: DecisionsView) -> str:
+    """One block per ADR card: id, title, status, revision, proposal, alternatives, open order."""
+    lines = [
+        f"decisions of {view.change_id}: revision={view.revision or '-'}"
+        f" approved={'yes' if view.approved else 'no'}"
+    ]
+    if not view.decisions:
+        lines.append("  (no ADR documents on the change branch)")
+    for card in view.decisions:
+        proposal = card.proposal.splitlines()[0] if card.proposal else "-"
+        pending = card.pending_alternative.id if card.pending_alternative else "-"
+        lines.append(f"- {card.id}: {card.title}")
+        lines.append(
+            f"  status={card.status} document_status={card.document_status or '-'}"
+            f" rev={card.revision or '-'}"
+        )
+        lines.append(f"  proposal: {proposal}")
+        lines.append(
+            f"  alternatives={len(card.alternatives)} impact={', '.join(card.impact) or '-'}"
+            f" pending_alternative={pending}"
+        )
+        if card.affected_artifacts:
+            lines.append(f"  affected: {', '.join(card.affected_artifacts)}")
+        for error in card.errors:
+            lines.append(f"  ! {error}")
+    for error in view.errors:
+        lines.append(f"! {error}")
+    return "\n".join(lines)
+
+
+def render_ui_text(view: UiSpecView, *, section: UiSection | None = None) -> str:
+    """The UI spec as text: scenarios with steps, screens with states/elements, links."""
+    lines = [
+        f"ui of {view.change_id}: revision={view.revision or '-'} dev_url={view.dev_url or '-'}"
+    ]
+    if section in (None, UiSection.SCENARIOS):
+        lines.append(f"scenarios ({len(view.scenarios)}):")
+        for scenario in view.scenarios:
+            lines.append(
+                f"- {scenario.id}: {scenario.title} [{', '.join(scenario.screens) or '-'}]"
+            )
+            for step in scenario.steps:
+                target = f" -> {step.screen}" if step.screen else ""
+                lines.append(f"  {step.id}: {step.text}{target}")
+    if section in (None, UiSection.SCREENS):
+        lines.append(f"screens ({len(view.screens)}):")
+        for screen in view.screens:
+            lines.append(
+                f"- {screen.id}: {screen.title} route={screen.route or '-'}"
+                f" preview={screen.preview_url or '-'}"
+            )
+            states = ", ".join(state.kind for state in screen.states) or "-"
+            lines.append(f"  states: {states}")
+            for element in screen.elements:
+                lines.append(
+                    f"  {element.id}: {element.kind or '-'} {element.label or ''}"
+                    f"{' (' + element.component + ')' if element.component else ''}".rstrip()
+                )
+    if section in (None, UiSection.LINKS):
+        lines.append(f"links ({len(view.links)}):")
+        for link in view.links:
+            detail = " / ".join(part for part in (link.trigger, link.condition) if part)
+            lines.append(f"- {link.id}{': ' + detail if detail else ''}")
+    for error in view.errors:
+        lines.append(f"! {error}")
+    return "\n".join(lines)

@@ -64,6 +64,7 @@ Frozen-модель (`schema_version = 1`): `stage`, `run_id`, `change_id`, `att
 | `wait_for_input(reason)` | Ждать ввода человека | `waiting` |
 | `wait_for_ci(reason, change_request?)` | Ждать CI по change request | `waiting` |
 | `rework(round, max_rounds, reason)` | Начать ограниченный rework | `failed` |
+| `phase_round(phase, reason?)` | Следующий раунд **той же** стадии для следующей операторской фазы (M3, ADR-039): только `specification` — requirements → architecture → interface; раунд доработки не тратится | `succeeded` |
 | `request_approval(gate, requested_from?)` | Ждать human approval на гейте | `waiting` |
 | `merge(change_request)` | Merge-переход Review/Verification → Release по merge policy | `succeeded` |
 | `release(target_environment="dev")` | Успешно завершить Release | `succeeded` |
@@ -84,7 +85,7 @@ Frozen-dataclass: `stage`, **`action`** (effective action), `stage_status`, `run
 
 | Stage | Допустимые actions | Rework target |
 |---|---|---|
-| Specification | execute, wait input, rework, approval, stop | в себя |
+| Specification | execute, wait input, rework, **phase_round**, approval, stop | в себя (rework и phase_round) |
 | Planning | execute, wait input, rework, approval, stop | в себя |
 | Construction | execute, wait input, wait CI, rework, approval, stop | в себя |
 | Review / Verification | merge, wait input, wait CI, rework, approval, stop | → Construction |
@@ -93,6 +94,7 @@ Frozen-dataclass: `stage`, **`action`** (effective action), `stage_status`, `run
 ```mermaid
 stateDiagram-v2
     [*] --> Specification
+    Specification --> Specification: phase_round
     Specification --> Planning: execute_stage
     Planning --> Construction: execute_stage
     Construction --> ReviewVerification: execute_stage
@@ -210,6 +212,8 @@ Wait-действия (`wait_for_input`, `wait_for_ci`, `request_approval`) пе
 
 Разрешённый раунд: `budget.used_rework_rounds += 1`, текущий stage occurrence → `failed`, запуск `REWORK_TARGET[result.stage]` (Review/Verification возвращается в Construction, остальные — в себя). Run остаётся `running`. Сам `flow.py` не трогает `attempt_number`: физические попытки — забота execution/state слоя.
 
+С M3 раунд доработки **той же** стадии (`specification → specification`, `construction → construction`) и `phase_round` — **новая операция** стадии, а не очередная попытка провалившейся: `_handle_rework` (когда `REWORK_TARGET[stage] is stage`) и `_handle_phase_round` вызывают `_restart(run, stage)` — свежий `StageRun` occurrence (`<run>:<stage>:<n>`) добавляется даже при нетерминальном предыдущем, тогда как `_start` переиспользует retryable-occurrence для повтора заблокированной попытки той же операции. Драйвер объявляет новую строку в `runner._created_stages` (исключаются только stage run'ы, существовавшие до решения, по идентичности объекта — не по стадии), и `persist_decision` вставляет её с `input_revision`, которую закрепляет резолвер, — голова ветки после предыдущего раунда. До исправления раунд продолжал провалившуюся строку как попытку N+1 на **старой** ревизии, и ключ эффекта `publish_commit` (`operation_key:effect_type:effect_target`, §13.1) совпадал с прежним — effect ledger replay-ил предыдущий коммит, и правка агента не доходила до ветки (найдено на живом прогоне M3; TD-046). Порядок occurrence'ов одной стадии при чтении — `stage.created_at` (§10). Проверки: `tests/test_orchestration_runner.py::test_a_same_stage_rework_round_is_a_new_operation_at_the_advanced_revision`, `tests/integration/test_runner_advance.py::test_a_rework_round_persists_the_spent_budget_and_a_new_stage_operation`.
+
 ### 6.4. Merge и merge policy (T-026, ADR-011 п.2)
 
 Порядок: существование следующей стадии → `_block_reason` (гейты, бюджеты) → объявленные эскалации → **merge policy** (`evaluate_merge` из `orchestration/policy/merge.py`).
@@ -282,8 +286,8 @@ erDiagram
 
 | Таблица | Ключевые поля | Заметки |
 |---|---|---|
-| `execution` | id, change_id, route, provider, status, state_revision | корень запуска |
-| `stage` | id = operation_key, execution_id, stage, status, input_revision, attempt_count | `operation_key` unique |
+| `execution` | id, change_id, route, provider, status, state_revision, budget, implementation_contract | корень запуска; `budget` (JSONB `BudgetSnapshot`) — накопленный расход и раунды доработки, `persist_decision` пишет его с каждым решением (FR-008/FR-016) |
+| `stage` | id = operation_key, execution_id, stage, status, input_revision, attempt_count, created_at | `operation_key` unique; `created_at` (`0008_stage_created_at`: server default `now()`, backfill из `started_at`) упорядочивает occurrence'ы одной стадии — `RunStore._load_stages` сортирует по `(позиция стадии на маршруте, created_at, id)`, и последняя строка стадии — та, что в работе (раунд доработки или `phase_round` — новая операция, §6.3) |
 | `attempt` | id = attempt_id, operation_key, stage_id, attempt_number, status | физическая попытка |
 | `stage_result` | id = attempt_id, run_id, operation_key, status, payload | immutable, CHECK по result-статусам |
 | `usage_record` | execution_id, attempt_id, prompt/completion tokens, cost | расход по попыткам |
@@ -293,8 +297,10 @@ erDiagram
 | `event_delivery` | event_id + consumer_id, status, attempts | по строке на consumer |
 | `change` | id, external_ref, risk_class, product_id, payload | `external_ref` — partial unique; `product_id` — продукт-владелец (nullable, без FK) |
 | `product` | id, repository, status, status_reason, payload | реестр продуктов (T065, ADR-030); `status` — CHECK из `ProductStatus` |
-| `decision` | id, change_id, gate, outcome, commit_sha, idempotency_key | `idempotency_key` — partial unique |
+| `decision` | id, change_id, gate, outcome, commit_sha, idempotency_key, phase | `idempotency_key` — partial unique; `phase` (nullable, CHECK из `Phase`; `0007_phase_rounds`) различает решения на общем гейте `specification`, `NULL` — решение до M3 (читается как фаза своего гейта, ADR-039 п.3) |
 | `audit_log` | id, actor, action, resource_type + resource_id, outcome | append-only |
+
+Миграции Alembic — `migrations/versions/`; последние: `0006_conversations` (M2, таблицы обсуждения — §11.2), `0007_phase_rounds` (M3, `decision.phase` с CHECK по `Phase`), `0008_stage_created_at` (M3, `stage.created_at` с backfill из `started_at`).
 
 State-specific enum-ы: `EffectStatus` (`planned`, `in_progress`, `succeeded`, `unknown`) и `DeliveryStatus` (`pending`, `delivered`, `failed`, `dead`, `waived`) — persistence-статусы, а не wire contract.
 
@@ -322,6 +328,14 @@ State-specific enum-ы: `EffectStatus` (`planned`, `in_progress`, `succeeded`, `
 
 `conversations.py` — сборка для драйвера: `load_conversation_inputs` (typed-входы попытки — `ConversationInputs`, ADR-034 п.5), `with_store_facts` (решения store, привязанные к наблюдённой голове CR, и поручения фазы дополняют `GateObservation`), `record_stage_outcome` (после продвижения: вопросы агента из `StageResult.questions` под детерминированными id, `pending → in_progress` при `ReworkAction`, `in_progress → done` со сводкой и `addressed` замечаний при человеческом ожидании, `escalated` при `blocked`). Семантика — `orchestration/conversations.py` (staleness, якоря, разбор структурных блоков агента, `plan_rework_order` через `plan_rework`) и `orchestration/phase_gate.py` (прекондиции гейта); поверхность над git — `orchestration/artifacts.py`.
 
+### 11.3. Фазы и раунды стадии `specification` (T092–T098, ADR-039)
+
+`orchestration/phases.py` — чистая проекция восьми операторских фаз (ADR-032): `specification_phase(route, decisions, revisions)` — первая фаза без действующего решения (`approved`, привязанного к ревизии артефактов **самой фазы**, или `waived`); `current_phase(run, …)`; `project_phases(...)` → `PhasesProjection{current, phases[8]{state, revision, approved_revision, счётчики, iteration}}` для `GET /changes/{id}/phases` и `factory change phases`. `phase_gate.py` получил `decision_phase`/`phase_decisions` (решение до M3 с `phase=NULL` читается как фаза своего гейта), `specification_phases(route)` (на `quick` фазы `interface` нет), `ui_requirement` и `checks` фазы `interface` (T097). `state/phases.py` собирает факты: `phase_revisions` — последний коммит, тронувший файлы фазы (`ArtifactService.latest_revision`), `ui_requirement` — из frontmatter `design/overview.md` (`context/design.py`), `current_change_phase`, `build_phases`.
+
+Раунды: `StageContext.phase`/`StageResult.phase` несут фазу попытки; `stages/agent.py` выбирает роль и скилл раунда (`PHASE_ROLE`, `PHASE_SKILL`: `architect`/`solution-design`, `design`/`ui-spec`); `with_store_facts` вкладывает в `GateObservation` решения, привязанные к ревизии своей фазы (а `waived` — без ревизии), и `phase`/`next_phase`; `stages/gates.py` резолвит согласование нефинальной фазы в `PhaseRoundAction` (стадия входит в себя новой операцией, раунд доработки не тратится — `flow._handle_phase_round`), а согласование последней — в `ExecuteStageAction` с `specification` `passed` и `ui` `passed`/`skipped`. `cli/runner.py` вычисляет фазу попытки перед `advance_run` через `current_change_phase` (нужен шов `repository`).
+
+Read-model'ы фаз (T093/T094): `orchestration/decisions.py: build_decisions_view(change, artifacts=…, decisions=…, rework_orders=…, architecture_revision=…)` → `DecisionsView` с производным статусом карточек (`superseded` из frontmatter; `needs_revision` — открытое поручение с решением в `decision_ids` или устаревшее согласование при ADR, изменённом после него; `accepted` — действующее согласование фазы `architecture`; иначе `proposed`), `pending_alternative` и `affected_artifacts` (файлы `design`/`adr`/`ui`/`spec`, изменённые относительно ревизий последнего `done`-поручения по решению — через `ArtifactService.diff`); `state/decisions.py: load_decisions_view` собирает входы из `DecisionRepository.list_for_change`, `ConversationRepository.list_rework_orders` и `phase_revisions` — одна сборка для `GET /changes/{id}/decisions` и `factory change decisions`. `orchestration/ui_spec.py: build_ui_spec_view` — узлы `ui` дерева через `context/ui_spec.py` плюс `dev_url` из `.factory/product/factory.yaml` ветки изменения (`dev_url_of`); ревизия — `latest_revision` по путям `ui`. Без репозитория оба view пустые с причиной в `errors` (`REPOSITORY_NOT_BOUND`), API переводит это в 503. «Запросить альтернативу» — `conversation_ops.issue_rework_order(..., decision_ids=[…])` фазы `architecture` из `api/routes_decisions.py` и `cli/changes.py`.
+
 ### 6.3.1. Доработка по поручению оператора (T081, ADR-034 п.3)
 
 Human-gated стадия (например, `specification`) паркуется в `waiting`; наблюдение (`stages/gates.py`) с *pending* `ReworkOrder` в `GateObservation.rework_orders` резолвит ожидание не в `ExecuteStage`, а в `ReworkAction(round=used+1)` (или в `StopAction(blocked)` с причиной цикла, когда `plan_rework_order` отказывает: исчерпан лимит, поручение на той же ревизии, что предыдущее, повтор того же набора замечаний). Flow применяет `_handle_rework` как раньше: тратит раунд бюджета run, стадия остаётся в `failed` и переоткрывается следующей попыткой на новой ревизии. Счётчик — `budget.used_rework_rounds`, а не число замечаний.
@@ -333,7 +347,7 @@ Human-gated стадия (например, `specification`) паркуется 
 - `record()` собирает ключи из самого результата (`operation_key`, `attempt_id`) и вставляет `ON CONFLICT DO NOTHING` по PK `attempt_id`: повтор той же попытки — no-op, предыдущие попытки никогда не перезаписываются;
 - чтение: `get(run_id, stage, attempt_number)` (ранняя по `produced_at` при неоднозначности), `list_for_run()`, `list_for_change()` — упорядочено по `(produced_at, stage, attempt_number)`.
 
-Таблица — read-источник API-агрегатов (`api/aggregates.py`, правило «последний выигрывает»). Запись из durable-раннера — `RunStore.persist_decision` (T-092, `orchestration/state/run_store.py`): `stage_result` пишется в одной транзакции со статусами stage/attempt/run, `pending`-строками стадий, которые создало решение (successor-стадия, без неё run не продолжится), и outbox-событием. Повтор той же попытки не доходит до этой записи: `advance_run` проверяет committed-результат **до любой мутации** (в т.ч. до lease) и на replay не пишет вообще ничего (§13.2). CLI `stage run` по-прежнему пишет `StageResult` только в evidence-каталог (§13).
+Таблица — read-источник API-агрегатов (`api/aggregates.py`, правило «последний выигрывает»). Запись из durable-раннера — `RunStore.persist_decision` (T-092, `orchestration/state/run_store.py`): `stage_result` пишется в одной транзакции со статусами stage/attempt/run, `pending`-строками стадий, которые создало решение (successor-стадия, без неё run не продолжится; с M3 — и новая операция **той же** стадии для раунда доработки или `phase_round`, §6.3), бюджетом run (`execution.budget = run.budget` — потраченные раунды доработки, токены и стоимость, FR-008/FR-016: до исправления на живом прогоне M3 расход не персистился, и следующий advance читал `used_rework_rounds = 0`; TD-047) и outbox-событием. Повтор той же попытки не доходит до этой записи: `advance_run` проверяет committed-результат **до любой мутации** (в т.ч. до lease) и на replay не пишет вообще ничего (§13.2). CLI `stage run` по-прежнему пишет `StageResult` только в evidence-каталог (§13).
 
 ## 13. Идемпотентность: два уровня (ADR-006 п.3)
 
@@ -443,6 +457,7 @@ Reconciler реализован в `orchestration/reconcile/`:
 - `tests/test_flow_policy.py` — эскалации и контракт в Flow: атрибуция гейта входа в construction (T-063: уход из planning не блокируется, неодобренный контракт не подменяет полосу классов), все условия эскалации, вето rework без сжигания раунда, бюджет автономии, wait проходит сквозь эскалации; гейт как префлайт стадии — `tests/test_orchestration_stages.py`, `tests/test_orchestration_agent_stage.py`, а его атрибуция и идемпотентный retry — `tests/test_orchestration_runner.py`;
 - `tests/test_changes_models.py` — таблицы переходов, терминальные статусы, идемпотентные ключи, бюджеты, completion invariants;
 - `tests/test_changes_next_action.py` — закрытость union `NextAction` (шаблон `assert_never`); `tests/test_changes_serialization.py` — JSON/YAML round-trip, отказ unknown action type, запрет mutable `latest` в `RunManifest`;
+- `tests/test_orchestration_phases.py` — текущая фаза стадии `specification`, решение до M3 как фаза своего гейта, проекция восьми фаз; `tests/test_orchestration_decisions.py` — производный статус карточек, `affected_artifacts`, `UiSpecView` с `dev_url`, пустые view без репозитория;
 - `tests/test_changes_implementation_contract.py` — схема контракта, frozen, эскалации в round-trip;
 - `tests/test_changes_intake.py` — бриф (выведенный статус, нормализация), лимит (`to_budget`), обратная совместимость `Change`; `tests/test_orchestration_guidance.py` — проекция `Guidance` исчерпывающе по `ProductStatus`, состояниям брифа и `RunStatus` × причина ожидания; `tests/test_orchestration_intake.py` — формулировщик брифа на скриптованном harness;
 - `tests/integration/` — `test_state_schema.py` (схема PostgreSQL), `test_stage_run_idempotency.py` (идемпотентность stage/attempt и `EvidenceOperationStore`), `test_runner_advance.py` (durable-раннер над реальными строками), `test_run_withdraw.py` (операторское снятие, §19), `test_reconcile.py` (проход reconciler), `test_events_dispatcher.py` (outbox at-least-once), `test_api.py` (intake/approvals/trace/withdraw);

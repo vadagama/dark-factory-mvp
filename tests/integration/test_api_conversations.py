@@ -447,3 +447,114 @@ def test_product_bootstrap_applies_the_baseline_packs(
     assert (
         unconfigured.post(f"{API}/products/prd-calc/bootstrap", headers=OPERATOR).status_code == 503
     )
+
+
+# --- M3 (T098, ADR-039): the phase projection and phase-bound approvals -----------------
+
+DESIGN = ".factory/changes/2026/CHG-0001-percent/design/overview.md"
+OVERVIEW = (
+    "---\nschema: dark-factory.dev/design/v1\nid: design:calc:percent\ntype: design\n"
+    "title: Percent design\nproduct: calc\nstatus: proposed\nchange: chg-calc-1\n"
+    "ui: not_required\nui_reason: backend-only change\n---\n\n## Overview\n\nNo UI.\n"
+)
+
+
+def test_phases_projection_and_phase_bound_approvals(
+    client: tuple[TestClient, FakeRepository, str],
+) -> None:
+    api, _repository, head = client
+    before = api.get(f"{API}/changes/{CHANGE_ID}/phases")
+    assert before.status_code == 200, before.text
+    projection = before.json()
+    assert projection["current"] == "initiative", "no run yet: the intake"
+    assert [p["phase"] for p in projection["phases"]] == [
+        "initiative",
+        "requirements",
+        "architecture",
+        "interface",
+        "plan",
+        "execution",
+        "demonstration",
+        "delivery",
+    ]
+    assert projection["phases"][1]["revision"] == head, "the requirements' own revision"
+    assert projection["phases"][2]["revision"] is None, "no design artifacts yet"
+
+    # An architecture approval must say so: the gate is shared with requirements.
+    mismatch = api.post(
+        f"{API}/changes/{CHANGE_ID}/approvals",
+        json={
+            "gate": "ui",
+            "phase": "architecture",
+            "outcome": "approved",
+            "subject_revision": head,
+        },
+        headers=OPERATOR,
+    )
+    assert mismatch.status_code == 422
+    approved = api.post(
+        f"{API}/changes/{CHANGE_ID}/approvals",
+        json={
+            "gate": "specification",
+            "phase": "requirements",
+            "outcome": "approved",
+            "subject_revision": head,
+        },
+        headers=OPERATOR,
+    )
+    assert approved.status_code == 201, approved.text
+    assert approved.json()["phase"] == "requirements"
+
+    # The architect's round lands design files: the requirements approval stays current,
+    # because it binds to the revision of the requirements' own artifacts (ADR-039).
+    written = api.put(
+        f"{API}/changes/{CHANGE_ID}/artifacts/{DESIGN}",
+        json={"content": OVERVIEW, "base_revision": head},
+        headers=OPERATOR,
+    )
+    assert written.status_code == 200, written.text
+    design_revision = written.json()["revision"]
+    requirements = api.get(
+        f"{API}/changes/{CHANGE_ID}/phase-gate", params={"phase": "requirements"}
+    ).json()
+    assert requirements["current_revision"] == head
+    assert requirements["approved"] is True and requirements["approvals"][0]["state"] == "current"
+    assert requirements["approvals"][0]["phase"] == "requirements"
+    architecture = api.get(
+        f"{API}/changes/{CHANGE_ID}/phase-gate", params={"phase": "architecture"}
+    ).json()
+    assert architecture["current_revision"] == design_revision
+    assert architecture["approvals"] == [], "the requirements decision is not the architecture's"
+    assert architecture["available"] is True
+
+    # The interface gate reads the architect's proposal and offers the waiver (T097).
+    interface = api.get(
+        f"{API}/changes/{CHANGE_ID}/phase-gate", params={"phase": "interface"}
+    ).json()
+    assert interface["ui_requirement"] == {
+        "required": False,
+        "source": "agent",
+        "reason": "backend-only change",
+    }
+    assert [c["status"] for c in interface["checks"]] == ["not_required", "not_required"]
+    assert "backend-only change" in interface["reasons"][0]["what"]
+    waived = api.post(
+        f"{API}/changes/{CHANGE_ID}/approvals",
+        json={
+            "gate": "ui",
+            "phase": "interface",
+            "outcome": "waived",
+            "comment": "backend-only change",
+        },
+        headers=OPERATOR,
+    )
+    assert waived.status_code == 201, waived.text
+    assert waived.json()["commit_sha"] is None, "a waiver binds to no document"
+    after = api.get(f"{API}/changes/{CHANGE_ID}/phase-gate", params={"phase": "interface"}).json()
+    assert after["waived"] is True and after["ui_requirement"]["source"] == "operator"
+    assert after["reasons"] == []
+    phases = api.get(f"{API}/changes/{CHANGE_ID}/phases").json()
+    by_phase = {p["phase"]: p for p in phases["phases"]}
+    assert by_phase["requirements"]["approved_revision"] == head
+    assert by_phase["interface"]["state"] == "pending", "no run: nothing is active yet"
+    assert phases["current"] == "initiative"

@@ -54,10 +54,12 @@ class GitHubRepository(RepositoryPort):
 
     async def get_revision(self, repository: RepositoryRef, ref: str, /) -> str:
         response = await self._client.request("GET", f"/repos/{repository.slug}/commits/{ref}")
-        if response.status_code in (404, 422):
-            # GitHub answers 404 for an unknown repository and 422 for a ref
-            # that does not resolve (a missing branch or sha) — both are
-            # "absent" for the port contract (a missing branch is a KeyError).
+        if response.status_code in (404, 409, 422):
+            # GitHub answers 404 for an unknown repository, 422 for a ref that
+            # does not resolve (a missing branch or sha) and 409 for a repository
+            # without a single commit yet ("Git Repository is empty", found on
+            # the M3 live run against a freshly created product repository) —
+            # all are "absent" for the port contract (a missing branch is a KeyError).
             raise KeyError(f"no revision recorded for {repository.slug!r}@{ref!r}")
         return str(self._client.expect(response, 200).json()["sha"])
 
@@ -165,7 +167,8 @@ class GitHubRepository(RepositoryPort):
         response = await self._client.request(
             "GET", f"/repos/{repository.slug}/commits", params=params
         )
-        if response.status_code in (404, 422):
+        if response.status_code in (404, 409, 422):
+            # 409 — an empty repository (no commit yet): nothing recorded, like 404/422.
             raise KeyError(f"no revision recorded for {repository.slug!r}@{ref!r}")
         commits: list[CommitInfo] = []
         for item in self._client.expect(response, 200).json():

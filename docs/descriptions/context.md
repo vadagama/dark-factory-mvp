@@ -14,6 +14,8 @@
 
 **Часть 2 — SDD-слой (подпакет `sdd/`, ADR-020).** Native SDD Core: типизированные схемы артефактов ChangeSet, Product Baseline под `.factory/`, YAML frontmatter OKF-узлов, нормализованный контракт для specification gate и три реализации `SDDPort` — native, Spec Kit (bootstrap-импорт) и OpenSpec (compatibility). Полная спецификация модели — [`docs/sdd-native-core.md`](../sdd-native-core.md).
 
+**Часть 3 — документы ChangeSet как read-model (M2–M3, ADR-035/ADR-039).** `artifacts.py` классифицирует пути ChangeSet по фазам и находит якоря замечаний; `design.py`, `decisions.py`, `ui_spec.py` — чистые разборщики текста узлов `design/**` в то, что показывают фазы «Архитектура» и «Интерфейс». Ничто здесь не ходит в репозиторий или store: тексты приносит `orchestration/artifacts.py`, факты store добавляют `orchestration/decisions.py`, `orchestration/ui_spec.py` и `orchestration/state/phases.py` (см. §11).
+
 ```mermaid
 flowchart TD
     REQ["ContextRequest\nchange_id + run_id"] --> KP["KnowledgePort.collect()"]
@@ -269,7 +271,16 @@ Production-потребитель вне пакета — модуль `quality`
 - Импорт: `import_change(change_name)` требует каталог `specs/` внутри change; парсит секции `## ADDED|MODIFIED|REMOVED Requirements` и блоки `### Requirement: <name>`; id — `req:<product>:<capability>:<kebab>` (`kebab()` — канонический kebab-case); ADDED/MODIFIED дают документы `requirements/<capability>/<kebab>.md` и операции `add`/`modify`, REMOVED — `retire` без артефакта.
 - Экспорт: `export_change(change)` рендерит ChangeSet обратно в каталог OpenSpec; `retire` → REMOVED-блок, `supersede` пропускается (секции OpenSpec покрывают только add/modify/retire); требует дельту (иначе `MissingArtifactError`).
 
-## 11. Граничные случаи
+## 11. Артефакты ChangeSet как read-model (`artifacts.py`, `design.py`, `decisions.py`, `ui_spec.py`)
+
+Чистые функции над текстом документов; ошибки разбора возвращаются в результате и никогда не поднимаются исключением — Console показывает исходник, а не пустую фазу (ADR-035 п.6).
+
+- **`artifacts.py`** (M2, ADR-035) — `ArtifactKind` (`spec | design | adr | ui | plan | other`) и `classify_path(path)` по раскладке ChangeSet (путь под `.factory/changes/<year>/<CHG-…>/` сводится к относительному): имя `ADR-<n>…` где угодно → `adr`; каталоги `spec/`, `requirements/`, `scenarios/`, `capabilities/` и файлы `intent.md`/`change.yaml` → `spec`; `decisions/` и `design/decisions/` → `adr`; `ui/`, `screens/`, `design/ui/`, `design/screens/` → `ui` (с M3 — фаза `interface`; до того `design/ui/**` читался как `design`); остальное `design/**` → `design`; `tasks/`, `plan/`, `verification/` → `plan`; иное — `other`, в фазу не угадывается. `anchors_of(content)` — все id, к которым может привязаться замечание или вопрос, в порядке документа: frontmatter `id`, стабильные id (`_STABLE_ID`: `REQ-/AC-/SCN-/SCR-/CAP-/ADR-/TASK-/EVD-/FR-/NFR-/US-/Q-<n>`, с M3 — элементы `EL-<slug>` и шаги `S<n>` как целые слова), явные `{#id}`/`<a id>` и slug заголовков (`heading_slug`); fenced-код пропускается. С M3 стабильные id ищутся и в блоке frontmatter — UI-узлы объявляют элементы и шаги именно там. Там же `resolve_anchor`, свойства frontmatter (`document_properties`/`apply_properties` с защищёнными `PROTECTED_PROPERTIES = schema, id, type, product, change` → `ProtectedPropertyError`, ADR-035 п.5) и `unified_diff`.
+- **`design.py`** (T097) — `ui_requirement_of(overview_text) -> UiRequirement | None`: читает `ui`/`ui_reason` из frontmatter `design/overview.md`; `not_required|none|no|false` → `required=False`, `required|yes|true` → `required=True`, источник всегда `agent`; отсутствующий документ, отсутствие ключа, битый frontmatter или иное значение → `None`, и вызывающий берёт умолчание «фаза применяется»: сломанный документ никогда молча не пропускает человеческий гейт. `UiRequirement{required, source: route|agent|operator|default, reason}` — тип, который `PhaseGate.ui_requirement` отдаёт наружу; `DESIGN_OVERVIEW_PATH = "design/overview.md"`.
+- **`decisions.py`** (T093) — `parse_decision_card(path, content, revision=…) -> DecisionCard`: frontmatter `id` (иначе имя файла без расширения), `title` (иначе первый `#`-заголовок, иначе имя файла), `status` → `document_status`, `impact` (список или строка через запятую; иначе маркеры под `## Влияние`/`## Impact`); секции по заголовкам второго уровня в русском или английском написании — `Решение/Decision` → `proposal`, `Обоснование/Rationale`, `Альтернативы/Alternatives`, `Последствия/Consequences`; альтернативы — из таблицы (первая колонка — название, последняя — почему не выбран, средние — сводка) или из подразделов `###` (строка «Почему не выбран: …» / «Rejected because: …» — причина). `type` не `adr` и битый frontmatter — записи в `errors`, разбор продолжается. Производный `status` карточки парсер оставляет `proposed`; `pending_alternative` и `affected_artifacts` заполняет `orchestration/decisions.py`.
+- **`ui_spec.py`** (T094) — `build_ui_spec(documents: {path: text | None}, dev_url=…) -> UiSpec`: тип узла — frontmatter `type` (`ui_scenario`/`ui_screen`), иначе по имени `SCN-*`/`SCR-*` или каталогу `/scenarios/`/`/screens/`; иное — ошибка. `parse_ui_scenario` — `steps[]` (маппинг `{id, text, screen}` или строка; id по умолчанию `S<n>`; шаг без текста — ошибка), `screens` — различные экраны шагов, `summary` — первый абзац тела. `parse_ui_screen` — `route`, `preview_url` (`resolve_preview_url`: `http(s)://` — как есть, относительный — `dev_url` + путь, без `dev_url` — как написан), `states` (маппинг `kind → описание` или список `{kind, description}`; неизвестный kind — ошибка; порядок `loading, empty, error, success, access`; необъявленное состояние отсутствует), `elements[{id, kind, label, component}]` (элемент без id — ошибка), `components` — различные `component`, `purpose` — первый абзац; `transitions[{to, trigger, condition}]` становятся `links` (id `from->to`, при повторе пары — `#n`), а `components` спеки агрегируют экраны по компоненту. `None` вместо текста — «документ отсутствует на этой ревизии» в `errors`.
+
+## 12. Граничные случаи
 
 Иерархия ошибок в `sdd/errors.py` наследует `Exception` напрямую (адаптеры не импортируют `dark_factory.ports`); база — `SDDError`.
 
@@ -283,9 +294,10 @@ Production-потребитель вне пакета — модуль `quality`
 
 Не из `errors.py`: `InvalidChangeSetStatus(ValueError)` — недопустимая пара статусов ChangeSet; `ValueError("duplicate context source …")` — дубликат идентичности в `build_bundle`; `KeyError` — неизвестный workspace/путь в `FakeExecution`.
 
-## 12. Где искать проверки
+## 13. Где искать проверки
 
 - [`test_context_bundle.py`](../../tests/test_context_bundle.py) — воспроизводимость сборки, канонический порядок, дубликаты;
+- [`test_context_artifacts.py`](../../tests/test_context_artifacts.py) — `classify_path` по раскладке ChangeSet, якоря (frontmatter `id`, заголовки, стабильные id, явные якоря; с M3 — `SCR-/EL-/S<n>` из frontmatter и тела, только целые слова), `resolve_anchor`, свойства и `unified_diff`; [`test_context_decisions.py`](../../tests/test_context_decisions.py) — карточка ADR (шаблон пака, английские заголовки, подразделы альтернатив, fallback на имя файла, битый frontmatter — ошибка, не исключение); [`test_context_ui_spec.py`](../../tests/test_context_ui_spec.py) — UI-узлы (шаблоны пака, правила `preview_url`, отсутствующие состояния, суффиксы связей, тип по имени файла);
 - [`test_sdd_models.py`](../../tests/test_sdd_models.py) — схемы артефактов, алиас `schema`, паттерны id/slug;
 - [`test_sdd_frontmatter.py`](../../tests/test_sdd_frontmatter.py) — split/parse/validate/render/with_status;
 - [`test_sdd_lifecycle.py`](../../tests/test_sdd_lifecycle.py) — таблица переходов и терминальные статусы;
@@ -298,7 +310,7 @@ Production-потребитель вне пакета — модуль `quality`
 - контрактная сюита портов: [`test_sdd_port.py`](../../tests/contract/test_sdd_port.py) (три адаптера, включая `isinstance(sdd_port, SDDPort)`), [`test_knowledge_port.py`](../../tests/contract/test_knowledge_port.py), [`test_execution_port.py`](../../tests/contract/test_execution_port.py);
 - [`test_import_boundaries.py`](../../tests/test_import_boundaries.py) — AST-проверка границ: ядро (включая `context/sdd`) не импортирует `adapters` и внешние SDK.
 
-## 13. Связанные решения
+## 14. Связанные решения
 
 - [ADR-015](../adr/ADR-015-repository-boundaries.md) — границы репозиториев; контракт версии схемы bundle (п.3);
 - [ADR-017](../adr/ADR-017-unified-openspec-sdd-factory-profile.md) — унифицированная OpenSpec-модель; заменена ADR-020, осталась как compatibility-профиль;
@@ -306,8 +318,9 @@ Production-потребитель вне пакета — модуль `quality`
 - [ADR-001](../adr/ADR-001-adopt-spec-kit.md) — Spec Kit как bootstrap-фаза, из которой импортирует `SpecKitAdapter`;
 - [`docs/sdd-native-core.md`](../sdd-native-core.md) — полная спецификация модели (§6–12 — wire-формы, §14 — reconciliation).
 
-## 14. Связь с другими модулями
+## 15. Связь с другими модулями
 
 - [ports.md](ports.md) — контракт `SDDPort`, DTO и правило структурной реализации протоколов без импорта `dark_factory.ports`;
 - [orchestration-flow-and-state.md](orchestration-flow-and-state.md) — доменный Flow и PostgreSQL state store; production-обвязка, которая будет вызывать `KnowledgePort`/`ExecutionPort`/`SDDPort`, ещё не реализована;
+- [api.md](api.md), [cli.md](cli.md) — `GET /changes/{id}/decisions` / `…/ui` и `factory change decisions` / `ui` — потребители read-model'ов части 3 через `orchestration/decisions.py` и `orchestration/ui_spec.py` (§11);
 - [agents.md](agents.md) — агентный контракт: `build_envelope()` проверяет, что bundle принадлежит тому же change/run, и переносит в `TaskEnvelope` только `bundle_hash`;

@@ -16,6 +16,7 @@ import pytest
 from dark_factory.changes.conversations import ReworkOrder, ReworkSummary
 from dark_factory.changes.enums import (
     ChangeRequestStatus,
+    DecisionOutcome,
     FindingOrigin,
     FindingSeverity,
     Gate,
@@ -26,12 +27,13 @@ from dark_factory.changes.enums import (
     StageStatus,
     StopOutcome,
 )
-from dark_factory.changes.findings import GateResult
+from dark_factory.changes.findings import Decision, GateResult
 from dark_factory.changes.implementation_contract import ImplementationContract
 from dark_factory.changes.next_action import (
     ExecuteStageAction,
     MergeAction,
     NextAction,
+    PhaseRoundAction,
     ReleaseAction,
     ReworkAction,
     StopAction,
@@ -51,6 +53,7 @@ from dark_factory.orchestration.runner import (
     RunNotAdvanceableError,
     RunNotFoundError,
     StageExecutor,
+    _attempt_number,
     advance_run,
     next_stage,
     outcome_for,
@@ -1705,8 +1708,40 @@ def test_advance_run_turns_a_pending_rework_order_into_a_rework_round() -> None:
     # next attempt at the revision the round advances.
     assert run.budget.used_rework_rounds == 1
     assert advance.decision.next_stage is Stage.SPECIFICATION
-    assert [stage.status for stage in run.stages] == [StageStatus.FAILED]
+    assert [stage.status for stage in run.stages] == [StageStatus.FAILED, StageStatus.PENDING]
     assert run.status is RunStatus.RUNNING
+
+
+def test_a_rework_round_of_a_design_phase_carries_the_phase_of_the_parked_round() -> None:
+    """M3 (ADR-039): the send-back of the architecture round names its phase on the result,
+    so the store starts the pending order of *that* phase (found on the M3 live run: the
+    architect's rework round ran while its order stayed ``pending``)."""
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    order = _rework_order("rw_1", HEAD, "cmt_1").model_copy(
+        update={"phase": Phase.ARCHITECTURE, "decision_ids": ("adr:demo:0002",)}
+    )
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            rework_orders=(order,),
+            phase=Phase.ARCHITECTURE,
+            next_phase=Phase.INTERFACE,
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert isinstance(advance.result.next_action, ReworkAction)
+    assert advance.result.phase is Phase.ARCHITECTURE
+    assert run.budget.used_rework_rounds == 1, "an alternative request spends a rework round"
 
 
 def test_advance_run_escalates_a_rework_order_when_the_limit_is_exhausted() -> None:
@@ -1754,3 +1789,157 @@ def test_a_done_rework_order_does_not_resolve_the_wait() -> None:
     advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
 
     assert advance.outcome is RunAdvanceOutcome.REPLAYED
+
+
+# --- M3 (ADR-039): phase rounds of the specification stage ---------------------------
+
+
+def _phase_decision(
+    phase: Phase, gate: Gate, outcome: DecisionOutcome = DecisionOutcome.APPROVED
+) -> Decision:
+    return make_merge_approval(sha=HEAD).model_copy(
+        update={
+            "id": f"dec-{phase.value}",
+            "gate": gate,
+            "outcome": outcome,
+            "phase": phase,
+            "comment": "backend-only" if outcome is DecisionOutcome.WAIVED else None,
+        }
+    )
+
+
+def test_the_approval_of_a_non_final_phase_re_enters_the_stage_for_the_next_round() -> None:
+    """Requirements approved → a new operation of the same stage for the architecture round."""
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            approvals=(_phase_decision(Phase.REQUIREMENTS, Gate.SPECIFICATION),),
+            phase=Phase.REQUIREMENTS,
+            next_phase=Phase.ARCHITECTURE,
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.SPECIFICATION, "the same stage, next round"
+    assert isinstance(advance.result.next_action, PhaseRoundAction)
+    assert advance.result.next_action.phase is Phase.ARCHITECTURE
+    assert advance.result.phase is Phase.REQUIREMENTS
+    assert advance.result.status is StageStatus.SUCCEEDED
+    assert advance.result.gate_results == [], "no gate passes before the last phase"
+    assert [(s.stage, s.status) for s in run.stages] == [
+        (Stage.SPECIFICATION, StageStatus.SUCCEEDED),
+        (Stage.SPECIFICATION, StageStatus.PENDING),
+    ]
+    assert run.budget.used_rework_rounds == 0, "a phase round is progress, not a send-back"
+    assert run.status is RunStatus.RUNNING
+
+
+def test_an_approval_of_another_phase_does_not_resolve_the_round() -> None:
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    checkpoint = _ci_checkpoint(run, change, Stage.SPECIFICATION)
+    store.history.append(checkpoint)
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            approvals=(_phase_decision(Phase.REQUIREMENTS, Gate.SPECIFICATION),),
+            phase=Phase.ARCHITECTURE,
+            next_phase=Phase.INTERFACE,
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.REPLAYED
+    assert advance.result is checkpoint
+
+
+def test_the_waived_last_phase_completes_the_stage_with_the_ui_gate_skipped() -> None:
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            approvals=(
+                _phase_decision(Phase.REQUIREMENTS, Gate.SPECIFICATION),
+                _phase_decision(Phase.ARCHITECTURE, Gate.SPECIFICATION),
+                _phase_decision(Phase.INTERFACE, Gate.UI, DecisionOutcome.WAIVED),
+            ),
+            phase=Phase.INTERFACE,
+            next_phase=None,
+        )
+    )
+
+    advance = _advance(store, executor=_waiting(), change=change, gate_facts=facts)
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert advance.decision is not None
+    assert advance.decision.next_stage is Stage.PLANNING
+    assert advance.result.phase is Phase.INTERFACE
+    assert [(g.gate, g.status, g.sha) for g in advance.result.gate_results] == [
+        (Gate.SPECIFICATION, GateStatus.PASSED, HEAD),
+        (Gate.UI, GateStatus.SKIPPED, HEAD),
+    ]
+    assert "waived" in (advance.result.gate_results[1].summary or "")
+
+
+def test_a_same_stage_rework_round_is_a_new_operation_at_the_advanced_revision() -> None:
+    """The reworked stage is keyed by the branch head, never by the failed attempt's revision.
+
+    The publish effects are keyed by the operation; a round that re-used the
+    failed row would replay the previous commit and never land the reworked
+    files (M3 live run, T091 step 4).
+    """
+    run = make_run()
+    run.stages.append(_stage_run(run, Stage.SPECIFICATION, StageStatus.WAITING))
+    run.status = RunStatus.WAITING
+    change = make_change()
+    store = FakeStore(run=run)
+    store.history.append(_ci_checkpoint(run, change, Stage.SPECIFICATION))
+    facts = FakeFacts(
+        GateObservation(
+            head_sha=HEAD,
+            merged=False,
+            pipeline_status=None,
+            rework_orders=(_rework_order("rw_1", HEAD, "cmt_1"),),
+        )
+    )
+
+    def revision_of(change: Change, stage: Stage) -> str:
+        return "branch-head-after-round-1"
+
+    advance = _advance(
+        store, executor=_waiting(), change=change, gate_facts=facts, revision_of=revision_of
+    )
+
+    assert advance.outcome is RunAdvanceOutcome.ADVANCED
+    assert [(s.status, s.input_revision) for s in run.stages] == [
+        (StageStatus.FAILED, REVISION),
+        (StageStatus.PENDING, "branch-head-after-round-1"),
+    ]
+    assert run.stages[1].id != run.stages[0].id
+    assert [p.input_revision for p in store.created_stages] == ["branch-head-after-round-1"]
+    # The next advance executes the new operation as its first attempt.
+    assert _attempt_number(run, Stage.SPECIFICATION) == 1

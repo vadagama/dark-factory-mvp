@@ -61,7 +61,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from dark_factory.changes.enums import RunStatus, Stage, StageStatus
+from dark_factory.changes.enums import Phase, RunStatus, Stage, StageStatus
 from dark_factory.changes.findings import Decision
 from dark_factory.changes.run import (
     RETRYABLE_STAGE_STATUSES,
@@ -445,6 +445,7 @@ def advance_run(
     lease_ttl: timedelta = DEFAULT_LEASE_TTL,
     now: datetime | None = None,
     conversation: ConversationInputs | None = None,
+    phase: Phase | None = None,
 ) -> RunAdvance:
     """Advance ``run_id`` by exactly one stage decision, inside the caller's transaction.
 
@@ -493,7 +494,10 @@ def advance_run(
     ``conversation`` is the discussion of the phase the executed stage belongs
     to (T080, ADR-034 p.5) — answers, open comments, the pending rework order —
     handed to the stage context as typed inputs; the driver reads none of it
-    itself (the CLI assembles it from the store).
+    itself (the CLI assembles it from the store). ``phase`` (M3, ADR-039) is the
+    operator phase the executed attempt is a round of — the specification stage
+    runs requirements → architecture → interface — computed by the caller from
+    the decisions and the phase revisions; the executor picks the role from it.
 
     Raises :class:`RunNotFoundError` for an unknown run and
     :class:`RunNotAdvanceableError` for a terminal one; a flow violation
@@ -587,6 +591,7 @@ def advance_run(
         risk_class=effective_change_risk_class(run.implementation_contract, run.route),
         implementation_contract=run.implementation_contract,
         conversation=conversation,
+        phase=phase,
     )
     result = stage_executor(context)
     decision = apply_result(
@@ -917,14 +922,20 @@ def _created_stages(
 
     ``flow._advance`` starts the successor stage in memory only (``_start``); its
     row is what makes the run chain, so the decision declares it and
-    ``persist_decision`` inserts it. The executed stage is excluded: its row is
-    the operation ``open_attempt`` already opened. Each declared revision is
-    written back onto the stage run, so the decision in memory and the rows it
-    produced agree on the operation identity.
+    ``persist_decision`` inserts it. Only the stage runs that existed before the
+    decision (``known``) are excluded — the executed stage's own row among them,
+    because ``open_attempt`` already owns that operation. A *new* occurrence of
+    the executed stage is declared like any successor: a rework round or a phase
+    round of the same stage (M3, ADR-039) is a new operation keyed by the
+    revision the previous round advanced, never a retry of the failed one
+    (excluding it by stage collapsed the round into the old operation and made
+    its publish effects replay the earlier commit — found on the M3 live run).
+    Each declared revision is written back onto the stage run, so the decision
+    in memory and the rows it produced agree on the operation identity.
     """
     created: list[StagePlacement] = []
     for stage_run in run.stages:
-        if stage_run.stage == executed or any(stage_run is item for item in known):
+        if any(stage_run is item for item in known):
             continue
         stage_run.input_revision = _pinned_revision(
             store, run, stage_run.stage, change, revision_of
