@@ -23,6 +23,12 @@ from dark_factory.cli.main import EXIT_INVALID_INPUT, EXIT_OK, ApiServeArgs, Run
 from dark_factory.cli.main import main as cli_main
 from dark_factory.orchestration.runner import FactsProvider, RevisionResolver, StageExecutor
 from dark_factory.orchestration.stages.gates import GateObservation
+from dark_factory.ports import (
+    BaselineBootstrapResult,
+    MirrorRef,
+    RepositoryRef,
+    RepositoryValidation,
+)
 
 
 class ExecutorSentinel:
@@ -56,6 +62,23 @@ class CiTogglesSentinel:
         raise AssertionError("the sentinel toggle port must not be called by the entry point")
 
 
+class ProvisioningSentinel:
+    """Identity sentinel of the assembled repository-provisioning port (T066)."""
+
+    async def validate(self, repository: RepositoryRef, /) -> RepositoryValidation:
+        raise AssertionError("the sentinel provisioning port must not be called by the entry point")
+
+    async def ensure_mirror(
+        self, repository: RepositoryRef, /, *, idempotency_key: str
+    ) -> MirrorRef:
+        raise AssertionError("the sentinel provisioning port must not be called by the entry point")
+
+    async def bootstrap_baseline(
+        self, repository: RepositoryRef, /, *, packs: Sequence[str], idempotency_key: str
+    ) -> BaselineBootstrapResult:
+        raise AssertionError("the sentinel provisioning port must not be called by the entry point")
+
+
 class FakeRuntime:
     """Stand-in runtime: records how the entry point binds and releases it."""
 
@@ -65,6 +88,7 @@ class FakeRuntime:
         self.facts = FactsSentinel()
         self.ci_stage_toggles: Any = CiTogglesSentinel()
         self.ci_repository: Any = "small/pilot"
+        self.provisioning: Any = ProvisioningSentinel()
         self.executor_calls = 0
         self.revision_calls = 0
         self.facts_calls = 0
@@ -265,6 +289,7 @@ def test_api_serve_assembles_the_runtime_and_passes_the_ci_bindings(
     assert calls[0].kwargs == {
         "ci_toggles": runtime.ci_stage_toggles,
         "ci_repository": runtime.ci_repository,
+        "provisioning": runtime.provisioning,
     }
     assert runtime.close_calls == 1, "the assembled adapters are released"
 
@@ -277,13 +302,18 @@ def test_api_serve_without_github_configuration_passes_absent_bindings(
     runtime = FakeRuntime()
     runtime.ci_stage_toggles = None
     runtime.ci_repository = None
+    runtime.provisioning = None
     _stub_runtime(monkeypatch, runtime)
     calls = _record_cli(monkeypatch, EXIT_OK)
 
     code = entrypoint_module.main(["api", "serve", "--host", "127.0.0.1", "--port", "8000"])
 
     assert code == EXIT_OK
-    assert calls[0].kwargs == {"ci_toggles": None, "ci_repository": None}
+    assert calls[0].kwargs == {
+        "ci_toggles": None,
+        "ci_repository": None,
+        "provisioning": None,
+    }
     assert runtime.close_calls == 1
 
 
@@ -304,7 +334,7 @@ def test_api_serve_releases_the_runtime_even_when_the_command_fails(
     assert runtime.close_calls == 1
 
 
-def test_cli_main_forwards_the_ci_bindings_to_the_api_command(
+def test_cli_main_forwards_the_api_seams_to_the_api_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict[str, Any] = {}
@@ -316,17 +346,20 @@ def test_cli_main_forwards_the_ci_bindings_to_the_api_command(
 
     monkeypatch.setattr(api_module, "run_api_serve_command", _fake_serve)
     toggles = CiTogglesSentinel()
+    provisioning = ProvisioningSentinel()
 
     code = cli_main(
         ["api", "serve", "--host", "127.0.0.1", "--port", "8000"],
         ci_toggles=toggles,
         ci_repository="small/pilot",
+        provisioning=provisioning,
     )
 
     assert code == EXIT_OK
     assert seen["args"] == ApiServeArgs(host="127.0.0.1", port=8000)
     assert seen["ci_toggles"] is toggles
     assert seen["ci_repository"] == "small/pilot"
+    assert seen["provisioning"] is provisioning
 
 
 # --- the CLI seam itself --------------------------------------------------

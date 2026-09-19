@@ -32,6 +32,7 @@ _ROLE_VALUES: Final[frozenset[str]] = frozenset({OPERATOR_ROLE, SERVICE_ROLE})
 SCOPE_CHANGES_WRITE: Final[str] = "changes:write"
 SCOPE_APPROVALS_WRITE: Final[str] = "approvals:write"
 SCOPE_CI_WRITE: Final[str] = "ci:write"
+SCOPE_PRODUCTS_WRITE: Final[str] = "products:write"
 SCOPE_RUNS_WRITE: Final[str] = "runs:write"
 
 

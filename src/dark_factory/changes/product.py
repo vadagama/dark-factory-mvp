@@ -19,15 +19,13 @@ from dark_factory.changes.run import InvalidStatusTransition
 PRODUCT_STATUS_TRANSITIONS: Final[dict[ProductStatus, frozenset[ProductStatus]]] = {
     ProductStatus.CREATED: frozenset({ProductStatus.VALIDATING}),
     ProductStatus.VALIDATING: frozenset({ProductStatus.READY, ProductStatus.ERROR}),
-    # Both outcomes are final: a failed validation is not silently retried, a new
-    # attempt would be an explicit operator action (ADR-030 p.4).
-    ProductStatus.READY: frozenset(),
-    ProductStatus.ERROR: frozenset(),
+    # A finished validation can be run again: validation observes the repository
+    # and mutates nothing (ADR-031 p.5), so re-checking after a failure — or after
+    # the repository changed — is an explicit operator action, not a silent retry
+    # (ADR-030 p.4).
+    ProductStatus.READY: frozenset({ProductStatus.VALIDATING}),
+    ProductStatus.ERROR: frozenset({ProductStatus.VALIDATING}),
 }
-
-PRODUCT_TERMINAL_STATUSES: Final[frozenset[ProductStatus]] = frozenset(
-    status for status, targets in PRODUCT_STATUS_TRANSITIONS.items() if not targets
-)
 
 
 def _now() -> datetime:

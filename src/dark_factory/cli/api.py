@@ -19,7 +19,7 @@ from dark_factory.orchestration.state.engine import (
     create_session_factory,
     create_state_engine,
 )
-from dark_factory.ports import CiStageTogglePort
+from dark_factory.ports import CiStageTogglePort, RepositoryProvisioningPort
 
 DATABASE_URL_ENV_VAR: Final[str] = "DATABASE_URL"
 
@@ -29,6 +29,7 @@ def run_api_serve_command(
     *,
     ci_toggles: CiStageTogglePort | None = None,
     ci_repository: str | None = None,
+    provisioning: RepositoryProvisioningPort | None = None,
 ) -> int:
     """Serve the API until interrupted; fail fast with exit 2 on misconfiguration.
 
@@ -37,7 +38,9 @@ def run_api_serve_command(
     (``runtime.entrypoint``) because this module is core and may not name the
     adapters (ADR-024 p.5). Both default to ``None`` — the ``/ci`` endpoints
     then serve the catalog as unavailable, which is exactly the behaviour of
-    the runtime-free path (``python -m dark_factory.cli``).
+    the runtime-free path (``python -m dark_factory.cli``). ``provisioning`` is
+    the repository-provisioning seam of product validation (T066, ADR-031): with
+    ``None`` the endpoint refuses instead of inventing readiness.
     """
     database_url = os.environ.get(DATABASE_URL_ENV_VAR, "").strip()
     if not database_url:
